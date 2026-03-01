@@ -29,6 +29,6 @@ export default {
       });
     }
 
-    return new Response('Try /run or /file');
+    return env.ASSETS.fetch(request);
   }
 };

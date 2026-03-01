@@ -1,13 +1,15 @@
 {
   "compilerOptions": {
     "target": "esnext",
-    "lib": ["esnext"],
+    "lib": ["dom", "dom.iterable", "esnext"],
     "module": "esnext",
+    "jsx": "react-jsx",
     "moduleResolution": "bundler",
     "types": [
-        "./worker-configuration.d.ts",
-        "@types/node",
-        "node"
+      "./worker-configuration.d.ts",
+      "vite/client",
+      "@types/node",
+      "node"
     ],
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
@@ -15,5 +17,5 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["worker-configuration.d.ts", "src/**/*.ts"]
+  "include": ["worker-configuration.d.ts", "src/**/*.ts", "src/**/*.tsx", "vite.config.ts"]
 }
