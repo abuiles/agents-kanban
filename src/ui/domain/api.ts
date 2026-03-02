@@ -5,6 +5,8 @@ export type CreateRepoInput = {
   defaultBranch?: string;
   baselineUrl: string;
   enabled?: boolean;
+  previewCheckName?: string;
+  codexAuthBundleR2Key?: string;
 };
 
 export type UpdateRepoInput = Partial<CreateRepoInput>;

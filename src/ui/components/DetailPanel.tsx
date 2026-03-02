@@ -57,7 +57,7 @@ function PanelSection({ title, children, aside }: { title: string; children: Rea
 
 function ArtifactLinks({ run }: { run?: AgentRun }) {
   if (!run?.artifactManifest) {
-    return <p className="text-sm text-slate-500">Artifacts will appear after mock evidence runs.</p>;
+    return <p className="text-sm text-slate-500">Artifacts will appear after evidence runs complete.</p>;
   }
 
   const manifest = run.artifactManifest;
@@ -281,7 +281,7 @@ export function DetailPanel({
               </div>
             ))
           ) : (
-            <p className="text-slate-500">Logs stream here once the mock run starts.</p>
+            <p className="text-slate-500">Logs stream here once the run starts.</p>
           )}
         </div>
       </PanelSection>

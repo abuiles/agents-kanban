@@ -5,10 +5,11 @@ import { handleError, json } from './http/response';
 import { parseCreateRepoInput, parseCreateTaskInput, parseUpdateRepoInput, parseUpdateTaskInput, readJson } from './http/validation';
 import { extractRepoIdFromRunId, extractRepoIdFromTaskId } from './shared/ids';
 import { parseBoardSnapshot } from '../ui/store/board-snapshot';
+import { scheduleRunJob } from './run-orchestrator';
 
 const BOARD_OBJECT_NAME = 'agentboard';
 
-export async function handleApiRequest(request: Request, env: Env): Promise<Response> {
+export async function handleApiRequest(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   const url = new URL(request.url);
   const board = env.BOARD_INDEX.getByName(BOARD_OBJECT_NAME);
 
@@ -65,7 +66,10 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
     if (runStartMatch && request.method === 'POST') {
       const taskId = decodeURIComponent(runStartMatch[1]);
       const repoId = await resolveRepoIdForTask(board, taskId);
-      return json(await env.REPO_BOARD.getByName(repoId).startRun(taskId));
+      const run = await env.REPO_BOARD.getByName(repoId).startRun(taskId);
+      const workflow = await scheduleRunJob(env, ctx, { repoId, taskId, runId: run.runId, mode: 'full_run' });
+      await env.REPO_BOARD.getByName(repoId).transitionRun(run.runId, { workflowInstanceId: workflow.id });
+      return json(await env.REPO_BOARD.getByName(repoId).getRun(run.runId));
     }
 
     const runMatch = url.pathname.match(/^\/api\/runs\/([^/]+)$/);
@@ -79,14 +83,20 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
     if (runRetryMatch && request.method === 'POST') {
       const runId = decodeURIComponent(runRetryMatch[1]);
       const repoId = await resolveRepoIdForRun(board, runId);
-      return json(await env.REPO_BOARD.getByName(repoId).retryRun(runId));
+      const run = await env.REPO_BOARD.getByName(repoId).retryRun(runId);
+      const workflow = await scheduleRunJob(env, ctx, { repoId, taskId: run.taskId, runId: run.runId, mode: 'full_run' });
+      await env.REPO_BOARD.getByName(repoId).transitionRun(run.runId, { workflowInstanceId: workflow.id });
+      return json(await env.REPO_BOARD.getByName(repoId).getRun(run.runId));
     }
 
     const evidenceRetryMatch = url.pathname.match(/^\/api\/runs\/([^/]+)\/evidence$/);
     if (evidenceRetryMatch && request.method === 'POST') {
       const runId = decodeURIComponent(evidenceRetryMatch[1]);
       const repoId = await resolveRepoIdForRun(board, runId);
-      return json(await env.REPO_BOARD.getByName(repoId).retryEvidence(runId));
+      const run = await env.REPO_BOARD.getByName(repoId).retryEvidence(runId);
+      const workflow = await scheduleRunJob(env, ctx, { repoId, taskId: run.taskId, runId: run.runId, mode: 'evidence_only' });
+      await env.REPO_BOARD.getByName(repoId).transitionRun(run.runId, { workflowInstanceId: workflow.id });
+      return json(await env.REPO_BOARD.getByName(repoId).getRun(run.runId));
     }
 
     const runLogsMatch = url.pathname.match(/^\/api\/runs\/([^/]+)\/logs$/);
@@ -95,6 +105,13 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
       const repoId = await resolveRepoIdForRun(board, runId);
       const tail = url.searchParams.get('tail');
       return json(await env.REPO_BOARD.getByName(repoId).getRunLogs(runId, tail ? Number(tail) : undefined));
+    }
+
+    const runArtifactsMatch = url.pathname.match(/^\/api\/runs\/([^/]+)\/artifacts$/);
+    if (runArtifactsMatch && request.method === 'GET') {
+      const runId = decodeURIComponent(runArtifactsMatch[1]);
+      const repoId = await resolveRepoIdForRun(board, runId);
+      return json(await env.REPO_BOARD.getByName(repoId).getRunArtifacts(runId));
     }
 
     if (url.pathname === '/api/debug/export' && request.method === 'GET') {

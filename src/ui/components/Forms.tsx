@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { CreateRepoInput, CreateTaskInput } from '../domain/api';
-import type { Repo, SimulationProfile, TaskContextLink, TaskStatus } from '../domain/types';
+import type { Repo, TaskContextLink, TaskStatus } from '../domain/types';
 
 function FieldShell({ label, children, hint }: { label: string; children: React.ReactNode; hint?: string }) {
   return (
@@ -36,16 +36,27 @@ export function RepoForm({ onSubmit }: { onSubmit: (input: CreateRepoInput) => P
   const [slug, setSlug] = useState('');
   const [defaultBranch, setDefaultBranch] = useState('main');
   const [baselineUrl, setBaselineUrl] = useState('');
+  const [previewCheckName, setPreviewCheckName] = useState('');
+  const [codexAuthBundleR2Key, setCodexAuthBundleR2Key] = useState('');
 
   return (
     <form
       className="space-y-5"
       onSubmit={async (event) => {
         event.preventDefault();
-        await onSubmit({ slug, defaultBranch, baselineUrl, enabled: true });
+        await onSubmit({
+          slug,
+          defaultBranch,
+          baselineUrl,
+          enabled: true,
+          previewCheckName: previewCheckName || undefined,
+          codexAuthBundleR2Key: codexAuthBundleR2Key || undefined
+        });
         setSlug('');
         setDefaultBranch('main');
         setBaselineUrl('');
+        setPreviewCheckName('');
+        setCodexAuthBundleR2Key('');
       }}
     >
       <div className="grid gap-4 md:grid-cols-2">
@@ -56,9 +67,17 @@ export function RepoForm({ onSubmit }: { onSubmit: (input: CreateRepoInput) => P
           <input className={inputClass()} value={defaultBranch} onChange={(event) => setDefaultBranch(event.target.value)} required />
         </FieldShell>
       </div>
-      <FieldShell label="Baseline URL" hint="Used as the before state for mock and future evidence runs.">
+      <FieldShell label="Baseline URL" hint="Used as the before state for evidence runs.">
         <input className={inputClass()} value={baselineUrl} onChange={(event) => setBaselineUrl(event.target.value)} placeholder="https://example.com" required />
       </FieldShell>
+      <div className="grid gap-4 md:grid-cols-2">
+        <FieldShell label="Preview check name" hint="Optional GitHub check name used to discover the Cloudflare preview URL.">
+          <input className={inputClass()} value={previewCheckName} onChange={(event) => setPreviewCheckName(event.target.value)} placeholder="Cloudflare Pages" />
+        </FieldShell>
+        <FieldShell label="Codex auth bundle key" hint="Optional R2 key for a `.codex` auth bundle tarball.">
+          <input className={inputClass()} value={codexAuthBundleR2Key} onChange={(event) => setCodexAuthBundleR2Key(event.target.value)} placeholder="auth/codex.tgz" />
+        </FieldShell>
+      </div>
       <PrimaryButton>Add repo</PrimaryButton>
     </form>
   );
@@ -102,7 +121,6 @@ export function TaskForm({
   const [notes, setNotes] = useState('');
   const [links, setLinks] = useState('');
   const [status, setStatus] = useState<TaskStatus>(initialStatus);
-  const [simulationProfile, setSimulationProfile] = useState<SimulationProfile>('happy_path');
   const [baselineUrlOverride, setBaselineUrlOverride] = useState('');
 
   useEffect(() => {
@@ -134,7 +152,7 @@ export function TaskForm({
           context: { links: parseLinks(links), notes },
           status,
           baselineUrlOverride: baselineUrlOverride || undefined,
-          simulationProfile
+          simulationProfile: 'happy_path'
         });
         setTitle('');
         setDescription('');
@@ -143,7 +161,6 @@ export function TaskForm({
         setNotes('');
         setLinks('');
         setStatus(initialStatus);
-        setSimulationProfile('happy_path');
         setBaselineUrlOverride('');
       }}
     >
@@ -199,17 +216,6 @@ export function TaskForm({
           <input className={inputClass()} value={baselineUrlOverride} onChange={(event) => setBaselineUrlOverride(event.target.value)} placeholder="https://staging.example.com" />
         </FieldShell>
       </div>
-
-      <div className="grid gap-4 md:grid-cols-2">
-        <FieldShell label="Mock run profile">
-          <select className={inputClass()} value={simulationProfile} onChange={(event) => setSimulationProfile(event.target.value as SimulationProfile)}>
-            <option value="happy_path">happy_path</option>
-            <option value="fail_tests">fail_tests</option>
-            <option value="fail_preview">fail_preview</option>
-          </select>
-        </FieldShell>
-      </div>
-
       <PrimaryButton disabled={!repos.length}>Create task</PrimaryButton>
     </form>
   );

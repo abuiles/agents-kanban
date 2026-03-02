@@ -1,13 +1,12 @@
 import type { CreateTaskInput, UpdateTaskInput } from '../../ui/domain/api';
-import type { AgentRun, Repo, RunLogEntry, Task, TaskDetail } from '../../ui/domain/types';
+import type { AgentRun, Repo, RunError, RunLogEntry, Task, TaskDetail, TaskStatus } from '../../ui/domain/types';
 import { DurableObject } from 'cloudflare:workers';
-import { getLatestRunForTask } from '../../ui/domain/selectors';
-import { badRequest, notFound } from '../http/errors';
-import { createRun, consumePendingEvent, deriveTaskStatus, buildLogsForStatus, buildArtifactManifest, isTerminalRunStatus, retryEvidence as retryEvidenceRun } from '../shared/mock-engine';
+import { notFound } from '../http/errors';
 import { createRunId, createTaskId } from '../shared/ids';
 import type { BoardEvent } from '../shared/events';
 import { stringifyBoardEvent } from '../shared/events';
 import { EMPTY_REPO_BOARD_STATE, type RepoBoardState } from '../shared/state';
+import { applyRunTransition, appendRunError, buildArtifactManifest, createRealRun, type RunTransitionPatch } from '../shared/real-run';
 
 const STORAGE_KEY = 'repo-board-state';
 
@@ -43,7 +42,6 @@ export class RepoBoardDO extends DurableObject<Env> {
     await this.ready;
     this.state = cloneRepoBoardState(nextState);
     await this.persist();
-    await this.scheduleNextAlarm();
   }
 
   async hasTask(taskId: string) {
@@ -97,13 +95,6 @@ export class RepoBoardDO extends DurableObject<Env> {
     };
     await this.persist();
     await this.emit({ type: 'task.updated', payload: { task } }, input.repoId);
-
-    if (task.status === 'ACTIVE') {
-      await this.startRun(task.taskId);
-      const latest = this.state.tasks.find((candidate) => candidate.taskId === task.taskId);
-      return latest ?? task;
-    }
-
     return task;
   }
 
@@ -131,12 +122,6 @@ export class RepoBoardDO extends DurableObject<Env> {
     };
     await this.persist();
     await this.emit({ type: 'task.updated', payload: { task: updated } }, updated.repoId);
-
-    if (patch.status === 'ACTIVE') {
-      await this.startRun(taskId);
-      return this.state.tasks.find((candidate) => candidate.taskId === taskId) ?? updated;
-    }
-
     return updated;
   }
 
@@ -153,9 +138,7 @@ export class RepoBoardDO extends DurableObject<Env> {
     }
 
     const now = new Date();
-    const run = createRun(task, now);
-    run.runId = createRunId(task.repoId);
-    run.branchName = `agent/${task.taskId}/${run.runId}`;
+    const run = createRealRun(task, createRunId(task.repoId), now);
 
     this.state = {
       ...this.state,
@@ -165,8 +148,9 @@ export class RepoBoardDO extends DurableObject<Env> {
       runs: [run, ...this.state.runs]
     };
     await this.persist();
-    await this.processDueEvents(now.toISOString());
-    return this.state.runs.find((candidate) => candidate.runId === run.runId) ?? run;
+    await this.emit({ type: 'task.updated', payload: { task: this.state.tasks.find((candidate) => candidate.taskId === taskId)! } }, task.repoId);
+    await this.emit({ type: 'run.updated', payload: { run } }, task.repoId);
+    return run;
   }
 
   async getRun(runId: string) {
@@ -182,27 +166,121 @@ export class RepoBoardDO extends DurableObject<Env> {
   async retryRun(runId: string) {
     await this.ready;
     const run = await this.getRun(runId);
-    const task = this.state.tasks.find((candidate) => candidate.taskId === run.taskId);
-    if (!task) {
-      throw notFound(`Task ${run.taskId} not found.`, { taskId: run.taskId, runId });
-    }
-
-    await this.updateTask(task.taskId, { status: 'ACTIVE' });
-    return this.state.runs.find((candidate) => candidate.taskId === task.taskId && !isTerminalRunStatus(candidate.status)) ?? run;
+    return this.startRun(run.taskId);
   }
 
   async retryEvidence(runId: string) {
     await this.ready;
     const run = await this.getRun(runId);
-    const next = retryEvidenceRun(run, new Date().toISOString());
+    const nowIso = new Date().toISOString();
+    const updated = applyRunTransition(
+      { ...run, endedAt: undefined },
+      {
+        status: run.previewUrl ? 'EVIDENCE_RUNNING' : 'WAITING_PREVIEW',
+        previewStatus: run.previewUrl ? 'READY' : 'DISCOVERING',
+        evidenceStatus: 'RUNNING',
+        appendTimelineNote: 'Retrying evidence for the existing PR.'
+      },
+      nowIso
+    );
+
     this.state = {
       ...this.state,
-      runs: this.state.runs.map((candidate) => (candidate.runId === runId ? next : candidate))
+      runs: this.state.runs.map((candidate) => (candidate.runId === runId ? updated : candidate)),
+      tasks: this.state.tasks.map((candidate) =>
+        candidate.taskId === run.taskId ? { ...candidate, status: 'REVIEW', updatedAt: nowIso } : candidate
+      )
     };
     await this.persist();
-    await this.emit({ type: 'run.updated', payload: { run: next } }, next.repoId);
-    await this.processDueEvents(new Date().toISOString());
-    return this.state.runs.find((candidate) => candidate.runId === runId) ?? next;
+    await this.emit({ type: 'run.updated', payload: { run: updated } }, updated.repoId);
+    return updated;
+  }
+
+  async appendRunLogs(runId: string, logs: RunLogEntry[]) {
+    await this.ready;
+    const run = await this.getRun(runId);
+    this.state = {
+      ...this.state,
+      logs: [...this.state.logs, ...logs]
+    };
+    await this.persist();
+    await this.emit({ type: 'run.logs_appended', payload: { runId, logs } }, run.repoId);
+  }
+
+  async transitionRun(runId: string, patch: RunTransitionPatch): Promise<AgentRun> {
+    await this.ready;
+    const run = await this.getRun(runId);
+    const nowIso = new Date().toISOString();
+    const updated = applyRunTransition(run, patch, nowIso);
+    const task = this.state.tasks.find((candidate) => candidate.taskId === updated.taskId);
+    if (!task) {
+      throw notFound(`Task ${updated.taskId} not found.`, { taskId: updated.taskId, runId });
+    }
+
+    const nextTask = {
+      ...task,
+      status: deriveTaskStatus(updated, task.status),
+      runId: updated.runId,
+      updatedAt: nowIso
+    };
+
+    this.state = {
+      ...this.state,
+      tasks: this.state.tasks.map((candidate) => (candidate.taskId === nextTask.taskId ? nextTask : candidate)),
+      runs: this.state.runs.map((candidate) => (candidate.runId === runId ? updated : candidate))
+    };
+    await this.persist();
+    await this.emit({ type: 'task.updated', payload: { task: nextTask } }, updated.repoId);
+    await this.emit({ type: 'run.updated', payload: { run: updated } }, updated.repoId);
+    return updated;
+  }
+
+  async markRunFailed(runId: string, error: RunError): Promise<AgentRun> {
+    await this.ready;
+    const run = await this.getRun(runId);
+    const nowIso = new Date().toISOString();
+    const updated = appendRunError(run, error, nowIso);
+    const task = this.state.tasks.find((candidate) => candidate.taskId === run.taskId);
+    if (!task) {
+      throw notFound(`Task ${run.taskId} not found.`, { taskId: run.taskId, runId });
+    }
+
+    const nextTask: Task = {
+      ...task,
+      status: updated.prUrl ? 'REVIEW' : 'FAILED',
+      updatedAt: nowIso,
+      runId
+    };
+
+    this.state = {
+      ...this.state,
+      tasks: this.state.tasks.map((candidate) => (candidate.taskId === nextTask.taskId ? nextTask : candidate)),
+      runs: this.state.runs.map((candidate) => (candidate.runId === runId ? updated : candidate))
+    };
+    await this.persist();
+    await this.emit({ type: 'task.updated', payload: { task: nextTask } }, updated.repoId);
+    await this.emit({ type: 'run.updated', payload: { run: updated } }, updated.repoId);
+    return updated;
+  }
+
+  async storeArtifactManifest(runId: string) {
+    await this.ready;
+    const run = await this.getRun(runId);
+    const task = this.state.tasks.find((candidate) => candidate.taskId === run.taskId);
+    if (!task) {
+      throw notFound(`Task ${run.taskId} not found.`, { taskId: run.taskId, runId });
+    }
+    const repo = await this.getRepo(run.repoId);
+    const manifest = buildArtifactManifest(run, task, repo, this.ctx.id.toString());
+    return this.transitionRun(runId, {
+      artifactManifest: manifest,
+      artifacts: [manifest.logs.key, manifest.before?.key, manifest.after?.key, manifest.trace?.key, manifest.video?.key].filter(Boolean) as string[]
+    });
+  }
+
+  async getRunArtifacts(runId: string) {
+    const run = await this.getRun(runId);
+    return run.artifactManifest;
   }
 
   async getRunLogs(runId: string, tail?: number) {
@@ -211,110 +289,8 @@ export class RepoBoardDO extends DurableObject<Env> {
     return tail ? logs.slice(-tail) : logs;
   }
 
-  async processDueEvents(nowIso = new Date().toISOString()) {
-    await this.ready;
-    let mutated = false;
-    const emitted: Array<{ event: RepoScopedEvent; logs?: RunLogEntry[] }> = [];
-    const nowMs = new Date(nowIso).getTime();
-
-    while (true) {
-      const due = this.findNextDueEvent(nowMs);
-      if (!due) {
-        break;
-      }
-
-      const { run, event } = due;
-      const task = this.state.tasks.find((candidate) => candidate.taskId === run.taskId);
-      if (!task) {
-        break;
-      }
-
-      const repo = await this.getRepo(run.repoId);
-      const updatedRun: AgentRun = {
-        ...run,
-        status: event.status,
-        pendingEvents: consumePendingEvent(run, event.status, event.note),
-        currentStepStartedAt: nowIso,
-        timeline: [...run.timeline, { status: event.status, at: nowIso, note: event.note }]
-      };
-
-      if (event.status === 'PR_OPEN') {
-        updatedRun.prNumber = updatedRun.prNumber ?? Math.floor((Date.now() / 1_000) % 10_000);
-        updatedRun.prUrl = updatedRun.prUrl ?? `https://github.com/mock/${repo.slug}/pull/${updatedRun.prNumber}`;
-        updatedRun.headSha = updatedRun.headSha ?? updatedRun.runId.slice(-7);
-      }
-
-      if (event.status === 'WAITING_PREVIEW') {
-        updatedRun.previewUrl = updatedRun.previewUrl ?? `https://preview.example.invalid/${repo.slug.replace('/', '-')}/${updatedRun.prNumber ?? 0}`;
-      }
-
-      if (event.status === 'FAILED' && event.note) {
-        updatedRun.errors = [...updatedRun.errors, { at: nowIso, message: event.note }];
-        updatedRun.endedAt = nowIso;
-      }
-
-      if (event.status === 'DONE') {
-        updatedRun.endedAt = nowIso;
-      }
-
-      if (event.status === 'EVIDENCE_RUNNING' || event.status === 'DONE') {
-        updatedRun.artifactManifest = buildArtifactManifest(updatedRun, task, repo);
-        updatedRun.artifacts = [
-          updatedRun.artifactManifest.logs.key,
-          updatedRun.artifactManifest.before?.key ?? '',
-          updatedRun.artifactManifest.after?.key ?? ''
-        ].filter(Boolean);
-      }
-
-      const nextTask: Task = {
-        ...task,
-        status: deriveTaskStatus(task.status, event.status),
-        runId: updatedRun.runId,
-        updatedAt: nowIso
-      };
-
-      const generatedLogs = buildLogsForStatus(updatedRun, event.status, nowIso);
-      if (event.status === 'FAILED' && event.note) {
-        generatedLogs.push({
-          id: `${updatedRun.runId}_failed_${nowIso}`,
-          runId: updatedRun.runId,
-          createdAt: nowIso,
-          level: 'error',
-          message: event.note
-        });
-      }
-
-      this.state = {
-        tasks: this.state.tasks.map((candidate) => (candidate.taskId === nextTask.taskId ? nextTask : candidate)),
-        runs: this.state.runs.map((candidate) => (candidate.runId === updatedRun.runId ? updatedRun : candidate)),
-        logs: [...this.state.logs, ...generatedLogs]
-      };
-
-      emitted.push({ event: { type: 'task.updated', payload: { task: nextTask } }, logs: undefined });
-      emitted.push({ event: { type: 'run.updated', payload: { run: updatedRun } }, logs: generatedLogs });
-      mutated = true;
-    }
-
-    if (mutated) {
-      await this.persist();
-      for (const item of emitted) {
-        if (item.event.type === 'task.updated') {
-          await this.emit(item.event, item.event.payload.task.repoId);
-        }
-        if (item.event.type === 'run.updated') {
-          await this.emit(item.event, item.event.payload.run.repoId);
-          if (item.logs?.length) {
-            await this.emit({ type: 'run.logs_appended', payload: { runId: item.event.payload.run.runId, logs: item.logs } }, item.event.payload.run.repoId);
-          }
-        }
-      }
-    }
-
-    await this.scheduleNextAlarm();
-  }
-
   async alarm() {
-    await this.processDueEvents(new Date().toISOString());
+    // Stage 3 no longer uses alarm-driven mock progression.
   }
 
   private async handleWebSocket() {
@@ -332,29 +308,6 @@ export class RepoBoardDO extends DurableObject<Env> {
     }
     const board = this.env.BOARD_INDEX.getByName('agentboard');
     await board.notifyRepoEvent({ ...event, repoId });
-  }
-
-  private async scheduleNextAlarm() {
-    const nextEvent = this.state.runs
-      .flatMap((run) => run.pendingEvents)
-      .sort((left, right) => left.executeAt.localeCompare(right.executeAt))[0];
-
-    if (nextEvent) {
-      await this.ctx.storage.setAlarm(new Date(nextEvent.executeAt));
-      return;
-    }
-
-    await this.ctx.storage.deleteAlarm();
-  }
-
-  private findNextDueEvent(nowMs: number) {
-    const ordered = this.state.runs
-      .flatMap((run) =>
-        run.pendingEvents.map((event) => ({ run, event, executeAt: new Date(event.executeAt).getTime() }))
-      )
-      .sort((left, right) => left.executeAt - right.executeAt);
-
-    return ordered.find((candidate) => candidate.executeAt <= nowMs);
   }
 
   private async persist() {
@@ -379,6 +332,23 @@ export class RepoBoardDO extends DurableObject<Env> {
   }
 }
 
+function deriveTaskStatus(run: AgentRun, current: TaskStatus): TaskStatus {
+  if (run.status === 'PR_OPEN' || run.status === 'WAITING_PREVIEW' || run.status === 'EVIDENCE_RUNNING' || run.status === 'DONE') {
+    return 'REVIEW';
+  }
+  if (run.status === 'FAILED') {
+    return run.prUrl ? 'REVIEW' : 'FAILED';
+  }
+  if (run.status === 'QUEUED' || run.status === 'BOOTSTRAPPING' || run.status === 'RUNNING_CODEX' || run.status === 'RUNNING_TESTS' || run.status === 'PUSHING_BRANCH') {
+    return 'ACTIVE';
+  }
+  return current;
+}
+
+function isTerminalRunStatus(status: AgentRun['status']) {
+  return status === 'DONE' || status === 'FAILED';
+}
+
 function cloneRepoBoardState(state: RepoBoardState): RepoBoardState {
   return {
     tasks: state.tasks.map((task) => ({ ...task, context: { ...task.context, links: task.context.links.map((link) => ({ ...link })) }, uiMeta: task.uiMeta ? { ...task.uiMeta } : undefined })),
@@ -387,6 +357,7 @@ function cloneRepoBoardState(state: RepoBoardState): RepoBoardState {
       errors: run.errors.map((error) => ({ ...error })),
       timeline: run.timeline.map((entry) => ({ ...entry })),
       pendingEvents: run.pendingEvents.map((event) => ({ ...event })),
+      executionSummary: run.executionSummary ? { ...run.executionSummary } : undefined,
       artifacts: run.artifacts ? [...run.artifacts] : undefined,
       artifactManifest: run.artifactManifest
         ? {
@@ -400,6 +371,6 @@ function cloneRepoBoardState(state: RepoBoardState): RepoBoardState {
           }
         : undefined
     })),
-    logs: state.logs.map((log) => ({ ...log }))
+    logs: state.logs.map((log) => ({ ...log, metadata: log.metadata ? { ...log.metadata } : undefined }))
   };
 }

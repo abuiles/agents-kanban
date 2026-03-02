@@ -94,7 +94,9 @@ export function parseCreateRepoInput(body: unknown): CreateRepoInput {
     slug: readString(body.slug, 'slug')!,
     defaultBranch: readString(body.defaultBranch, 'defaultBranch', false),
     baselineUrl: readString(body.baselineUrl, 'baselineUrl')!,
-    enabled: readBoolean(body.enabled, 'enabled', false)
+    enabled: readBoolean(body.enabled, 'enabled', false),
+    previewCheckName: readString(body.previewCheckName, 'previewCheckName', false),
+    codexAuthBundleR2Key: readString(body.codexAuthBundleR2Key, 'codexAuthBundleR2Key', false)
   };
 }
 
@@ -108,6 +110,8 @@ export function parseUpdateRepoInput(body: unknown): UpdateRepoInput {
   if (hasOwn(body, 'defaultBranch')) patch.defaultBranch = readString(body.defaultBranch, 'defaultBranch', false);
   if (hasOwn(body, 'baselineUrl')) patch.baselineUrl = readString(body.baselineUrl, 'baselineUrl', false);
   if (hasOwn(body, 'enabled')) patch.enabled = readBoolean(body.enabled, 'enabled', false);
+  if (hasOwn(body, 'previewCheckName')) patch.previewCheckName = readString(body.previewCheckName, 'previewCheckName', false);
+  if (hasOwn(body, 'codexAuthBundleR2Key')) patch.codexAuthBundleR2Key = readString(body.codexAuthBundleR2Key, 'codexAuthBundleR2Key', false);
   return patch;
 }
 

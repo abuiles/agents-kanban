@@ -2,119 +2,418 @@
 
 ## Goal
 
-Replace the Stage 2 server-side mock executor with real execution:
+Stage 3 replaces the Stage 2 mock executor with real execution.
 
-- real ephemeral Cloudflare Sandbox per run
-- real Codex invocation inside the sandbox
-- real GitHub branch push and PR creation
-- real preview discovery from the PR/head SHA
-- real Playwright evidence capture against baseline + preview
-- real artifact persistence and PR commenting
+A task moved to `ACTIVE` should:
 
-Stage 3 is the first end-to-end working version of AgentBoard.
+- start a real background run
+- execute in a real Cloudflare Sandbox
+- let Codex work against the target repo with full permissions
+- push a branch and open a real GitHub PR
+- discover the Cloudflare preview URL from GitHub checks/deployments
+- run Playwright evidence against baseline and preview
+- persist logs and artifacts durably
+- project the full lifecycle back into the board in real time
 
-## What must already exist from Stage 2
+Stage 3 is the first fully functional AgentBoard release.
 
-Stage 3 assumes Stage 2 already provides:
+## Stage 2 baseline this plan assumes
 
-- Worker-hosted SPA + HTTP API
-- durable repo/task/run storage
-- idempotent run start/retry/evidence endpoints
-- durable run lifecycle ownership on the server
-- log retrieval endpoint
-- stable DTOs and additive-friendly run metadata
+Stage 2 already provides:
 
-Stage 3 must extend those capabilities, not replace their contracts.
+- Worker-hosted SPA and `/api/*`
+- `BoardIndexDO` for repo metadata and all-board fanout
+- `RepoBoardDO` for repo-scoped tasks, runs, logs, and live board projection
+- a stable WebSocket event model
+- stable task/run DTOs used by the existing UI
+- idempotent run start, run retry, and evidence retry semantics
+
+Stage 3 extends that architecture. It does not replace it.
+
+## Product decisions locked in
+
+- there is no remaining mock execution path in the product
+- Stage 3 is the only run path
+- GitHub auth uses a PAT stored in KV
+- the PAT is read by the Worker at run time and injected into the sandbox only for that run
+- there is one global PAT key for Stage 3
+- Codex runs with full permissions inside the sandbox
+- Codex decides what install/build/test commands to run
+- preview detection is polling-first via GitHub checks/deployments
+- operator WebSocket access into sandboxes is documented, but not part of Stage 3 acceptance criteria
+- if Codex produces no diff, the run fails with `NO_CHANGES` and no PR is opened
+- if a PR already exists and preview/evidence later fails, the task remains in `REVIEW`
 
 ## Non-goals
 
-- No full policy engine yet
-- No multi-user auth/roles redesign yet
-- No advanced scheduling/queue fairness yet
-- No multi-run-per-task support yet
-- No branch rebasing/merge automation yet
-- No full billing/usage accounting yet
+- no policy engine yet
+- no repo-specific credential model yet
+- no merge automation
+- no multi-run-per-task concurrency
+- no multi-user auth redesign
+- no fairness scheduler or usage billing system yet
+- no operator terminal UI as a required Stage 3 feature
 
 ## Target architecture
 
 ### Control plane
-- Cloudflare Worker hosts the SPA and HTTP API
-- `BoardDO` remains the source of truth for repos/tasks/runs
-- Worker owns GitHub API calls, preview discovery, PR comments, and orchestration handoffs
-- R2 stores logs, evidence artifacts, and Codex auth bundle material
 
-### Execution plane
-- One ephemeral Cloudflare Sandbox per run
-- Sandbox responsibilities:
-  - restore Codex auth bundle
-  - clone repo
-  - create branch
-  - write task context into working directory if needed
-  - run Codex
-  - run tests
-  - push branch
-- Evidence runner:
-  - separate ephemeral sandbox
-  - run Playwright against baseline and preview
-  - upload screenshots/video/trace
-  - report artifact manifest back to control plane
+Use these components:
 
-### Integrations
-- GitHub token or GitHub App installation token for clone/push/PR/comment
-- Cloudflare preview detection via GitHub status/checks/deployments on head SHA
+- Cloudflare Worker
+- Cloudflare Workflows
+- `BoardIndexDO`
+- `RepoBoardDO`
+- KV for the GitHub PAT
+- R2 for logs, evidence, and auth bundle material
 
-## Stage 3 state model
+### Worker responsibilities
 
-Stage 2 fields remain. Stage 3 makes them real.
+The Worker owns:
 
-### Repo
-Required runtime fields:
-- `repoId`
-- `slug`
-- `defaultBranch`
-- `baselineUrl`
-- `enabled`
+- product API routes
+- board WebSocket routing
+- Workflow trigger endpoints
+- GitHub API calls
+- preview discovery polling
+- PR comment creation and updates
+- KV secret reads
+- R2 uploads and signed artifact access
 
-Additive Stage 3 repo metadata:
-- `githubInstallationId?`
-- `previewProvider?: 'cloudflare' | 'unknown'`
-- `previewCheckName?`
-- `codexAuthBundleKey?`
+### Workflow responsibilities
 
-### Task
-Unchanged shape, but must continue carrying:
+Use one Workflow instance per run.
+
+The Workflow owns:
+
+- long-running step orchestration
+- retries around external APIs
+- waiting for preview readiness
+- sequencing sandbox execution, PR creation, and evidence capture
+- checkpointing the run across failures or restarts
+
+This is the right division of responsibility because Workflows are designed for durable multi-step execution that may wait minutes, hours, or longer, while Durable Objects remain a better fit for projection and live coordination.
+
+### `BoardIndexDO`
+
+Keep its Stage 2 role:
+
+- repo metadata
+- board-wide WebSocket fanout
+- board aggregation
+
+Additive Stage 3 role:
+
+- richer repo configuration fields needed by real execution
+
+### `RepoBoardDO`
+
+Keep repo as the atom of coordination.
+
+`RepoBoardDO` remains the live projection model for:
+
+- tasks
+- runs
+- recent logs
+- run metadata
+- task/run transitions
+- repo-scoped WebSocket fanout
+
+Stage 3 removes its mock alarm-driven progression for product runs. Real progression comes from Workflow-driven updates.
+
+## Execution plane
+
+Stage 3 uses two sandbox types.
+
+### Run sandbox
+
+One ephemeral sandbox per run.
+
+Responsibilities:
+
+- restore Codex auth material if needed
+- inject GitHub PAT-derived git credentials for the run
+- checkout the repo
+- create the run branch
+- run Codex with the task prompt/context
+- allow Codex to decide and run the repo-specific install/build/test commands it needs
+- collect executor logs
+- push the branch if there is a diff
+
+### Evidence sandbox
+
+One separate ephemeral sandbox per evidence attempt.
+
+Responsibilities:
+
+- run Playwright against baseline and preview
+- collect screenshots, trace, and optional video
+- upload artifacts to R2
+- return an artifact manifest
+
+Reasoning:
+
+- coding and evidence are isolated failure domains
+- evidence retry should not require reusing the original coding sandbox
+- run and evidence logs should remain distinct
+
+## Storage and bindings
+
+### KV
+
+Add a KV binding for secrets.
+
+Recommended binding:
+
+- `SECRETS_KV`
+
+Required key for Stage 3:
+
+- `github_pat`
+
+Rules:
+
+- the PAT is never stored in task/run state
+- the PAT is never written into logs
+- the PAT is never persisted to R2
+- the PAT is injected into the sandbox only for the lifetime of the run
+
+### R2
+
+Add an R2 binding for run artifacts and durable logs.
+
+Recommended binding:
+
+- `RUN_ARTIFACTS`
+
+Recommended object layout:
+
+- `runs/<runId>/logs/worker.ndjson`
+- `runs/<runId>/logs/executor.txt`
+- `runs/<runId>/logs/evidence.txt`
+- `runs/<runId>/evidence/before.png`
+- `runs/<runId>/evidence/after.png`
+- `runs/<runId>/evidence/trace.zip`
+- `runs/<runId>/evidence/video.mp4`
+- `runs/<runId>/manifest.json`
+
+### Workflows
+
+Add a Workflow binding.
+
+Recommended binding:
+
+- `RUN_WORKFLOW`
+
+### Wrangler additions
+
+Stage 3 should add bindings for:
+
+- KV
+- R2
+- Workflows
+
+And keep existing bindings for:
+
+- `BOARD_INDEX`
+- `REPO_BOARD`
+- `Sandbox`
+
+`wrangler types` must be regenerated after binding changes.
+
+## Public API surface
+
+## Existing endpoints remain
+
+Keep these endpoints and their semantics:
+
+### Board
+- `GET /api/board?repoId=all|<repoId>`
+- `GET /api/board/ws?repoId=all|<repoId>`
+
+### Repos
+- `POST /api/repos`
+- `GET /api/repos`
+- `PATCH /api/repos/:repoId`
+
+### Tasks
+- `POST /api/tasks`
+- `GET /api/tasks?repoId=`
+- `GET /api/tasks/:taskId`
+- `PATCH /api/tasks/:taskId`
+
+### Runs
+- `POST /api/tasks/:taskId/run`
+- `GET /api/runs/:runId`
+- `POST /api/runs/:runId/retry`
+- `POST /api/runs/:runId/evidence`
+- `GET /api/runs/:runId/logs?tail=N`
+
+## Additive Stage 3 endpoints
+
+Add:
+
+- `GET /api/runs/:runId/artifacts`
+  - returns the artifact manifest and durable log/artifact pointers
+
+Optional but planned:
+
+- `POST /api/github/webhook`
+  - webhook acceleration for preview detection later
+
+Keep debug/admin routes separate under `/api/debug/*` if they still exist, but they are not part of the product execution path.
+
+## Public type/interface changes
+
+## `Repo`
+
+Keep existing fields and add:
+
+```ts
+type Repo = {
+  repoId: string;
+  slug: string;
+  defaultBranch: string;
+  baselineUrl: string;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+
+  githubAuthMode?: 'kv_pat';
+  previewProvider?: 'cloudflare';
+  previewCheckName?: string;
+  previewUrlPattern?: string;
+  codexAuthBundleR2Key?: string;
+};
+```
+
+Notes:
+
+- PAT is global in KV, so there is no per-repo PAT field
+- `previewCheckName` is the primary deterministic hint for preview discovery
+
+## `Task`
+
+No breaking changes required.
+
+The existing fields remain the execution contract:
+
 - `taskPrompt`
 - `acceptanceCriteria`
 - `context`
 - `baselineUrlOverride?`
 
-### Run
-Required Stage 3 fields:
-- `runId`
-- `taskId`
-- `repoId`
-- `status`
-- `branchName`
-- `headSha`
-- `prUrl`
-- `prNumber`
-- `previewUrl`
-- `artifactManifest`
-- `errors[]`
-- `startedAt`
-- `endedAt`
-- `timeline`
+## `AgentRun`
 
-Additive Stage 3 fields:
-- `sandboxId?`
-- `sandboxSessionId?`
-- `executorType: 'sandbox'`
-- `previewStatus?: 'UNKNOWN' | 'DISCOVERING' | 'READY' | 'FAILED'`
-- `evidenceStatus?: 'NOT_STARTED' | 'RUNNING' | 'READY' | 'FAILED'`
+Keep existing fields and add:
 
-## Lifecycle
+```ts
+type AgentRun = {
+  executorType?: 'sandbox';
+  workflowInstanceId?: string;
 
-The Stage 2 lifecycle remains the public run model:
+  sandboxId?: string;
+  evidenceSandboxId?: string;
+
+  previewStatus?: 'UNKNOWN' | 'DISCOVERING' | 'READY' | 'FAILED';
+  evidenceStatus?: 'NOT_STARTED' | 'RUNNING' | 'READY' | 'FAILED';
+
+  commitSha?: string;
+  commitMessage?: string;
+
+  artifactManifest?: ArtifactManifest;
+
+  executionSummary?: {
+    codexOutcome?: 'changes' | 'no_changes' | 'failed';
+    testsOutcome?: 'passed' | 'failed' | 'skipped';
+    prCommented?: boolean;
+  };
+};
+```
+
+## `ArtifactManifest`
+
+Use a real manifest shape:
+
+```ts
+type ArtifactManifest = {
+  logs: { key: string; label: string };
+  before?: { key: string; label: string; url?: string };
+  after?: { key: string; label: string; url?: string };
+  trace?: { key: string; label: string; url?: string };
+  video?: { key: string; label: string; url?: string };
+  metadata: {
+    generatedAt: string;
+    environmentId: string;
+    workflowInstanceId?: string;
+    sandboxId?: string;
+    evidenceSandboxId?: string;
+    previewUrl?: string;
+    baselineUrl?: string;
+  };
+};
+```
+
+## `RunError`
+
+Standardize structured run errors:
+
+```ts
+type RunError = {
+  at: string;
+  code:
+    | 'BOOTSTRAP_FAILED'
+    | 'CODEX_FAILED'
+    | 'NO_CHANGES'
+    | 'TESTS_FAILED'
+    | 'PUSH_FAILED'
+    | 'PR_CREATE_FAILED'
+    | 'PREVIEW_TIMEOUT'
+    | 'PREVIEW_FAILED'
+    | 'EVIDENCE_FAILED'
+    | 'ARTIFACT_UPLOAD_FAILED';
+  message: string;
+  retryable: boolean;
+  phase: 'bootstrap' | 'codex' | 'tests' | 'push' | 'pr' | 'preview' | 'evidence';
+  metadata?: Record<string, string | number | boolean>;
+};
+```
+
+## Workflow design
+
+Use one Workflow instance per run.
+
+### Workflow input
+
+```ts
+type RunWorkflowInput = {
+  runId: string;
+  taskId: string;
+  repoId: string;
+};
+```
+
+### Workflow contract
+
+The Workflow must:
+
+1. load repo/task/run state from `RepoBoardDO`
+2. project each transition back into `RepoBoardDO`
+3. append logs to `RepoBoardDO` as the authoritative live read model
+4. stream durable logs to R2 as the run progresses or at step boundaries
+5. retry transient external failures where safe
+6. terminate with a final projected state
+
+### Source-of-truth rule
+
+The Workflow is the durable orchestrator.
+`RepoBoardDO` is the live projection and client-facing read model.
+
+The UI must continue to read from existing API/WS surfaces, not directly from Workflow state.
+
+## Run lifecycle mapping
+
+The public lifecycle remains:
 
 1. `QUEUED`
 2. `BOOTSTRAPPING`
@@ -126,388 +425,507 @@ The Stage 2 lifecycle remains the public run model:
 8. `EVIDENCE_RUNNING`
 9. `DONE` or `FAILED`
 
-Stage 3 maps real work to those states:
+Stage 3 maps real work to these states as follows.
 
-- `BOOTSTRAPPING`
-  - acquire sandbox
-  - restore auth bundle
-  - clone repo
-  - create branch
-- `RUNNING_CODEX`
-  - execute Codex with the task prompt + context
-- `RUNNING_TESTS`
-  - run repo-defined test command or default smoke command
-- `PUSHING_BRANCH`
-  - commit and push branch if there are changes
-- `PR_OPEN`
-  - create PR through GitHub API
-- `WAITING_PREVIEW`
-  - poll GitHub checks/deployments for preview URL
-- `EVIDENCE_RUNNING`
-  - run Playwright against baseline + preview
-- `DONE`
-  - artifacts persisted and PR comment posted
+### `QUEUED`
 
-## Idempotency requirements
+- `POST /api/tasks/:taskId/run` checks idempotency in `RepoBoardDO`
+- creates the run record
+- marks the task `ACTIVE`
+- starts the Workflow instance
+- stores `workflowInstanceId`
 
-These are mandatory:
+### `BOOTSTRAPPING`
 
-- starting a run for a task with a non-terminal run returns the existing run
-- evidence retry reruns evidence only, never creates a new PR
-- run retry creates a new run record and new branch/PR attempt
-- repeated webhook/poll results must not duplicate PR comments or artifact records
-- repeated preview discovery must converge on one `previewUrl`
+Workflow step:
 
-## API surface
+- load repo/task config
+- read `github_pat` from KV
+- resolve Codex auth bundle material if needed
+- create the sandbox
+- inject only the run-scoped credentials/material needed
+- checkout the repo with `gitCheckout()`
+- create branch `agent/<taskId>/<runId>`
 
-Stage 3 keeps the Stage 2 endpoints:
+### `RUNNING_CODEX`
 
-### Repos
-- `POST /repos`
-- `GET /repos`
-- `PATCH /repos/:repoId`
+Workflow step:
 
-### Tasks
-- `POST /tasks`
-- `GET /tasks?repoId=`
-- `GET /tasks/:taskId`
-- `PATCH /tasks/:taskId`
+- invoke Codex inside the sandbox with:
+  - task prompt
+  - acceptance criteria
+  - structured context
+  - any baseline URL context needed
+- Codex has full permissions in the sandbox
+- Codex decides what installation, build, and repository-specific setup work it needs to perform
 
-### Runs
-- `POST /tasks/:taskId/run`
-- `GET /runs/:runId`
-- `POST /runs/:runId/retry`
-- `POST /runs/:runId/evidence`
-- `GET /runs/:runId/logs?tail=N`
+### `RUNNING_TESTS`
 
-Optional additive Stage 3 endpoints:
-- `GET /runs/:runId/artifacts`
-- `GET /runs/:runId/events`
+Workflow step:
 
-Do not require the UI to adopt new endpoints for core flows if existing ones can be extended additively.
+- Codex decides and runs the relevant validation commands for the repo
+- the system captures the exact commands and outcomes in executor logs
+- the system records a summarized pass/fail/skipped result in run metadata
 
-## Sandbox execution contract
+This is deliberately non-deterministic at the product level in Stage 3. Auditability comes from logs, not from a repo command registry.
 
-### Inputs to the executor
-- repo slug
-- default branch
-- task prompt
-- acceptance criteria
-- structured context links/notes
-- baseline URL override if present
-- credentials/material references
+### `PUSHING_BRANCH`
 
-### Outputs from the executor
-- branch name
-- head SHA
-- execution logs
-- test outcome
-- commit summary
-- failure details if any
+Workflow step:
+
+- inspect git diff/status
+- if there is no diff:
+  - mark the run `FAILED`
+  - append `NO_CHANGES`
+  - do not create a PR
+- if there is a diff:
+  - commit changes
+  - push the run branch using PAT-backed auth
+
+### `PR_OPEN`
+
+Workflow step:
+
+- create PR through GitHub API
+- persist `prNumber`, `prUrl`, and `headSha`
+- move the task to `REVIEW`
+
+### `WAITING_PREVIEW`
+
+Workflow step:
+
+- poll GitHub checks/deployments on `headSha`
+- use `previewCheckName` when available to constrain matching
+- log every poll attempt
+- when preview is found:
+  - persist `previewUrl`
+  - set `previewStatus = READY`
+- if timeout expires:
+  - fail the run with `PREVIEW_TIMEOUT`
+
+### `EVIDENCE_RUNNING`
+
+Workflow step:
+
+- create evidence sandbox
+- run Playwright against:
+  - baseline URL = `task.baselineUrlOverride ?? repo.baselineUrl`
+  - preview URL
+- upload artifacts to R2
+- persist `artifactManifest`
+- create or update the run’s PR comment
+
+### `DONE`
+
+- persist final artifact/log references
+- set `evidenceStatus = READY`
+- keep the task in `REVIEW`
+
+### `FAILED`
+
+For any terminal failure:
+
+- persist structured `RunError`
+- persist terminal logs
+- update task status according to these rules:
+  - if the run failed before PR creation, move task to `FAILED`
+  - if the run failed after PR creation, keep task in `REVIEW`
 
 ## Git workflow inside the sandbox
 
-Stage 3 should use the Sandbox SDK's Git support for initial checkout, then standard Git commands inside the checked-out repo for branching, commit creation, status checks, and push.
+Use the Sandbox SDK Git support for checkout, then standard Git commands through `sandbox.exec()`.
 
 ### Checkout strategy
 
-Preferred initial clone flow:
+Use:
 
-- use `sandbox.gitCheckout(repoUrl)` for normal clones
-- use `branch` when cloning a non-default branch
-- use `depth: 1` for faster shallow checkouts when full history is not needed
-- use `targetDir` to place the repo in a deterministic workspace path such as `/workspace/repo`
+- `sandbox.gitCheckout(repoUrl, { branch, targetDir })`
 
-Examples of expected Stage 3 usage:
+Recommended target directory:
 
-- public repo: `await sandbox.gitCheckout("https://github.com/owner/repo", { branch: "main", targetDir: "/workspace/repo" })`
-- private repo: construct the clone URL with a short-lived token and then call `gitCheckout()`
+- `/workspace/repo`
 
-### Private repository access
+For private repos:
 
-Use a GitHub token or GitHub App installation token in the clone URL at execution time.
+- the Worker builds a token-authenticated clone URL using the PAT loaded from KV
+- the token exists only for the run
 
-Requirements:
+### Post-checkout commands
 
-- credentials must come from Worker secrets/bindings, never from persisted task data
-- credentials must be injected only for the lifetime of the run
-- tokens should be short-lived when possible
+Inside `/workspace/repo`, the executor should use normal Git commands such as:
 
-### Post-checkout git operations
-
-After `gitCheckout()`, use `sandbox.exec()` for normal Git commands inside the repo:
-
-- `git checkout -b <branch>`
+- `git checkout -b agent/<taskId>/<runId>`
 - `git status --short`
-- `git add ...`
+- `git add -A`
 - `git commit -m ...`
-- `git push origin <branch>`
+- `git push origin agent/<taskId>/<runId>`
 
-### Branching convention
+### Branch convention
 
-Continue using the run-linked branch convention:
+Locked:
 
 - `agent/<taskId>/<runId>`
 
-This keeps branch identity stable across retries and aligns the PR with a single run attempt.
+### No-diff policy
 
-### Recommended executor sequence
+Locked:
 
-1. `gitCheckout()` into `/workspace/repo`
-2. `git checkout -b agent/<taskId>/<runId>`
-3. run Codex against that working tree
-4. run tests
-5. inspect `git status --short`
-6. if there are changes, commit and push
-7. if there are no changes, decide whether to fail the run or open a no-op PR based on product policy
+- if Codex produces no diff, fail with `NO_CHANGES`
+- do not open a PR
 
-### Stage 3 decision
+## Durable Object changes required
 
-Default behavior for Stage 3:
+## `BoardIndexDO`
 
-- if Codex produces no diff, mark the run `FAILED` with a structured `NO_CHANGES` error instead of opening a PR
+Minimal additive changes:
 
-This keeps the one-run/one-meaningful-PR contract intact.
+- store richer repo config fields
+- continue repo metadata lookup
+- continue all-board WebSocket fanout
 
-### Failure handling
-If the sandbox step fails:
-- append structured error
-- write terminal logs
-- mark run `FAILED`
-- preserve partial metadata already known
+## `RepoBoardDO`
 
-## GitHub integration
+Add RPC methods for Workflow-driven projection, for example:
 
-### Required Stage 3 actions
-- clone with token/app auth
-- push branch
-- create PR
-- comment on PR with evidence summary and links
+```ts
+startRealRun(taskId: string): Promise<AgentRun>
+appendRunLogs(runId: string, logs: RunLogEntry[]): Promise<void>
+transitionRun(runId: string, patch: RunTransitionPatch): Promise<AgentRun>
+storeArtifactManifest(runId: string, manifest: ArtifactManifest): Promise<void>
+markPreviewReady(runId: string, previewUrl: string): Promise<void>
+markRunFailed(runId: string, error: RunError): Promise<AgentRun>
+```
 
-### PR requirements
-One run maps to one PR.
+`RunTransitionPatch` must support:
 
-PR body/comment should include:
-- task title
-- task prompt summary
-- acceptance criteria summary
-- run id
-- preview link once known
-- evidence links once ready
+- status changes
+- `workflowInstanceId`
+- `sandboxId`
+- `evidenceSandboxId`
+- `prUrl`, `prNumber`, `headSha`
+- `previewUrl`, `previewStatus`
+- `evidenceStatus`
+- terminal metadata
 
-## WebSocket connection patterns
+## Live update model
 
-Stage 3 should explicitly support WebSocket-based connections when the product needs live communication with services or sessions running inside a sandbox.
+Keep the Stage 2 event model.
 
-Cloudflare Sandbox supports two distinct patterns:
+Primary events remain:
 
-### 1. Public preview URL for external clients
+- `board.snapshot`
+- `repo.updated`
+- `task.updated`
+- `run.updated`
+- `run.logs_appended`
+- `server.error`
 
-Use this when a browser or external client should connect directly to a WebSocket service running in the sandbox.
+If needed, add:
 
-Flow:
+- `run.artifacts_updated`
 
-1. start a WebSocket-capable service inside the sandbox on a port such as `8080`
-2. expose the port with `sandbox.exposePort(port, { hostname })`
-3. route requests through `proxyToSandbox(request, env)`
-4. return the resulting preview URL to the client and convert `https` to `wss` if needed
+But prefer keeping artifact changes inside `run.updated` unless a dedicated event materially simplifies the client.
 
-Best for:
-
-- public demo sessions
-- shared real-time dashboards
-- browser clients connecting directly to a sandbox-hosted real-time service
-
-Important production constraint:
-
-- preview URLs require a custom domain with wildcard DNS routing in production
-- `.workers.dev` is not sufficient for wildcard sandbox preview hostnames
-
-### 2. Worker-routed WebSocket connection with `wsConnect()`
-
-Use this when the Worker should control the WebSocket upgrade and route traffic into the sandbox itself.
-
-Flow:
-
-1. receive a request with `Upgrade: websocket`
-2. resolve the sandbox for the target run/session
-3. call `sandbox.wsConnect(request, port)`
-4. return the WebSocket `Response`
-
-Best for:
-
-- authentication/authorization gates in the Worker
-- routing to the correct run-specific sandbox
-- situations where the Worker must decide which sandbox or port to connect to
-
-### Stage 3 usage in AgentBoard
-
-Stage 3 does not require end-user WebSocket interaction for the core board flow, but it should document the path for real-time operator tooling.
-
-Recommended uses:
-
-- live terminal or shell access into a run sandbox
-- real-time agent/session stream for debugging
-- direct connection to an internal WebSocket service started by the agent
-
-### Recommended default for AgentBoard
-
-Default to `wsConnect()` for operator-facing or authenticated connections because:
-
-- the Worker can enforce auth and run ownership
-- the Worker can map a connection to a specific `runId`
-- it avoids exposing raw preview endpoints for internal tooling by default
-
-Use preview-URL-based WebSockets only when an external client must connect directly.
-
-### Future route shape
-
-Reserve routes like:
-
-- `GET /runs/:runId/ws`
-- `GET /runs/:runId/terminal`
-
-These should:
-
-- validate operator access
-- resolve the sandbox for `runId`
-- forward the WebSocket upgrade with `wsConnect()`
-
-### Observability for WebSocket sessions
-
-If WebSocket sessions are added in Stage 3, log:
-
-- `runId`
-- target sandbox id
-- target port
-- connection start/end time
-- close code/reason
-- auth/routing decision path
-
-## Preview discovery
-
-Preview is not generated from the sandbox.
-
-Stage 3 must:
-- detect the preview from GitHub deployment/check/status data on the PR head SHA
-- persist the discovered URL on the run
-- mark `previewStatus`
-- proceed to evidence only after preview is ready
-
-### Failure mode
-If preview does not appear before timeout:
-- mark run `FAILED`
-- persist discovery logs
-- keep PR link and branch info intact
-
-## Evidence runner
+## Evidence runner design
 
 ### Inputs
-- baseline URL (repo default or task override)
-- preview URL
-- run id
-- repo/task metadata
 
-### Outputs
-- before screenshot
-- after screenshot
-- trace archive
-- video if enabled
-- artifact manifest
-- PR comment/update
-
-### Storage
-Persist artifacts in R2 and record stable keys in `artifactManifest`.
-
-Recommended key layout:
-- `runs/<runId>/logs/*.txt`
-- `runs/<runId>/evidence/before.png`
-- `runs/<runId>/evidence/after.png`
-- `runs/<runId>/evidence/trace.zip`
-- `runs/<runId>/evidence/video.mp4`
-
-## Observability
-
-### Structured event/log shape
-Every event/log should be able to include:
-- `timestamp`
-- `level`
-- `phase`
-- `repoId`
-- `taskId`
 - `runId`
-- `message`
-- `metadata?`
+- repo/task/run snapshot
+- baseline URL
+- preview URL
 
-### Required phases
-- `bootstrap`
-- `codex`
-- `tests`
-- `push`
-- `pr`
-- `preview`
-- `evidence`
+### Execution contract
 
-### UI consumption
-The UI may keep polling at first, but Stage 3 should structure logs/events so it can later support:
-- cursor-based polling
-- SSE
-- streaming progress
+The evidence sandbox must:
 
-without changing the board/detail UI contract.
+- visit baseline URL
+- capture before screenshot
+- visit preview URL
+- capture after screenshot
+- capture trace
+- optionally capture video
 
-## Security and secrets
+### Persistence
 
-Stage 3 must not hardcode credentials into the repo or task data.
+The evidence runner must:
 
-Use bindings/secrets/R2 references for:
-- GitHub credentials
-- Codex auth bundle
-- any Playwright or preview-discovery tokens
+- upload artifacts to R2
+- persist `ArtifactManifest` to `RepoBoardDO`
+- write `manifest.json` to R2
 
-The sandbox should restore only the minimum required credentials for the run.
+### PR comment behavior
 
-## Import/export decision
+Use one AgentBoard comment per run.
 
-Import/export is not a core Stage 3 feature.
+Requirements:
 
-Decision:
-- keep it as an admin/debug workflow only if it is still useful
-- do not let it influence the server-side architecture
-- do not block Stage 3 on making it parity-complete with local Phase 0 behavior
+- identify the comment using a hidden marker containing `runId`
+- update the existing comment on retries instead of creating duplicates
+- include preview link and evidence links when available
+
+## Logging and observability
+
+## Required log streams
+
+Persist three logical streams:
+
+- control-plane logs
+- sandbox executor logs
+- evidence runner logs
+
+## Log entry shape
+
+Extend current logs to support:
+
+```ts
+type RunLogEntry = {
+  id: string;
+  runId: string;
+  createdAt: string;
+  level: 'info' | 'error';
+  message: string;
+  phase?: 'bootstrap' | 'codex' | 'tests' | 'push' | 'pr' | 'preview' | 'evidence';
+  metadata?: Record<string, string | number | boolean>;
+};
+```
+
+## Logging requirements
+
+- every state transition logs old/new state
+- every external call that can fail logs phase and attempt
+- the actual commands Codex ran must be captured in executor logs
+- preview polling attempts must log the check/deployment names inspected
+- PR comment create/update actions must be logged
+- secrets must be redacted from all logs
+
+## WebSocket connection patterns for sandboxes
+
+Stage 3 does not require end-user WebSocket access to the sandbox, but the path should be documented for the next stage.
+
+Cloudflare Sandbox supports two patterns:
+
+### Public preview URL
+
+Use `exposePort()` plus preview URL routing when an external client must connect directly to a service in the sandbox.
+
+### Worker-routed WebSocket
+
+Use `wsConnect()` when the Worker should authenticate and route a WebSocket connection into the sandbox.
+
+### AgentBoard decision
+
+For future operator tooling, prefer Worker-routed `wsConnect()` because:
+
+- the Worker can enforce auth
+- the Worker can resolve `runId -> sandbox`
+- it avoids exposing raw sandbox endpoints by default
+
+Stage 3 documents this path but does not require implementing `/api/runs/:runId/terminal` yet.
+
+## Security model
+
+## Secrets
+
+- PAT stored in KV
+- auth bundle material stored in R2 or another non-repo secret store
+- secrets injected only for the run lifetime
+- secrets never persisted in task/run DTOs
+- secrets never exposed to the browser
+
+## Sandbox permissions
+
+Locked decision:
+
+- Codex runs with full permissions inside the sandbox
+
+Tradeoff:
+
+- execution is flexible but less deterministic
+- therefore logs and auditability are mandatory
+
+## Failure modes and edge cases
+
+## Bootstrap failures
+
+Examples:
+
+- missing PAT in KV
+- sandbox creation failure
+- git checkout failure
+
+Result:
+
+- `FAILED`
+- `BOOTSTRAP_FAILED`
+
+## Codex failures
+
+Examples:
+
+- executor non-zero exit
+- unrecoverable Codex/session failure
+
+Result:
+
+- `FAILED`
+- `CODEX_FAILED`
+
+## No changes
+
+Result:
+
+- `FAILED`
+- `NO_CHANGES`
+- no PR
+
+## Test failures
+
+Result:
+
+- `FAILED`
+- `TESTS_FAILED`
+- no PR
+
+## Push failures
+
+Result:
+
+- `FAILED`
+- `PUSH_FAILED`
+
+## PR creation failures
+
+Result:
+
+- `FAILED`
+- branch info remains available
+- task does not move to `REVIEW`
+
+## Preview timeout/failure
+
+Result:
+
+- run `FAILED`
+- task remains in `REVIEW` if a PR exists
+- preview logs remain available
+
+## Evidence failure
+
+Result:
+
+- run `FAILED`
+- task remains in `REVIEW` if a PR exists
+- `Retry evidence` remains available
+
+## Testing plan
+
+## Unit tests
+
+Add coverage for:
+
+- run projection reducer logic
+- no-diff handling
+- preview detection parsing
+- PR comment idempotency markers
+- artifact manifest assembly
+- secret redaction
+
+## Worker / DO tests
+
+Add coverage for:
+
+- `POST /api/tasks/:taskId/run` creates a real run record and starts a Workflow
+- idempotent start returns the existing active run
+- retry run creates a new run record
+- retry evidence reuses the existing run
+- Workflow-driven transitions emit WebSocket events
+- preview/evidence failures keep the task in `REVIEW` when a PR exists
+
+## Workflow tests
+
+Cover these flows with fakes/stubs:
+
+1. happy path
+2. no changes
+3. tests failed
+4. PR creation failed
+5. preview timeout
+6. evidence failed
+7. evidence retry succeeds after a prior failure
+
+## Integration tests
+
+Use fakes or test doubles for:
+
+- sandbox
+- GitHub API
+- R2
+- KV
+- preview detection responses
+
+## End-to-end acceptance scenarios
+
+On at least one real test repo:
+
+1. create repo and task
+2. move task to `ACTIVE`
+3. watch live lifecycle progression
+4. verify branch push
+5. verify PR creation
+6. verify preview discovery
+7. verify evidence artifacts in R2
+8. verify PR comment updated
+9. verify `Retry evidence` does not create a new PR
+10. verify `Retry run` creates a new run/branch/PR attempt
 
 ## Acceptance criteria
 
-Stage 3 is done when:
+Stage 3 is complete when:
 
-- dragging a task to `ACTIVE` starts a real run
-- a real sandbox executes Codex work against the selected repo
-- a branch is pushed and a real PR is created
-- preview URL is discovered automatically from PR-related deployment/check data
-- evidence is captured against baseline + preview
-- artifacts are persisted and linked from the PR
-- the board/detail view reflects the full real lifecycle
-- retry run and retry evidence preserve the defined idempotency rules
-
-## Cut lines if time gets tight
-
-- poll preview/check state instead of using webhooks
-- poll logs instead of implementing streaming
-- support a single GitHub credential path first
-- keep one `BoardDO` if per-run DO split is not yet necessary
-- use a simple repo-configured test command instead of auto-detecting every framework
+- moving a task to `ACTIVE` starts a real Workflow-backed run
+- the run uses a real Cloudflare Sandbox
+- Codex works inside the sandbox with full permissions
+- the repo is updated, committed, and pushed when there is a diff
+- a real GitHub PR is created
+- no-diff runs fail with `NO_CHANGES` and do not create PRs
+- preview URL is discovered by polling GitHub checks/deployments
+- evidence is captured in a separate sandbox against baseline + preview
+- artifacts and durable logs are stored in R2
+- the existing board and detail panel reflect the real lifecycle without a structural UI rewrite
+- retry run and retry evidence preserve the idempotency contract
+- GitHub PAT is sourced from KV and injected per run only
 
 ## Recommended build order
 
-1. Finalize Stage 2 API/storage contract
-2. Add R2 bindings for artifacts/logs/auth bundle references
-3. Add GitHub auth/config plumbing
-4. Implement sandbox bootstrap + repo clone + branch creation
-5. Implement Codex invocation and log capture
-6. Implement test execution and failure handling
-7. Implement push + PR creation
-8. Implement preview discovery
-9. Implement evidence runner and artifact upload
-10. Implement PR commenting
-11. Wire enriched logs/status back to UI
-12. Run full end-to-end verification on at least one repo
+1. Update `docs/stage_3.md` to match this architecture.
+2. Add Stage 3 bindings for KV, R2, and Workflows.
+3. Extend repo/run types with additive execution metadata.
+4. Add Workflow-driven run projection RPC methods to `RepoBoardDO`.
+5. Implement the run Workflow entrypoint.
+6. Implement sandbox bootstrap helpers:
+   - PAT from KV
+   - auth injection
+   - git checkout
+   - branch creation
+7. Implement Codex execution with full executor log capture.
+8. Implement no-diff detection, commit, and push.
+9. Implement GitHub PR creation and idempotent PR comment updates.
+10. Implement preview polling against GitHub checks/deployments.
+11. Implement evidence sandbox execution and R2 uploads.
+12. Wire all real transitions/logs back through `RepoBoardDO` and existing WebSockets.
+13. Run integration and end-to-end verification on a real repo.
+
+## What Stage 4 should cover
+
+Stage 3 should deliberately stop at the first complete real run system.
+
+The next stage should focus on:
+
+- operator tooling
+- security hardening and policy controls
+- execution determinism controls
+- scaling and scheduling
+- richer observability and auditability
+
+That stage is documented in `docs/stage_4.md`.

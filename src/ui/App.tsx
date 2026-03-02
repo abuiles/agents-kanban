@@ -43,25 +43,28 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
       .sort((left, right) => right.startedAt.localeCompare(left.startedAt))[0];
     const hasActiveRun = latestRun && !['DONE', 'FAILED'].includes(latestRun.status);
     if (hasActiveRun && status !== 'ACTIVE') {
-      setNotice('Active runs stay pinned to Active until the mock lifecycle finishes.');
+      setNotice('Active runs stay pinned to Active until the current lifecycle finishes.');
       return;
     }
 
     await api.updateTask(taskId, { status });
+    if (status === 'ACTIVE') {
+      await api.startRun(taskId);
+    }
     await api.setSelectedTaskId(taskId);
-    setNotice(status === 'ACTIVE' ? 'Mock run started from the board.' : `Moved task to ${status}.`);
+    setNotice(status === 'ACTIVE' ? 'Run started from the board.' : `Moved task to ${status}.`);
   }
 
   async function retryRun(runId: string) {
     const run = await api.retryRun(runId);
     await api.setSelectedTaskId(run.taskId);
-    setNotice('Started a fresh mock run.');
+    setNotice('Started a fresh run.');
   }
 
   async function retryEvidence(runId: string) {
     const run = await api.retryEvidence(runId);
     await api.setSelectedTaskId(run.taskId);
-    setNotice('Retrying mock evidence only.');
+    setNotice('Retrying evidence for the current PR.');
   }
 
   async function toggleTaskSelection(taskId: string) {

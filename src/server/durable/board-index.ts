@@ -58,6 +58,10 @@ export class BoardIndexDO extends DurableObject<Env> {
       defaultBranch: input.defaultBranch ?? 'main',
       baselineUrl: input.baselineUrl,
       enabled: input.enabled ?? true,
+      githubAuthMode: 'kv_pat',
+      previewProvider: 'cloudflare',
+      previewCheckName: input.previewCheckName,
+      codexAuthBundleR2Key: input.codexAuthBundleR2Key,
       createdAt: now,
       updatedAt: now
     };

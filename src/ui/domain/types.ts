@@ -20,6 +20,11 @@ export type Repo = {
   defaultBranch: string;
   baselineUrl: string;
   enabled: boolean;
+  githubAuthMode?: 'kv_pat';
+  previewProvider?: 'cloudflare';
+  previewCheckName?: string;
+  previewUrlPattern?: string;
+  codexAuthBundleR2Key?: string;
   createdAt: string;
   updatedAt: string;
 };
@@ -69,8 +74,13 @@ export type ArtifactManifest = {
   video?: ArtifactPointer;
   metadata: {
     generatedAt: string;
-    simulatorVersion: string;
     environmentId: string;
+    simulatorVersion?: string;
+    workflowInstanceId?: string;
+    sandboxId?: string;
+    evidenceSandboxId?: string;
+    previewUrl?: string;
+    baselineUrl?: string;
   };
 };
 
@@ -82,7 +92,11 @@ export type RunTimelineEntry = {
 
 export type RunError = {
   at: string;
+  code?: string;
+  retryable?: boolean;
+  phase?: 'bootstrap' | 'codex' | 'tests' | 'push' | 'pr' | 'preview' | 'evidence';
   message: string;
+  metadata?: Record<string, string | number | boolean>;
 };
 
 export type ScheduledSimulationEvent = {
@@ -101,6 +115,19 @@ export type AgentRun = {
   prUrl?: string;
   prNumber?: number;
   previewUrl?: string;
+  previewStatus?: 'UNKNOWN' | 'DISCOVERING' | 'READY' | 'FAILED';
+  evidenceStatus?: 'NOT_STARTED' | 'RUNNING' | 'READY' | 'FAILED';
+  executorType?: 'mock' | 'sandbox';
+  workflowInstanceId?: string;
+  sandboxId?: string;
+  evidenceSandboxId?: string;
+  commitSha?: string;
+  commitMessage?: string;
+  executionSummary?: {
+    codexOutcome?: 'changes' | 'no_changes' | 'failed';
+    testsOutcome?: 'passed' | 'failed' | 'skipped';
+    prCommented?: boolean;
+  };
   artifacts?: string[];
   artifactManifest?: ArtifactManifest;
   errors: RunError[];
@@ -118,6 +145,8 @@ export type RunLogEntry = {
   createdAt: string;
   level: 'info' | 'error';
   message: string;
+  phase?: 'bootstrap' | 'codex' | 'tests' | 'push' | 'pr' | 'preview' | 'evidence';
+  metadata?: Record<string, string | number | boolean>;
 };
 
 export type TaskDetail = {
