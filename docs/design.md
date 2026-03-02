@@ -173,6 +173,7 @@ Control Plane
 Execution Plane
 	•	Cloudflare Sandbox per run (ephemeral):
 	•	restore Codex auth bundle (~/.codex)
+	•	auth bundle should contain only `auth.json` and `config.toml` (not the full `~/.codex` directory)
 	•	clone repo
 	•	create branch
 	•	run Codex

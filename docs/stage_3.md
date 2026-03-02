@@ -241,12 +241,31 @@ Set the GitHub PAT in KV:
 npx wrangler kv key put github_pat "$GITHUB_PAT" --binding SECRETS_KV --remote
 ```
 
-Upload a `.codex` auth bundle to the R2 bucket:
+Upload a **minimal** `.codex` auth bundle to the R2 bucket (authentication files only):
 
 ```bash
-tar -czf codex-auth.tgz -C "$HOME" .codex && \
-  npx wrangler r2 object put my-sandbox-run-artifacts/auth/codex-auth.tgz --file ./codex-auth.tgz --remote
+tmp_dir="$(mktemp -d)" && \
+mkdir -p "$tmp_dir/.codex" && \
+cp "$HOME/.codex/auth.json" "$tmp_dir/.codex/auth.json" && \
+cp "$HOME/.codex/config.toml" "$tmp_dir/.codex/config.toml" && \
+tar -czf codex-auth.tgz -C "$tmp_dir" .codex && \
+npx wrangler r2 object put my-sandbox-run-artifacts/auth/codex-auth.tgz --file ./codex-auth.tgz --remote && \
+rm -rf "$tmp_dir"
 ```
+
+For local development (no remote):
+
+```bash
+tmp_dir="$(mktemp -d)" && \
+mkdir -p "$tmp_dir/.codex" && \
+cp "$HOME/.codex/auth.json" "$tmp_dir/.codex/auth.json" && \
+cp "$HOME/.codex/config.toml" "$tmp_dir/.codex/config.toml" && \
+tar -czf codex-auth.tgz -C "$tmp_dir" .codex && \
+npx wrangler r2 object put my-sandbox-run-artifacts/auth/codex-auth.tgz --file ./codex-auth.tgz && \
+rm -rf "$tmp_dir"
+```
+
+Policy: do not upload the full `~/.codex` directory. Keep the bundle limited to the files required for Codex authentication (`auth.json` and `config.toml`).
 
 Then set `codexAuthBundleR2Key` on a repo to:
 

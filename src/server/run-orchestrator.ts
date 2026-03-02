@@ -8,6 +8,11 @@ import { inspectPreviewDiscovery } from './preview-discovery';
 import { LineLogBuffer } from './line-log-buffer';
 import { buildWorkflowInvocationId } from './workflow-id';
 import { normalizeTaskSourceRef, resolveTaskSourceRef } from './source-ref';
+import {
+  formatCodexRateLimitSnapshot,
+  getCodexCapacityDecision,
+  type CodexRateLimitsResponse
+} from './codex-rate-limit';
 
 type WorkflowBinding<T> = {
   create(options?: { id?: string; params?: T; retention?: { successRetention?: string | number; errorRetention?: string | number } }): Promise<{ id: string }>;
@@ -96,6 +101,7 @@ export async function executeRunJob(env: Env, params: RunJobParams, sleepFn: Sle
       () => sandbox.exec("bash -lc 'command -v codex >/dev/null 2>&1 || npm install -g @openai/codex'")
     );
     await logCodexCliDiagnostics(sandbox, params.runId, repoBoard, codexModel, codexReasoningEffort);
+    await waitForCodexCapacityIfNeeded(sandbox, repoBoard, params.runId, codexModel, sleepFn);
     const codexResult = await runCodexProcessWithLogs(
       sandbox,
       repoBoard,
@@ -606,6 +612,153 @@ printf 'Codex reasoning effort: ${codexReasoningEffort}\\n'
   await appendCommandLogs(repoBoard, runId, 'codex', diagnostics.stdout, diagnostics.stderr);
   if (!diagnostics.success) {
     throw new NonRetryableError('Codex CLI is not available in the sandbox.');
+  }
+}
+
+async function waitForCodexCapacityIfNeeded(
+  sandbox: ReturnType<typeof getSandbox>,
+  repoBoard: DurableObjectStub<RepoBoardDO>,
+  runId: string,
+  codexModel: string,
+  sleepFn: SleepFn
+) {
+  for (let attempt = 1; attempt <= 4; attempt += 1) {
+    const payload = await readCodexRateLimits(sandbox, repoBoard, runId);
+    if (!payload) {
+      return;
+    }
+
+    const decision = getCodexCapacityDecision(payload, codexModel, Date.now());
+    if (!decision.snapshot) {
+      await repoBoard.appendRunLogs(runId, [
+        buildRunLog(runId, 'Codex usage preflight did not return a usable rate-limit snapshot. Continuing without waiting.', 'codex')
+      ]);
+      return;
+    }
+
+    await repoBoard.appendRunLogs(runId, [
+      buildRunLog(runId, formatCodexRateLimitSnapshot(decision.snapshot), 'codex')
+    ]);
+
+    if (!decision.shouldWait || !decision.waitMs) {
+      return;
+    }
+
+    await repoBoard.transitionRun(runId, {
+      status: 'BOOTSTRAPPING',
+      appendTimelineNote: 'Waiting for Codex rate limits to reset before starting execution.'
+    });
+    await repoBoard.appendRunLogs(runId, [
+      buildRunLog(runId, `${decision.reason} Sleeping until Codex budget resets.`, 'codex', 'error')
+    ]);
+    await sleepFn(`codex-budget-${attempt}`, Math.max(1_000, decision.waitMs));
+    await repoBoard.transitionRun(runId, {
+      status: 'RUNNING_CODEX',
+      appendTimelineNote: 'Codex rate-limit wait completed. Rechecking execution budget.'
+    });
+  }
+}
+
+async function readCodexRateLimits(
+  sandbox: ReturnType<typeof getSandbox>,
+  repoBoard: DurableObjectStub<RepoBoardDO>,
+  runId: string
+): Promise<CodexRateLimitsResponse | undefined> {
+  await sandbox.writeFile(
+    '/workspace/codex-rate-limits.mjs',
+    `import { spawn } from 'node:child_process';
+
+function fail(message) {
+  console.error(message);
+  process.exit(1);
+}
+
+const child = spawn('codex', ['app-server'], {
+  stdio: ['pipe', 'pipe', 'pipe']
+});
+
+let stdoutBuffer = '';
+let stderrBuffer = '';
+let resolved = false;
+
+const timeout = setTimeout(() => {
+  if (!resolved) {
+    child.kill('SIGTERM');
+    fail('Timed out while reading Codex rate limits.');
+  }
+}, 10000);
+
+child.stderr.on('data', (chunk) => {
+  stderrBuffer += chunk.toString();
+});
+
+child.stdout.on('data', (chunk) => {
+  stdoutBuffer += chunk.toString();
+  let newlineIndex;
+  while ((newlineIndex = stdoutBuffer.indexOf('\\n')) >= 0) {
+    const line = stdoutBuffer.slice(0, newlineIndex).trim();
+    stdoutBuffer = stdoutBuffer.slice(newlineIndex + 1);
+    if (!line) continue;
+    const message = JSON.parse(line);
+    if (message.id === 1) {
+      child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'account/rateLimits/read' }) + '\\n');
+      continue;
+    }
+    if (message.id === 2) {
+      resolved = true;
+      clearTimeout(timeout);
+      console.log(JSON.stringify(message.result));
+      child.kill('SIGTERM');
+      return;
+    }
+  }
+});
+
+child.on('exit', (code) => {
+  if (resolved) {
+    return;
+  }
+  clearTimeout(timeout);
+  fail(stderrBuffer.trim() || \`Codex app-server exited before returning rate limits (code \${code ?? 'unknown'}).\`);
+});
+
+child.stdin.write(JSON.stringify({
+  jsonrpc: '2.0',
+  id: 1,
+  method: 'initialize',
+  params: {
+    apiVersion: 2,
+    clientInfo: { name: 'agentboard-rate-limit-probe', version: '1.0.0' }
+  }
+}) + '\\n');
+`
+  );
+  const result = await sandbox.exec(
+    `bash -lc ${shellQuote(`set -euo pipefail
+export HOME="\${HOME:-/root}"
+node /workspace/codex-rate-limits.mjs
+`)}`
+  );
+  if (!result.success) {
+    await appendCommandLogs(repoBoard, runId, 'codex', result.stdout, result.stderr);
+    await repoBoard.appendRunLogs(runId, [
+      buildRunLog(runId, 'Codex usage preflight failed. Continuing without a rate-limit wait.', 'codex', 'error')
+    ]);
+    return undefined;
+  }
+
+  try {
+    return JSON.parse(result.stdout.trim()) as CodexRateLimitsResponse;
+  } catch (error) {
+    await repoBoard.appendRunLogs(runId, [
+      buildRunLog(
+        runId,
+        `Codex usage preflight returned invalid JSON (${error instanceof Error ? error.message : String(error)}). Continuing without a rate-limit wait.`,
+        'codex',
+        'error'
+      )
+    ]);
+    return undefined;
   }
 }
 

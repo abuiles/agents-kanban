@@ -394,8 +394,19 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
                     Separate operator shell. Codex keeps running until you explicitly take over.
                   </div>
                 </div>
-                <div className="text-xs text-slate-500">
-                  {terminalBootstrap.sessionName} · {terminalBootstrap.cols}x{terminalBootstrap.rows}
+                <div className="flex flex-wrap items-center gap-2">
+                  {terminalRun?.status !== 'OPERATOR_CONTROLLED' ? (
+                    <button
+                      type="button"
+                      onClick={() => void takeOverRun(terminalModalRunId)}
+                      className="inline-flex h-8 items-center rounded-lg border border-amber-400/35 bg-amber-500/15 px-3 text-xs font-medium text-amber-50 transition hover:bg-amber-500/25"
+                    >
+                      Take over
+                    </button>
+                  ) : null}
+                  <div className="text-xs text-slate-500">
+                    {terminalBootstrap.sessionName} · {terminalBootstrap.cols}x{terminalBootstrap.rows}
+                  </div>
                 </div>
               </div>
               {terminalBootstrap.attachable ? (
