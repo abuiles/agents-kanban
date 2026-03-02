@@ -147,6 +147,37 @@ function readAutomationState(value: unknown, required = true): CreateTaskInput['
   };
 }
 
+function readDependencyState(value: unknown, required = true): CreateTaskInput['dependencyState'] | undefined {
+  if (!required && typeof value === 'undefined') {
+    return undefined;
+  }
+
+  if (!isRecord(value)) {
+    throw badRequest('Invalid dependencyState.');
+  }
+
+  const reasonsValue = value.reasons;
+  if (!Array.isArray(reasonsValue)) {
+    throw badRequest('Invalid dependencyState.reasons.');
+  }
+
+  return {
+    blocked: readBoolean(value.blocked, 'dependencyState.blocked', true)!,
+    unblockedAt: readString(value.unblockedAt, 'dependencyState.unblockedAt', false),
+    reasons: reasonsValue.map((reason, index) => {
+      if (!isRecord(reason)) {
+        throw badRequest(`Invalid dependencyState.reasons[${index}].`);
+      }
+
+      return {
+        upstreamTaskId: readTrimmedString(reason.upstreamTaskId, `dependencyState.reasons[${index}].upstreamTaskId`)!,
+        state: readEnumValue(reason.state, `dependencyState.reasons[${index}].state`, new Set(['missing', 'not_ready', 'ready'] as const))!,
+        message: readString(reason.message, `dependencyState.reasons[${index}].message`)!
+      };
+    })
+  };
+}
+
 function readBranchSource(value: unknown, required = true): CreateTaskInput['branchSource'] | undefined {
   if (!required && typeof value === 'undefined') {
     return undefined;
@@ -223,6 +254,7 @@ export function parseCreateTaskInput(body: unknown): CreateTaskInput {
     description: readString(body.description, 'description', false),
     sourceRef: readTrimmedString(body.sourceRef, 'sourceRef', false),
     dependencies: readDependencies(body.dependencies, false),
+    dependencyState: readDependencyState(body.dependencyState, false),
     automationState: readAutomationState(body.automationState, false),
     branchSource: readBranchSource(body.branchSource, false),
     taskPrompt: readString(body.taskPrompt, 'taskPrompt')!,
@@ -247,6 +279,7 @@ export function parseUpdateTaskInput(body: unknown): UpdateTaskInput {
   if (hasOwn(body, 'description')) patch.description = readString(body.description, 'description', false);
   if (hasOwn(body, 'sourceRef')) patch.sourceRef = readTrimmedString(body.sourceRef, 'sourceRef', false);
   if (hasOwn(body, 'dependencies')) patch.dependencies = readDependencies(body.dependencies, false);
+  if (hasOwn(body, 'dependencyState')) patch.dependencyState = readDependencyState(body.dependencyState, false);
   if (hasOwn(body, 'automationState')) patch.automationState = readAutomationState(body.automationState, false);
   if (hasOwn(body, 'branchSource')) patch.branchSource = readBranchSource(body.branchSource, false);
   if (hasOwn(body, 'taskPrompt')) patch.taskPrompt = readString(body.taskPrompt, 'taskPrompt', false);

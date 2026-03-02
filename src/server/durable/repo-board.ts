@@ -100,9 +100,10 @@ export class RepoBoardDO extends DurableObject<Env> {
       title: input.title,
       description: input.description,
       sourceRef: input.sourceRef,
-      dependencies: input.dependencies,
-      automationState: input.automationState,
-      branchSource: input.branchSource,
+      dependencies: cloneTaskDependencies(input.dependencies),
+      dependencyState: cloneTaskDependencyState(input.dependencyState),
+      automationState: cloneTaskAutomationState(input.automationState),
+      branchSource: cloneTaskBranchSource(input.branchSource),
       taskPrompt: input.taskPrompt,
       acceptanceCriteria: input.acceptanceCriteria,
       context: input.context,
@@ -137,9 +138,19 @@ export class RepoBoardDO extends DurableObject<Env> {
       validateDependenciesForTask(existing.repoId, existing.taskId, patch.dependencies);
     }
 
+    const hasPatchField = <K extends keyof UpdateTaskInput>(key: K) => Object.prototype.hasOwnProperty.call(patch, key);
+
     const updated: Task = {
       ...existing,
       ...patch,
+      dependencies: hasPatchField('dependencies') ? cloneTaskDependencies(patch.dependencies) : cloneTaskDependencies(existing.dependencies),
+      dependencyState: hasPatchField('dependencyState')
+        ? cloneTaskDependencyState(patch.dependencyState)
+        : cloneTaskDependencyState(existing.dependencyState),
+      automationState: hasPatchField('automationState')
+        ? cloneTaskAutomationState(patch.automationState)
+        : cloneTaskAutomationState(existing.automationState),
+      branchSource: hasPatchField('branchSource') ? cloneTaskBranchSource(patch.branchSource) : cloneTaskBranchSource(existing.branchSource),
       sourceRef: patch.sourceRef ?? existing.sourceRef,
       context: patch.context ?? existing.context,
       acceptanceCriteria: patch.acceptanceCriteria ?? existing.acceptanceCriteria,
@@ -756,7 +767,15 @@ function getOperatorSessionName(run: AgentRun) {
 
 function cloneRepoBoardState(state: RepoBoardState): RepoBoardState {
   return {
-    tasks: state.tasks.map((task) => ({ ...task, context: { ...task.context, links: task.context.links.map((link) => ({ ...link })) }, uiMeta: task.uiMeta ? { ...task.uiMeta } : undefined })),
+    tasks: state.tasks.map((task) => ({
+      ...task,
+      dependencies: cloneTaskDependencies(task.dependencies),
+      dependencyState: cloneTaskDependencyState(task.dependencyState),
+      automationState: cloneTaskAutomationState(task.automationState),
+      branchSource: cloneTaskBranchSource(task.branchSource),
+      context: { ...task.context, links: task.context.links.map((link) => ({ ...link })) },
+      uiMeta: task.uiMeta ? { ...task.uiMeta } : undefined
+    })),
     runs: state.runs.map((run) => ({
       ...run,
       codexProcessId: run.codexProcessId,
@@ -795,4 +814,25 @@ function normalizeRepoBoardState(state?: Partial<RepoBoardState> | null): RepoBo
     events: state?.events ?? [],
     commands: state?.commands ?? []
   };
+}
+
+function cloneTaskDependencies(dependencies: Task['dependencies']) {
+  return dependencies?.map((dependency) => ({ ...dependency }));
+}
+
+function cloneTaskDependencyState(dependencyState: Task['dependencyState']) {
+  return dependencyState
+    ? {
+        ...dependencyState,
+        reasons: dependencyState.reasons.map((reason) => ({ ...reason }))
+      }
+    : undefined;
+}
+
+function cloneTaskAutomationState(automationState: Task['automationState']) {
+  return automationState ? { ...automationState } : undefined;
+}
+
+function cloneTaskBranchSource(branchSource: Task['branchSource']) {
+  return branchSource ? { ...branchSource } : undefined;
 }

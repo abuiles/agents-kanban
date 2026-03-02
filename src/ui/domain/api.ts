@@ -31,6 +31,7 @@ export type CreateTaskInput = {
   description?: string;
   sourceRef?: string;
   dependencies?: Task['dependencies'];
+  dependencyState?: Task['dependencyState'];
   automationState?: Task['automationState'];
   branchSource?: Task['branchSource'];
   taskPrompt: string;

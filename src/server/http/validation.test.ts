@@ -19,6 +19,11 @@ describe('task validation', () => {
     const parsed = parseCreateTaskInput(
       createTaskPayload({
         dependencies: [{ upstreamTaskId: 'task_upstream', mode: 'review_ready', primary: true }],
+        dependencyState: {
+          blocked: false,
+          unblockedAt: '2026-03-02T01:05:00.000Z',
+          reasons: [{ upstreamTaskId: 'task_upstream', state: 'ready', message: 'Upstream task is in review.' }]
+        },
         automationState: {
           autoStartEligible: true,
           autoStartedAt: '2026-03-02T00:00:00.000Z',
@@ -37,6 +42,8 @@ describe('task validation', () => {
     );
 
     expect(parsed.dependencies).toEqual([{ upstreamTaskId: 'task_upstream', mode: 'review_ready', primary: true }]);
+    expect(parsed.dependencyState?.blocked).toBe(false);
+    expect(parsed.dependencyState?.reasons[0]?.state).toBe('ready');
     expect(parsed.automationState?.autoStartEligible).toBe(true);
     expect(parsed.branchSource?.kind).toBe('dependency_review_head');
   });
@@ -68,6 +75,14 @@ describe('task validation', () => {
         automationState: { autoStartEligible: 'yes' }
       })
     ).toThrow('Invalid automationState.autoStartEligible.');
+  });
+
+  it('rejects update payload with invalid dependencyState shape', () => {
+    expect(() =>
+      parseUpdateTaskInput({
+        dependencyState: { blocked: 'yes', reasons: [] }
+      })
+    ).toThrow('Invalid dependencyState.blocked.');
   });
 
   it('rejects update payload with invalid branchSource fields', () => {
