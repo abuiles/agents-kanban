@@ -30,6 +30,18 @@ const repos: Repo[] = [
     enabled: true,
     createdAt: iso(540),
     updatedAt: iso(240)
+  },
+  {
+    repoId: 'repo_stage_45',
+    slug: 'stage-4.5-tenant-metering',
+    scmProvider: 'github',
+    scmBaseUrl: 'https://github.com',
+    projectPath: 'acme/stage-4.5-tenant-metering',
+    defaultBranch: 'main',
+    baselineUrl: 'https://stage45.internal.example',
+    enabled: true,
+    createdAt: iso(90),
+    updatedAt: iso(10)
   }
 ];
 
@@ -119,6 +131,183 @@ const tasks: Task[] = [
     createdAt: iso(500),
     updatedAt: iso(100),
     uiMeta: { simulationProfile: 'happy_path' }
+  },
+  {
+    taskId: 'task_s45_00',
+    repoId: 'repo_stage_45',
+    title: 'S45-00 Lock contract and explicit deferrals',
+    description: 'Lock the Stage 4.5 scope and document explicit credential ownership deferrals.',
+    taskPrompt: 'Create a complete, non-reversible contract note for Stage 4.5: tenant core scope, usage accounting scope, and deferred provider-owned credentials.',
+    acceptanceCriteria: [
+      'Contract is documented',
+      'Provider credential ownership explicitly deferred in plan docs',
+      'Existing Stage 4 flows preserved'
+    ],
+    context: { links: [], notes: 'Use gpt-5.3-codex-spark / medium.' },
+    status: 'INBOX',
+    createdAt: iso(70),
+    updatedAt: iso(70),
+    uiMeta: { codexModel: 'gpt-5.3-codex-spark', codexReasoningEffort: 'medium' }
+  },
+  {
+    taskId: 'task_s45_10',
+    repoId: 'repo_stage_45',
+    title: 'S45-10 Tenant core data model',
+    description: 'Add tenant data model and tenantId ownership to repo/task/run/event/command/operator session records.',
+    taskPrompt: 'Implement tenant domain and ownership fields across Stage 4 projection/domain records with migration defaults.',
+    acceptanceCriteria: [
+      'Tenant entities and tenantId fields are defined',
+      'Ownership invariants documented',
+      'Legacy records have migration behavior'
+    ],
+    context: { links: [], notes: 'Depends on S45-00.' },
+    dependencies: [{ upstreamTaskId: 'task_s45_00', mode: 'review_ready', primary: true }],
+    status: 'INBOX',
+    createdAt: iso(65),
+    updatedAt: iso(65),
+    uiMeta: { codexModel: 'gpt-5.3-codex-spark', codexReasoningEffort: 'medium' }
+  },
+  {
+    taskId: 'task_s45_20',
+    repoId: 'repo_stage_45',
+    title: 'S45-20 Tenant memberships and seats',
+    description: 'Build org memberships, seat states, owner/member role semantics, and membership APIs.',
+    taskPrompt: 'Define membership schema and implement seat enforcement semantics for Stage 4.5.',
+    acceptanceCriteria: [
+      'Owner/member roles are implemented',
+      'Seat states enforced on access checks',
+      'Member endpoints for create/update are implemented'
+    ],
+    context: { links: [], notes: 'Depends on S45-10.' },
+    dependencies: [{ upstreamTaskId: 'task_s45_10', mode: 'review_ready', primary: true }],
+    status: 'INBOX',
+    createdAt: iso(60),
+    updatedAt: iso(60),
+    uiMeta: { codexModel: 'gpt-5.3-codex-spark', codexReasoningEffort: 'medium' }
+  },
+  {
+    taskId: 'task_s45_30',
+    repoId: 'repo_stage_45',
+    title: 'S45-30 Tenant context resolution + access control',
+    description: 'Add tenant context resolution from auth session and enforce tenant-based authorization.',
+    taskPrompt: 'Implement tenant-aware auth middleware behavior and cross-tenant deny paths for board/task/run endpoints.',
+    acceptanceCriteria: [
+      'Active tenant resolution works for each request',
+      'Cross-tenant reads/writes fail with explicit errors',
+      'Auth signup/login/me endpoints exist'
+    ],
+    context: { links: [], notes: 'Depends on S45-20 and S45-10.' },
+    dependencies: [
+      { upstreamTaskId: 'task_s45_20', mode: 'review_ready', primary: true },
+      { upstreamTaskId: 'task_s45_10', mode: 'review_ready' }
+    ],
+    status: 'INBOX',
+    createdAt: iso(55),
+    updatedAt: iso(55),
+    uiMeta: { codexModel: 'gpt-5.3-codex-spark', codexReasoningEffort: 'medium' }
+  },
+  {
+    taskId: 'task_s45_40',
+    repoId: 'repo_stage_45',
+    title: 'S45-40 Tenant-scoped persistence + APIs',
+    description: 'Tenant-filter all board/task/repo/run APIs and update board websocket fanout by tenant.',
+    taskPrompt: 'Apply tenant filtering to all tenant-owned read/write paths and board snapshot projection.',
+    acceptanceCriteria: [
+      'Board/task/list endpoints enforce tenant filter',
+      'WS fanout is tenant-scoped',
+      'No cross-tenant updates are visible'
+    ],
+    context: { links: [], notes: 'Depends on S45-30.' },
+    dependencies: [{ upstreamTaskId: 'task_s45_30', mode: 'review_ready', primary: true }],
+    status: 'INBOX',
+    createdAt: iso(50),
+    updatedAt: iso(50),
+    uiMeta: { codexModel: 'gpt-5.3-codex-spark', codexReasoningEffort: 'medium' }
+  },
+  {
+    taskId: 'task_s45_50',
+    repoId: 'repo_stage_45',
+    title: 'S45-50 Workflow + tenant-owned artifact layout',
+    description: 'Pass tenantId into workflow payload and move artifact/log keys to tenant-prefixed R2 paths.',
+    taskPrompt: 'Update workflow invocation contract and artifact access checks for tenant isolation.',
+    acceptanceCriteria: [
+      'tenantId appears in workflow input',
+      'R2 keys include tenants/{tenantId}/runs/{runId}/...',
+      'Tenant checks protect artifact and terminal reads'
+    ],
+    context: { links: [], notes: 'Depends on S45-10 and S45-40.' },
+    dependencies: [
+      { upstreamTaskId: 'task_s45_10', mode: 'review_ready', primary: true },
+      { upstreamTaskId: 'task_s45_40', mode: 'review_ready' }
+    ],
+    status: 'INBOX',
+    createdAt: iso(45),
+    updatedAt: iso(45),
+    uiMeta: { codexModel: 'gpt-5.3-codex-spark', codexReasoningEffort: 'medium' }
+  },
+  {
+    taskId: 'task_s45_60',
+    repoId: 'repo_stage_45',
+    title: 'S45-60 Usage ledger emission',
+    description: 'Emit tenant-attributed usage entries across workflow, sandbox, operator, and artifacts.',
+    taskPrompt: 'Implement usage ledger writes and preserve partial ledger entries on failed runs.',
+    acceptanceCriteria: [
+      'Usage entries include tenantId and source',
+      'Failed runs still emit partial usage',
+      'Rate-version metadata is captured'
+    ],
+    context: { links: [], notes: 'Depends on S45-40 and S45-50.' },
+    dependencies: [
+      { upstreamTaskId: 'task_s45_40', mode: 'review_ready', primary: true },
+      { upstreamTaskId: 'task_s45_50', mode: 'review_ready' }
+    ],
+    status: 'INBOX',
+    createdAt: iso(40),
+    updatedAt: iso(40),
+    uiMeta: { codexModel: 'gpt-5.3-codex-spark', codexReasoningEffort: 'medium' }
+  },
+  {
+    taskId: 'task_s45_70',
+    repoId: 'repo_stage_45',
+    title: 'S45-70 Usage aggregation + reporting APIs',
+    description: 'Add tenant and run-level usage reporting endpoints with reproducible aggregate formulas.',
+    taskPrompt: 'Build usage reporting SQL queries and response shapes for daily/monthly tenant views.',
+    acceptanceCriteria: [
+      '/api/tenant-usage',
+      '/api/tenant-usage/runs',
+      '/api/runs/:runId/usage implemented',
+      'Aggregation sums reconcile with raw ledger'
+    ],
+    context: { links: [], notes: 'Depends on S45-60 and S45-40.' },
+    dependencies: [
+      { upstreamTaskId: 'task_s45_60', mode: 'review_ready', primary: true },
+      { upstreamTaskId: 'task_s45_40', mode: 'review_ready' }
+    ],
+    status: 'INBOX',
+    createdAt: iso(35),
+    updatedAt: iso(35),
+    uiMeta: { codexModel: 'gpt-5.3-codex-spark', codexReasoningEffort: 'medium' }
+  },
+  {
+    taskId: 'task_s45_80',
+    repoId: 'repo_stage_45',
+    title: 'S45-80 Tenant-aware UI shell and usage surfaces',
+    description: 'Expose active tenant selector and usage summaries in the UI, preserving Stage 4 attach flow.',
+    taskPrompt: 'Update agentboard UI to support tenant context switches and per-run/tenant usage summaries.',
+    acceptanceCriteria: [
+      'Tenant selector exists',
+      'Board/task/run views are tenant scoped',
+      'Usage panels show estimated costs clearly'
+    ],
+    context: { links: [], notes: 'Depends on S45-70 and S45-30.' },
+    dependencies: [
+      { upstreamTaskId: 'task_s45_70', mode: 'review_ready', primary: true },
+      { upstreamTaskId: 'task_s45_30', mode: 'review_ready' }
+    ],
+    status: 'INBOX',
+    createdAt: iso(30),
+    updatedAt: iso(30),
+    uiMeta: { codexModel: 'gpt-5.3-codex-spark', codexReasoningEffort: 'medium' }
   }
 ];
 
