@@ -16,6 +16,8 @@ Stage 4 already adds the runtime visibility needed to meter usage:
 
 Stage 4.5 uses that signal to make the product tenant-aware without changing Stage 4 scope while it is already in progress.
 
+Important: Stage 4.5 defines tenant ownership and metering, while per-tenant run capacity, queuing, and fairness controls are implemented in Stage 7+ scheduler work.
+
 ## Why this stage exists
 
 The current roadmap assumes a single trust boundary for too long:
@@ -35,6 +37,7 @@ Stage 4.5 fixes that timing problem without re-scoping Stage 4.
 - Stage 4.5 is the first tenancy-aware stage
 - the initial business model is shared SaaS, not one deployment per customer
 - tenant core, tenant memberships/seats, tenant-scoped access, and usage/metering all land in Stage 4.5
+- container-level capacity configuration (`max_instances`) remains an infrastructure-level limit
 - cost tracking is approximate attribution, not invoice-grade billing
 - usage is recorded per run and aggregated per tenant
 - usage accounting must be product-generated, not inferred only from Cloudflare dashboards
@@ -230,6 +233,7 @@ Stage 4.5 adds these workflow responsibilities:
 - emit usage entries for significant steps
 - emit runtime duration totals at completion
 - tag artifacts and logs with tenant-owned metadata
+- treat sandbox startup/runtime failures as tenant-attributed usage and platform signals, then normalize queue/fairness logic in Stage 7+
 
 ### R2 object layout
 

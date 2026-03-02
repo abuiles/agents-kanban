@@ -16,6 +16,8 @@ In scope:
 - scheduling classes or priorities
 - backpressure behavior when capacity is exhausted
 
+Implementation assumes an existing container-level outer cap (currently set by `wrangler.jsonc` `max_instances`), and Stage 7 queueing sits on top of that.
+
 Out of scope:
 
 - broad policy enforcement
@@ -48,6 +50,7 @@ Rules:
 - queue state must be visible in API and UI
 - per-repo and global limits must both be enforced
 - backpressure behavior should produce reason codes instead of silent waiting
+- queueing policy should treat `max_instances` as an upper hard limit for all active sandbox demand
 
 ## API / projection additions
 

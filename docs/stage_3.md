@@ -53,8 +53,19 @@ Stage 3 extends that architecture. It does not replace it.
 - no merge automation
 - no multi-run-per-task concurrency
 - no multi-user auth redesign
+- no explicit run queue state or queue reason model
 - no fairness scheduler or usage billing system yet
 - no operator terminal UI as a required Stage 3 feature
+
+## Sandbox capacity model (Stage 3 implementation)
+
+In Stage 3, run execution is per-run and workflow-driven. The project now allows up to 20 concurrent sandbox instances for the `Sandbox` binding (`max_instances: 20` in `wrangler.jsonc`), shared by run, evidence, and preview helper sandboxes.
+
+- main run sandbox id: `${runId}`
+- evidence sandbox id: `${runId}-evidence`
+- preview sandbox id: `${runId}-preview` (prompt-recipe preview path)
+
+This means concurrency is controlled by configuration + scheduler behavior, not by Stage 3 app-state queue fields. Stage 7 introduces explicit queued/run state and visible capacity reasons.
 
 ## Target architecture
 
@@ -198,6 +209,14 @@ Recommended object layout:
 - `runs/<runId>/evidence/trace.zip`
 - `runs/<runId>/evidence/video.mp4`
 - `runs/<runId>/manifest.json`
+
+### Capacity-aware note for Stage 3
+
+Artifacts, runs, and sandbox IDs above are still partitioned per run, but this run-scoped layout does not imply per-tenant concurrency quotas.
+
+When capacity limits are reached, the orchestration path may stall or fail at runtime depending on platform state; operators should rely on run state and logs for status until explicit queue APIs are added in Stage 7.
+
+For the full capacity model and scheduling notes, see [docs/sandbox-capacity-and-scheduling.md](sandbox-capacity-and-scheduling.md).
 
 ### Workflows
 

@@ -132,6 +132,13 @@ auth/codex-auth.tgz
 
 Use `POST /api/repos` or `PATCH /api/repos/:repoId` to set/override this field.
 
+## 4.5) Container capacity and concurrency checks
+
+- Confirm sandbox capacity in `wrangler.jsonc`:
+  - `containers[0].max_instances` should be `20`
+  - `containers[0].instance_type` should be `lite` unless changed intentionally
+- Confirm `RUN_WORKFLOW` exists; workflow mode is required for production-style concurrent execution.
+
 ## 5) Local dev commands
 
 Run from the repo root:
@@ -204,3 +211,12 @@ Keep this guide aligned with:
 - [docs/stage_3.md](stage_3.md)
 - [docs/stage_3_5.md](stage_3_5.md)
 - [docs/stage_4.md](stage_4.md)
+- [docs/sandbox-capacity-and-scheduling.md](sandbox-capacity-and-scheduling.md)
+
+## 11) Parallel run sanity check
+
+Use this check before enabling wide concurrency:
+
+- Start two or more runs against different tasks quickly.
+- Verify overlapping `runId` values and no accidental `evidenceSandboxId` reuse.
+- Confirm run logs show expected start/completion entries for each run.

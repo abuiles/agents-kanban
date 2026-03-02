@@ -16,7 +16,7 @@
 | Operator control | 6 | ⚠️ Partial | `POST /api/runs/:runId/cancel` | Guidance-mode and explicit control-state/queue semantics not fully in scope yet; broader Stage 6 endpoints absent | Partial completion: cancel transition exists, but guided execution semantics are incomplete. |
 | Tenant + metering | 4.5 | ⏳ Pending | _none_ | `GET /api/tenant`; `POST /api/tenant`; `PATCH /api/tenant/:tenantId`; `GET /api/tenant-usage`; `GET /api/tenant-usage/:tenantId`; `GET /api/tenant-usage/:tenantId/repo/:repoId` | Stage 4.5 not yet implemented. |
 | Explainability/audit | 5 | ⏳ Pending | _none_ | `GET /api/runs/:runId/explanation`; `GET /api/runs/:runId/audit` | Stage 5 not yet implemented. |
-| Scale/queueing | 7 | ⏳ Pending | _none_ | queued run endpoints + queue reason APIs | Stage 7 not yet implemented. |
+| Scale/queueing | 7 | ⏳ Pending | _none_ | queued run endpoints + queue reason APIs | Stage 7 not yet implemented. `max_instances` is currently set in Workers config and is platform-level only. |
 | Hardening/policy/credentials | 8 | ⏳ Pending | _none_ | Stage 8 hardening/policy credential APIs and policy guard endpoints | Stage 8 not yet implemented. |
 | Debug tools | 2 | ✅ Implemented | `GET /api/debug/export`; `POST /api/debug/import`; `POST /api/debug/sandbox/run`; `POST /api/debug/sandbox/file` | `POST /api/debug/import` may remain internal-only by design | Debug endpoints exist for migration and bootstrap checks. |
 
