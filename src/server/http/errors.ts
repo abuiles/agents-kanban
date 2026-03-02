@@ -28,3 +28,11 @@ export function badRequest(message: string, extras?: Partial<ApiError>) {
 export function conflict(message: string, extras?: Partial<ApiError>) {
   return new HttpError(409, { code: 'CONFLICT', message, retryable: false, ...extras });
 }
+
+export function unauthorized(message: string, extras?: Partial<ApiError>) {
+  return new HttpError(401, { code: 'UNAUTHORIZED', message, retryable: false, ...extras });
+}
+
+export function forbidden(message: string, extras?: Partial<ApiError>) {
+  return new HttpError(403, { code: 'FORBIDDEN', message, retryable: false, ...extras });
+}
