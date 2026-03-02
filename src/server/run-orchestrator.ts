@@ -260,6 +260,9 @@ cat /workspace/task.txt | codex exec -m ${codexModel} -c model_reasoning_effort=
     if (getRunReviewUrl(latestRun) && getRunReviewNumber(latestRun)) {
       await repoBoard.transitionRun(params.runId, {
         status: 'PR_OPEN',
+        reviewState: 'open',
+        landedOnDefaultBranch: false,
+        landedOnDefaultBranchAt: undefined,
         previewStatus: 'DISCOVERING',
         appendTimelineNote: 'Existing pull request updated with requested changes.'
       });
@@ -270,8 +273,11 @@ cat /workspace/task.txt | codex exec -m ${codexModel} -c model_reasoning_effort=
         reviewUrl: pr.url,
         reviewNumber: pr.number,
         reviewProvider: pr.provider,
+        reviewState: 'open',
         prNumber: pr.number,
         prUrl: pr.url,
+        landedOnDefaultBranch: false,
+        landedOnDefaultBranchAt: undefined,
         previewStatus: 'DISCOVERING',
         appendTimelineNote: 'Pull request opened.'
       });

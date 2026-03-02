@@ -187,4 +187,72 @@ describe('Stage 3.1 fanout integration', () => {
     expect(detailEPostMerge.latestRun?.dependencyContext?.sourceMode).toBe('dependency_review_head');
     expect(eRunCount).toBe(1);
   });
+
+  it('allows GitLab MRs to drive review fanout and merged-to-default fallback', async () => {
+    const board = env.BOARD_INDEX.getByName('agentboard');
+    const repo = await board.createRepo({
+      slug: 'group/project',
+      projectPath: 'group/project',
+      scmProvider: 'gitlab',
+      scmBaseUrl: 'https://gitlab.example.com',
+      baselineUrl: 'https://gitlab-fanout.example.com',
+      defaultBranch: 'main'
+    });
+    const repoBoard = env.REPO_BOARD.getByName(repo.repoId);
+
+    const taskA = await repoBoard.createTask(taskInput(repo.repoId, 'A', 'READY'));
+    const taskB = await repoBoard.createTask(taskInput(repo.repoId, 'B', 'INBOX'));
+    const taskC = await repoBoard.createTask(taskInput(repo.repoId, 'C', 'READY'));
+
+    await repoBoard.updateTask(taskB.taskId, {
+      dependencies: [{ upstreamTaskId: taskA.taskId, mode: 'review_ready' }],
+      automationState: { autoStartEligible: true }
+    });
+    await repoBoard.updateTask(taskC.taskId, {
+      dependencies: [{ upstreamTaskId: taskA.taskId, mode: 'review_ready' }],
+      automationState: { autoStartEligible: false }
+    });
+
+    const runA = await repoBoard.startRun(taskA.taskId);
+    await repoBoard.transitionRun(runA.runId, {
+      status: 'PR_OPEN',
+      reviewUrl: 'https://gitlab.example.com/group/project/-/merge_requests/301',
+      reviewNumber: 301,
+      reviewProvider: 'gitlab',
+      reviewState: 'open',
+      headSha: sha('g')
+    });
+
+    const detailB = await repoBoard.getTask(taskB.taskId);
+    expect(detailB.task.status).toBe('ACTIVE');
+    expect(detailB.latestRun?.dependencyContext).toMatchObject({
+      sourceMode: 'dependency_review_head',
+      sourceTaskId: taskA.taskId,
+      sourceRunId: runA.runId,
+      sourceReviewNumber: 301,
+      sourceReviewProvider: 'gitlab',
+      sourceHeadSha: sha('g')
+    });
+
+    await repoBoard.transitionRun(runA.runId, {
+      status: 'DONE',
+      reviewUrl: 'https://gitlab.example.com/group/project/-/merge_requests/301',
+      reviewNumber: 301,
+      reviewProvider: 'gitlab',
+      reviewState: 'merged',
+      reviewMergedAt: '2026-03-02T01:00:00.000Z',
+      landedOnDefaultBranch: true,
+      landedOnDefaultBranchAt: '2026-03-02T01:05:00.000Z',
+      headSha: sha('g')
+    });
+    await repoBoard.updateTask(taskA.taskId, { status: 'DONE' });
+    await repoBoard.updateTask(taskC.taskId, {
+      automationState: { autoStartEligible: true }
+    });
+
+    const detailC = await repoBoard.getTask(taskC.taskId);
+    expect(detailC.task.status).toBe('ACTIVE');
+    expect(detailC.latestRun?.dependencyContext?.sourceMode).toBe('default_branch');
+    expect(detailC.task.branchSource).toMatchObject({ kind: 'default_branch', resolvedRef: 'main' });
+  });
 });

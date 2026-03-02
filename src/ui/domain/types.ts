@@ -255,8 +255,12 @@ export type AgentRun = {
   reviewUrl?: string;
   reviewNumber?: number;
   reviewProvider?: ReviewProvider;
+  reviewState?: 'open' | 'merged' | 'closed';
+  reviewMergedAt?: string;
   prUrl?: string;
   prNumber?: number;
+  landedOnDefaultBranch?: boolean;
+  landedOnDefaultBranchAt?: string;
   previewUrl?: string;
   previewStatus?: 'UNKNOWN' | 'DISCOVERING' | 'READY' | 'FAILED';
   evidenceStatus?: 'NOT_STARTED' | 'RUNNING' | 'READY' | 'FAILED';

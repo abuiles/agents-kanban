@@ -307,8 +307,12 @@ export class RepoBoardDO extends DurableObject<Env> {
       reviewUrl: existingRun.reviewUrl,
       reviewNumber: existingRun.reviewNumber,
       reviewProvider: existingRun.reviewProvider,
+      reviewState: existingRun.reviewState,
+      reviewMergedAt: existingRun.reviewMergedAt,
       prUrl: existingRun.prUrl,
       prNumber: existingRun.prNumber,
+      landedOnDefaultBranch: existingRun.landedOnDefaultBranch,
+      landedOnDefaultBranchAt: existingRun.landedOnDefaultBranchAt,
       baseRunId: existingRun.runId,
       dependencyContext: existingRun.dependencyContext,
       changeRequest: {
@@ -834,10 +838,6 @@ export class RepoBoardDO extends DurableObject<Env> {
     const tasksById = new Map(this.state.tasks.map((task) => [task.taskId, task]));
     const latestRunsByTaskId = buildLatestRunsByTaskId(this.state.runs);
     const runHistoryTaskIds = new Set(this.state.runs.map((run) => run.taskId));
-    const hasRepoActiveRun = this.state.runs.some((run) => run.repoId === repoId && !isTerminalRunStatus(run.status));
-    if (hasRepoActiveRun) {
-      return;
-    }
 
     for (const task of this.state.tasks) {
       if (task.repoId !== repoId || !candidateIds.has(task.taskId) || !isRunnableDependencyAutoStartTask(task)) {
@@ -864,7 +864,6 @@ export class RepoBoardDO extends DurableObject<Env> {
       }
 
       await this.startRun(task.taskId, { dependencyAutoStart: true });
-      return;
     }
   }
 }
@@ -988,6 +987,7 @@ function nextStatusChanged(previous: AgentRun, next: AgentRun, note?: string) {
 function isTerminalRunStatus(status: AgentRun['status']) {
   return status === 'DONE' || status === 'FAILED';
 }
+
 
 function getOperatorSessionName(run: AgentRun) {
   if (!run.operatorSession?.sessionName || run.operatorSession.sessionName === 'operator') {
