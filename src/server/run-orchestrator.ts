@@ -1,7 +1,7 @@
 import { getSandbox, parseSSEStream, type ExecEvent, type ExecResult, type StreamOptions } from '@cloudflare/sandbox';
 import type { RepoBoardDO } from './durable/repo-board';
 import type { BoardIndexDO } from './durable/board-index';
-import type { Repo, Task } from '../ui/domain/types';
+import type { Repo, RunCommand, RunCommandPhase, RunEvent, Task } from '../ui/domain/types';
 import { buildRunLog, type RunJobParams } from './shared/real-run';
 import { NonRetryableError } from 'cloudflare:workflows';
 import { inspectPreviewDiscovery } from './preview-discovery';
@@ -20,6 +20,7 @@ type Stage3Env = Env & {
 };
 
 type SleepFn = (name: string, duration: number | `${number} ${string}`) => Promise<void>;
+type RunPhase = NonNullable<ReturnType<typeof buildRunLog>['phase']>;
 
 export async function scheduleRunJob(env: Env, ctx: ExecutionContext, params: RunJobParams) {
   const stage3Env = env as Stage3Env;
@@ -61,7 +62,7 @@ export async function executeRunJob(env: Env, params: RunJobParams, sleepFn: Sle
   await repoBoard.transitionRun(params.runId, { status: 'BOOTSTRAPPING', sandboxId: params.runId, appendTimelineNote: 'Sandbox bootstrapped.' });
 
   try {
-    await sandbox.exec('mkdir -p /workspace/repo');
+    await emitCommandLifecycle(repoBoard, params.runId, 'bootstrap', 'mkdir -p /workspace/repo', () => sandbox.exec('mkdir -p /workspace/repo'));
     await repoBoard.appendRunLogs(params.runId, [buildRunLog(params.runId, `GitHub PAT suffix: ${pat.slice(-4)}`, 'bootstrap')]);
     await restoreCodexAuth(env as Stage3Env, sandbox, repo, params.runId, repoBoard);
     await logCodexAuthDiagnostics(sandbox, params.runId, repoBoard);
@@ -69,7 +70,13 @@ export async function executeRunJob(env: Env, params: RunJobParams, sleepFn: Sle
       branch: repo.defaultBranch,
       targetDir: '/workspace/repo'
     });
-    await sandbox.exec(`cd /workspace/repo && git config user.name 'AgentBoard' && git config user.email 'agentboard@local'`);
+    await emitCommandLifecycle(
+      repoBoard,
+      params.runId,
+      'bootstrap',
+      `cd /workspace/repo && git config user.name 'AgentBoard' && git config user.email 'agentboard@local'`,
+      () => sandbox.exec(`cd /workspace/repo && git config user.name 'AgentBoard' && git config user.email 'agentboard@local'`)
+    );
     await prepareRunBranchFromTaskSource(sandbox, repoBoard, params.runId, detail.task, repo, run);
   } catch (error) {
     await failRun(repoBoard, params.runId, 'BOOTSTRAP_FAILED', 'bootstrap', error);
@@ -81,9 +88,15 @@ export async function executeRunJob(env: Env, params: RunJobParams, sleepFn: Sle
   try {
     const prompt = buildCodexPrompt(detail.task, repo, run);
     await sandbox.writeFile('/workspace/task.txt', prompt);
-    await sandbox.exec("bash -lc 'command -v codex >/dev/null 2>&1 || npm install -g @openai/codex'");
+    await emitCommandLifecycle(
+      repoBoard,
+      params.runId,
+      'codex',
+      "bash -lc 'command -v codex >/dev/null 2>&1 || npm install -g @openai/codex'",
+      () => sandbox.exec("bash -lc 'command -v codex >/dev/null 2>&1 || npm install -g @openai/codex'")
+    );
     await logCodexCliDiagnostics(sandbox, params.runId, repoBoard, codexModel, codexReasoningEffort);
-    const codexResult = await execStreamWithLogs(
+    const codexResult = await runCodexProcessWithLogs(
       sandbox,
       repoBoard,
       params.runId,
@@ -94,10 +107,20 @@ cd /workspace/repo
 cat /workspace/task.txt | codex exec -m ${codexModel} -c model_reasoning_effort="${codexReasoningEffort}" --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check -C /workspace/repo --json -
 `)}`
     );
+    if (codexResult.stoppedForTakeover) {
+      await repoBoard.appendRunLogs(params.runId, [
+        buildRunLog(params.runId, 'Codex execution stopped after operator takeover. Leaving the sandbox under operator control.', 'codex')
+      ]);
+      return;
+    }
     if (!codexResult.success) {
       throw new NonRetryableError(codexResult.stderr || 'Codex execution failed.');
     }
   } catch (error) {
+    const currentRun = await repoBoard.getRun(params.runId);
+    if (currentRun.status === 'OPERATOR_CONTROLLED') {
+      return;
+    }
     await failRun(repoBoard, params.runId, 'CODEX_FAILED', 'codex', error, false);
     throw error;
   }
@@ -112,8 +135,9 @@ cat /workspace/task.txt | codex exec -m ${codexModel} -c model_reasoning_effort=
   await repoBoard.transitionRun(params.runId, { status: 'PUSHING_BRANCH', appendTimelineNote: 'Preparing git diff and push.' });
 
   try {
-    const branchResult = await sandbox.exec('cd /workspace/repo && git branch --show-current');
-    await appendCommandLogs(repoBoard, params.runId, 'push', branchResult.stdout, branchResult.stderr);
+    const branchResult = await emitCommandLifecycle(repoBoard, params.runId, 'push', 'cd /workspace/repo && git branch --show-current', () =>
+      sandbox.exec('cd /workspace/repo && git branch --show-current')
+    );
     if (!branchResult.success) {
       throw new Error(branchResult.stderr || 'Failed to resolve the current branch.');
     }
@@ -125,17 +149,20 @@ cat /workspace/task.txt | codex exec -m ${codexModel} -c model_reasoning_effort=
       ]);
     }
 
-    const statusResult = await sandbox.exec('cd /workspace/repo && git status --short');
-    await appendCommandLogs(repoBoard, params.runId, 'push', statusResult.stdout, statusResult.stderr);
+    const statusResult = await emitCommandLifecycle(repoBoard, params.runId, 'push', 'cd /workspace/repo && git status --short', () =>
+      sandbox.exec('cd /workspace/repo && git status --short')
+    );
     const hasWorkingTreeChanges = Boolean(statusResult.stdout.trim());
-    const baseHeadResult = await sandbox.exec(`cd /workspace/repo && git rev-parse origin/${shellEscape(repo.defaultBranch)}`);
-    await appendCommandLogs(repoBoard, params.runId, 'push', baseHeadResult.stdout, baseHeadResult.stderr);
+    const baseHeadResult = await emitCommandLifecycle(repoBoard, params.runId, 'push', `cd /workspace/repo && git rev-parse origin/${shellEscape(repo.defaultBranch)}`, () =>
+      sandbox.exec(`cd /workspace/repo && git rev-parse origin/${shellEscape(repo.defaultBranch)}`)
+    );
     if (!baseHeadResult.success) {
       throw new Error(baseHeadResult.stderr || `Failed to resolve origin/${repo.defaultBranch}.`);
     }
 
-    const currentHeadResult = await sandbox.exec('cd /workspace/repo && git rev-parse HEAD');
-    await appendCommandLogs(repoBoard, params.runId, 'push', currentHeadResult.stdout, currentHeadResult.stderr);
+    const currentHeadResult = await emitCommandLifecycle(repoBoard, params.runId, 'push', 'cd /workspace/repo && git rev-parse HEAD', () =>
+      sandbox.exec('cd /workspace/repo && git rev-parse HEAD')
+    );
     if (!currentHeadResult.success) {
       throw new Error(currentHeadResult.stderr || 'Failed to resolve HEAD.');
     }
@@ -149,16 +176,20 @@ cat /workspace/task.txt | codex exec -m ${codexModel} -c model_reasoning_effort=
     let commitMessage: string;
     if (hasWorkingTreeChanges) {
       commitMessage = `AgentBoard: ${detail.task.title}`;
-      const commitResult = await sandbox.exec(
-        `cd /workspace/repo && git add -A && git commit -m ${shellQuote(commitMessage)} && git push origin HEAD:${shellEscape(run.branchName)}`
+      const commitResult = await emitCommandLifecycle(
+        repoBoard,
+        params.runId,
+        'push',
+        `cd /workspace/repo && git add -A && git commit -m ${shellQuote(commitMessage)} && git push origin HEAD:${shellEscape(run.branchName)}`,
+        () => sandbox.exec(`cd /workspace/repo && git add -A && git commit -m ${shellQuote(commitMessage)} && git push origin HEAD:${shellEscape(run.branchName)}`)
       );
-      await appendCommandLogs(repoBoard, params.runId, 'push', commitResult.stdout, commitResult.stderr);
       if (!commitResult.success) {
         throw new Error(commitResult.stderr || 'Commit and push failed.');
       }
     } else {
-      const commitMessageResult = await sandbox.exec('cd /workspace/repo && git log -1 --pretty=%s');
-      await appendCommandLogs(repoBoard, params.runId, 'push', commitMessageResult.stdout, commitMessageResult.stderr);
+      const commitMessageResult = await emitCommandLifecycle(repoBoard, params.runId, 'push', 'cd /workspace/repo && git log -1 --pretty=%s', () =>
+        sandbox.exec('cd /workspace/repo && git log -1 --pretty=%s')
+      );
       if (!commitMessageResult.success) {
         throw new Error(commitMessageResult.stderr || 'Failed to read the existing commit message.');
       }
@@ -166,15 +197,17 @@ cat /workspace/task.txt | codex exec -m ${codexModel} -c model_reasoning_effort=
       await repoBoard.appendRunLogs(params.runId, [
         buildRunLog(params.runId, 'Detected an existing local commit from Codex; pushing it without creating another commit.', 'push')
       ]);
-      const pushResult = await sandbox.exec(`cd /workspace/repo && git push origin HEAD:${shellEscape(run.branchName)}`);
-      await appendCommandLogs(repoBoard, params.runId, 'push', pushResult.stdout, pushResult.stderr);
+      const pushResult = await emitCommandLifecycle(repoBoard, params.runId, 'push', `cd /workspace/repo && git push origin HEAD:${shellEscape(run.branchName)}`, () =>
+        sandbox.exec(`cd /workspace/repo && git push origin HEAD:${shellEscape(run.branchName)}`)
+      );
       if (!pushResult.success) {
         throw new Error(pushResult.stderr || 'Push failed.');
       }
     }
 
-    const shaResult = await sandbox.exec('cd /workspace/repo && git rev-parse HEAD');
-    await appendCommandLogs(repoBoard, params.runId, 'push', shaResult.stdout, shaResult.stderr);
+    const shaResult = await emitCommandLifecycle(repoBoard, params.runId, 'push', 'cd /workspace/repo && git rev-parse HEAD', () =>
+      sandbox.exec('cd /workspace/repo && git rev-parse HEAD')
+    );
     if (!shaResult.success) {
       throw new Error(shaResult.stderr || 'Failed to resolve the pushed commit SHA.');
     }
@@ -229,21 +262,32 @@ async function runEvidence(env: Stage3Env, repoBoard: DurableObjectStub<RepoBoar
   await repoBoard.appendRunLogs(runId, [buildRunLog(runId, `Capturing evidence for baseline ${baselineUrl} and preview ${previewUrl}.`, 'evidence')]);
 
   try {
-    await sandbox.exec('mkdir -p /workspace/evidence');
+    await emitCommandLifecycle(repoBoard, runId, 'evidence', 'mkdir -p /workspace/evidence', () => sandbox.exec('mkdir -p /workspace/evidence'));
     await repoBoard.appendRunLogs(runId, [buildRunLog(runId, 'Installing Playwright Chromium for evidence capture.', 'evidence')]);
-    const install = await sandbox.exec(
+    const install = await emitCommandLifecycle(
+      repoBoard,
+      runId,
+      'evidence',
       `bash -lc ${shellQuote(`set -euo pipefail
 export HOME="\${HOME:-/root}"
 npx -y playwright install chromium
+`)}`,
+      () => sandbox.exec(
+        `bash -lc ${shellQuote(`set -euo pipefail
+export HOME="\${HOME:-/root}"
+npx -y playwright install chromium
 `)}`
+      )
     );
-    await appendCommandLogs(repoBoard, runId, 'evidence', install.stdout, install.stderr);
     if (!install.success) {
       throw new Error(install.stderr || 'Playwright browser install failed.');
     }
-    const before = await sandbox.exec(`npx -y playwright screenshot ${shellEscape(baselineUrl)} /workspace/evidence/before.png`);
-    const after = await sandbox.exec(`npx -y playwright screenshot ${shellEscape(previewUrl)} /workspace/evidence/after.png`);
-    await appendCommandLogs(repoBoard, runId, 'evidence', before.stdout + after.stdout, before.stderr + after.stderr);
+    await emitCommandLifecycle(repoBoard, runId, 'evidence', `npx -y playwright screenshot ${shellEscape(baselineUrl)} /workspace/evidence/before.png`, () =>
+      sandbox.exec(`npx -y playwright screenshot ${shellEscape(baselineUrl)} /workspace/evidence/before.png`)
+    );
+    await emitCommandLifecycle(repoBoard, runId, 'evidence', `npx -y playwright screenshot ${shellEscape(previewUrl)} /workspace/evidence/after.png`, () =>
+      sandbox.exec(`npx -y playwright screenshot ${shellEscape(previewUrl)} /workspace/evidence/after.png`)
+    );
   } catch (error) {
     await failRun(repoBoard, runId, 'EVIDENCE_FAILED', 'evidence', error);
     return;
@@ -593,6 +637,56 @@ async function appendCommandLogs(repoBoard: DurableObjectStub<RepoBoardDO>, runI
   if (logs.length) await repoBoard.appendRunLogs(runId, logs);
 }
 
+async function emitCommandLifecycle(
+  repoBoard: DurableObjectStub<RepoBoardDO>,
+  runId: string,
+  phase: RunPhase,
+  command: string,
+  execute: () => Promise<ExecResult>
+) {
+  const run = await repoBoard.getRun(runId);
+  const commandId = buildRunCommandId(runId, phase);
+  const startedAt = new Date().toISOString();
+  const startedCommand: RunCommand = {
+    id: commandId,
+    runId,
+    phase: phase as RunCommandPhase,
+    startedAt,
+    status: 'running',
+    command,
+    source: 'system'
+  };
+  await repoBoard.upsertRunCommands(runId, [startedCommand]);
+  await repoBoard.appendRunEvents(runId, [
+    buildRunEvent(run, 'workflow', 'command.started', `Started ${phase} command.`, { commandId, phase })
+  ]);
+
+  const result = await execute();
+  const completedRun = await repoBoard.getRun(runId);
+  const stdoutPreview = summarizeOutput(result.stdout);
+  const stderrPreview = summarizeOutput(result.stderr);
+  const completedCommand: RunCommand = {
+    ...startedCommand,
+    completedAt: new Date().toISOString(),
+    exitCode: result.exitCode,
+    status: result.success ? 'completed' : 'failed',
+    stdoutPreview,
+    stderrPreview
+  };
+  await repoBoard.upsertRunCommands(runId, [completedCommand]);
+  await repoBoard.appendRunEvents(runId, [
+    buildRunEvent(
+      completedRun,
+      result.success ? 'workflow' : 'system',
+      'command.completed',
+      `Completed ${phase} command with exit code ${result.exitCode}.`,
+      { commandId, phase, exitCode: result.exitCode, success: result.success }
+    )
+  ]);
+
+  return result;
+}
+
 async function execStreamWithLogs(
   sandbox: ReturnType<typeof getSandbox>,
   repoBoard: DurableObjectStub<RepoBoardDO>,
@@ -601,16 +695,33 @@ async function execStreamWithLogs(
   command: string,
   options?: StreamOptions
 ): Promise<ExecResult> {
+  const commandId = buildRunCommandId(runId, phase);
+  const run = await repoBoard.getRun(runId);
+  const startedAt = new Date().toISOString();
   const stdoutBuffer = new LineLogBuffer();
   const stderrBuffer = new LineLogBuffer();
   const stdoutChunks: string[] = [];
   const stderrChunks: string[] = [];
-  const startedAt = new Date().toISOString();
   let completedAt = Date.now();
   let exitCode = 1;
   let streamError: string | undefined;
   let eventResult: ExecResult | undefined;
   let appendQueue = Promise.resolve();
+  let latestResumeCommand: string | undefined;
+  let latestThreadId: string | undefined;
+
+  await repoBoard.upsertRunCommands(runId, [{
+    id: commandId,
+    runId,
+    phase: phase as RunCommandPhase,
+    startedAt,
+    status: 'running',
+    command,
+    source: 'system'
+  }]);
+  await repoBoard.appendRunEvents(runId, [
+    buildRunEvent(run, 'workflow', 'command.started', `Started ${phase} command.`, { commandId, phase })
+  ]);
 
   const enqueueLogs = (logs: Array<{ message: string; level: 'info' | 'error' }>) => {
     if (!logs.length) {
@@ -633,6 +744,30 @@ async function execStreamWithLogs(
         case 'stdout': {
           const chunk = event.data ?? '';
           stdoutChunks.push(chunk);
+          const resumeMatch = extractCodexResumeState(chunk, latestThreadId);
+          latestThreadId = resumeMatch.threadId ?? latestThreadId;
+          if (resumeMatch.resumeCommand && resumeMatch.resumeCommand !== latestResumeCommand) {
+            latestResumeCommand = resumeMatch.resumeCommand;
+            const latestRun = await repoBoard.getRun(runId);
+            await repoBoard.transitionRun(runId, { latestCodexResumeCommand: latestResumeCommand });
+            if (latestRun.operatorSession) {
+              await repoBoard.updateOperatorSession(runId, {
+                ...latestRun.operatorSession,
+                codexResumeCommand: latestResumeCommand,
+                codexThreadId: latestThreadId,
+                takeoverState: latestRun.operatorSession.takeoverState === 'operator_control' ? 'resumable' : latestRun.operatorSession.takeoverState
+              });
+            }
+            await repoBoard.appendRunEvents(runId, [
+              buildRunEvent(
+                await repoBoard.getRun(runId),
+                'system',
+                'codex.resume_available',
+                'Codex resume command is available for this run.',
+                { command: latestResumeCommand }
+              )
+            ]);
+          }
           enqueueLogs(stdoutBuffer.push(chunk).map((message) => ({ message, level: 'info' as const })));
           break;
         }
@@ -662,12 +797,33 @@ async function execStreamWithLogs(
   }
 
   if (eventResult) {
+    await repoBoard.upsertRunCommands(runId, [{
+      id: commandId,
+      runId,
+      phase: phase as RunCommandPhase,
+      startedAt,
+      completedAt: new Date().toISOString(),
+      exitCode: eventResult.exitCode,
+      status: eventResult.success ? 'completed' : 'failed',
+      command,
+      source: 'system',
+      stdoutPreview: summarizeOutput(eventResult.stdout),
+      stderrPreview: summarizeOutput(eventResult.stderr)
+    }]);
+    await repoBoard.appendRunEvents(runId, [
+      buildRunEvent(await repoBoard.getRun(runId), eventResult.success ? 'workflow' : 'system', 'command.completed', `Completed ${phase} command with exit code ${eventResult.exitCode}.`, {
+        commandId,
+        phase,
+        exitCode: eventResult.exitCode,
+        success: eventResult.success
+      })
+    ]);
     return eventResult;
   }
 
   const stdout = stdoutChunks.join('');
   const stderr = [stderrChunks.join(''), streamError].filter(Boolean).join(stderrChunks.length ? '\n' : '');
-  return {
+  const result = {
     success: !streamError && exitCode === 0,
     exitCode,
     stdout,
@@ -676,6 +832,187 @@ async function execStreamWithLogs(
     duration: Math.max(0, completedAt - Date.parse(startedAt)),
     timestamp: startedAt
   };
+  await repoBoard.upsertRunCommands(runId, [{
+    id: commandId,
+    runId,
+    phase: phase as RunCommandPhase,
+    startedAt,
+    completedAt: new Date().toISOString(),
+    exitCode: result.exitCode,
+    status: result.success ? 'completed' : 'failed',
+    command,
+    source: 'system',
+    stdoutPreview: summarizeOutput(result.stdout),
+    stderrPreview: summarizeOutput(result.stderr)
+  }]);
+  await repoBoard.appendRunEvents(runId, [
+    buildRunEvent(await repoBoard.getRun(runId), result.success ? 'workflow' : 'system', 'command.completed', `Completed ${phase} command with exit code ${result.exitCode}.`, {
+      commandId,
+      phase,
+      exitCode: result.exitCode,
+      success: result.success
+    })
+  ]);
+  return result;
+}
+
+type ManagedExecResult = ExecResult & { stoppedForTakeover?: boolean };
+
+async function runCodexProcessWithLogs(
+  sandbox: ReturnType<typeof getSandbox>,
+  repoBoard: DurableObjectStub<RepoBoardDO>,
+  runId: string,
+  phase: NonNullable<ReturnType<typeof buildRunLog>['phase']>,
+  command: string
+): Promise<ManagedExecResult> {
+  const commandId = buildRunCommandId(runId, phase);
+  const run = await repoBoard.getRun(runId);
+  const startedAt = new Date().toISOString();
+  const stdoutBuffer = new LineLogBuffer();
+  const stderrBuffer = new LineLogBuffer();
+  const stdoutChunks: string[] = [];
+  const stderrChunks: string[] = [];
+  let completedAt = Date.now();
+  let exitCode = 1;
+  let streamError: string | undefined;
+  let appendQueue = Promise.resolve();
+  let latestResumeCommand: string | undefined;
+  let latestThreadId: string | undefined;
+
+  await repoBoard.upsertRunCommands(runId, [{
+    id: commandId,
+    runId,
+    phase: phase as RunCommandPhase,
+    startedAt,
+    status: 'running',
+    command,
+    source: 'system'
+  }]);
+  await repoBoard.appendRunEvents(runId, [
+    buildRunEvent(run, 'workflow', 'command.started', `Started ${phase} command.`, { commandId, phase })
+  ]);
+
+  const enqueueLogs = (logs: Array<{ message: string; level: 'info' | 'error' }>) => {
+    if (!logs.length) {
+      return;
+    }
+
+    appendQueue = appendQueue.then(() =>
+      repoBoard.appendRunLogs(
+        runId,
+        logs.map((log) => buildRunLog(runId, log.message, phase, log.level))
+      )
+    );
+  };
+
+  const process = await sandbox.startProcess(command);
+  await repoBoard.transitionRun(runId, { codexProcessId: process.id });
+  const stream = await sandbox.streamProcessLogs(process.id);
+
+  try {
+    for await (const event of parseSSEStream<Record<string, unknown>>(stream)) {
+      const eventType = typeof event.type === 'string' ? event.type : '';
+      switch (eventType) {
+        case 'stdout': {
+          const chunk = typeof event.data === 'string' ? event.data : '';
+          stdoutChunks.push(chunk);
+          const resumeMatch = extractCodexResumeState(chunk, latestThreadId);
+          latestThreadId = resumeMatch.threadId ?? latestThreadId;
+          if (resumeMatch.resumeCommand && resumeMatch.resumeCommand !== latestResumeCommand) {
+            latestResumeCommand = resumeMatch.resumeCommand;
+            const latestRun = await repoBoard.getRun(runId);
+            await repoBoard.transitionRun(runId, { latestCodexResumeCommand: latestResumeCommand });
+            if (latestRun.operatorSession) {
+              await repoBoard.updateOperatorSession(runId, {
+                ...latestRun.operatorSession,
+                codexResumeCommand: latestResumeCommand,
+                codexThreadId: latestThreadId,
+                takeoverState: latestRun.operatorSession.takeoverState === 'operator_control' ? 'resumable' : latestRun.operatorSession.takeoverState
+              });
+            }
+            await repoBoard.appendRunEvents(runId, [
+              buildRunEvent(
+                await repoBoard.getRun(runId),
+                'system',
+                'codex.resume_available',
+                'Codex resume command is available for this run.',
+                { command: latestResumeCommand }
+              )
+            ]);
+          }
+          enqueueLogs(stdoutBuffer.push(chunk).map((message) => ({ message, level: 'info' as const })));
+          break;
+        }
+        case 'stderr': {
+          const chunk = typeof event.data === 'string' ? event.data : '';
+          stderrChunks.push(chunk);
+          enqueueLogs(stderrBuffer.push(chunk).map((message) => ({ message, level: 'error' as const })));
+          break;
+        }
+        case 'exit':
+        case 'complete':
+          completedAt = Date.now();
+          exitCode = typeof event.exitCode === 'number' ? event.exitCode : exitCode;
+          break;
+        case 'error':
+          completedAt = Date.now();
+          streamError = typeof event.error === 'string' ? event.error : 'Command stream failed.';
+          break;
+      }
+    }
+  } finally {
+    enqueueLogs(stdoutBuffer.flush().map((message) => ({ message, level: 'info' as const })));
+    enqueueLogs(stderrBuffer.flush().map((message) => ({ message, level: 'error' as const })));
+    await appendQueue;
+  }
+
+  const latestRun = await repoBoard.getRun(runId);
+  const stoppedForTakeover = latestRun.status === 'OPERATOR_CONTROLLED';
+  const stdout = stdoutChunks.join('');
+  const stderr = [stderrChunks.join(''), streamError].filter(Boolean).join(stderrChunks.length ? '\n' : '');
+  const result: ManagedExecResult = {
+    success: !streamError && exitCode === 0,
+    exitCode,
+    stdout,
+    stderr,
+    command,
+    duration: Math.max(0, completedAt - Date.parse(startedAt)),
+    timestamp: startedAt,
+    stoppedForTakeover
+  };
+
+  await repoBoard.transitionRun(runId, { codexProcessId: undefined });
+  await repoBoard.upsertRunCommands(runId, [{
+    id: commandId,
+    runId,
+    phase: phase as RunCommandPhase,
+    startedAt,
+    completedAt: new Date().toISOString(),
+    exitCode: result.exitCode,
+    status: result.success || stoppedForTakeover ? 'completed' : 'failed',
+    command,
+    source: 'system',
+    stdoutPreview: summarizeOutput(result.stdout),
+    stderrPreview: summarizeOutput(result.stderr)
+  }]);
+  await repoBoard.appendRunEvents(runId, [
+    buildRunEvent(
+      await repoBoard.getRun(runId),
+      stoppedForTakeover ? 'operator' : result.success ? 'workflow' : 'system',
+      'command.completed',
+      stoppedForTakeover
+        ? `Stopped ${phase} command after operator takeover.`
+        : `Completed ${phase} command with exit code ${result.exitCode}.`,
+      {
+        commandId,
+        phase,
+        exitCode: result.exitCode,
+        success: result.success,
+        stoppedForTakeover
+      }
+    )
+  ]);
+  return result;
 }
 
 function buildGithubCloneUrl(slug: string, pat: string) {
@@ -759,6 +1096,53 @@ async function prepareRunBranchFromTaskSource(
   if (!checkout.success) {
     throw new Error(checkout.stderr || `Failed to prepare run branch ${run.branchName} from ${normalized.label}.`);
   }
+}
+
+function buildRunCommandId(runId: string, phase: RunPhase) {
+  return `${runId}_${phase}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function buildRunEvent(
+  run: Awaited<ReturnType<RepoBoardDO['getRun']>>,
+  actorType: RunEvent['actorType'],
+  eventType: RunEvent['eventType'],
+  message: string,
+  metadata?: Record<string, string | number | boolean>
+): RunEvent {
+  const at = new Date().toISOString();
+  return {
+    id: `${run.runId}_${eventType}_${at}_${Math.random().toString(36).slice(2, 8)}`,
+    runId: run.runId,
+    repoId: run.repoId,
+    taskId: run.taskId,
+    at,
+    actorType,
+    eventType,
+    message,
+    metadata
+  };
+}
+
+function summarizeOutput(output?: string) {
+  if (!output?.trim()) {
+    return undefined;
+  }
+
+  const compact = output.trim().replace(/\s+/g, ' ');
+  return compact.length > 240 ? `${compact.slice(0, 237)}...` : compact;
+}
+
+function extractCodexResumeState(chunk: string, fallbackThreadId?: string) {
+  const threadMatch = chunk.match(/"thread_id":"([^"]+)"/);
+  const threadId = threadMatch?.[1] ?? fallbackThreadId;
+  const resumeMatch = chunk.match(/codex resume ([a-z0-9-]+)/i);
+  const resumeCommand = resumeMatch?.[1]
+    ? `codex resume ${resumeMatch[1]}`
+    : threadId
+      ? undefined
+      : undefined;
+
+  return { threadId, resumeCommand };
 }
 
 function shellQuote(value: string) {

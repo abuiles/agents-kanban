@@ -1,5 +1,5 @@
 import type { AgentBoardApi, CreateRepoInput, CreateTaskInput, RequestRunChangesInput, UpdateRepoInput, UpdateTaskInput } from '../domain/api';
-import type { AgentRun, Repo, RunLogEntry, Task, TaskDetail } from '../domain/types';
+import type { AgentRun, Repo, RunCommand, RunEvent, RunLogEntry, Task, TaskDetail, TerminalBootstrap } from '../domain/types';
 import { getTaskDetail, getTasksForRepo } from '../domain/selectors';
 import { LocalBoardStore } from '../store/local-board-store';
 import { parseImportedBoard } from '../store/import-export';
@@ -220,9 +220,102 @@ export class LocalAgentBoardApi implements AgentBoardApi {
     return this.simulator.retryEvidence(runId);
   }
 
+  async takeOverRun(runId: string): Promise<AgentRun> {
+    let updatedRun: AgentRun | undefined;
+    const updatedAt = nowIso();
+    this.store.update((snapshot) => ({
+      ...snapshot,
+      tasks: snapshot.tasks.map((task) =>
+        task.taskId === snapshot.runs.find((run) => run.runId === runId)?.taskId
+          ? { ...task, status: 'ACTIVE', updatedAt }
+          : task
+      ),
+      runs: snapshot.runs.map((run) => {
+        if (run.runId !== runId) {
+          return run;
+        }
+
+        updatedRun = {
+          ...run,
+          status: 'OPERATOR_CONTROLLED',
+          codexProcessId: undefined,
+          currentCommandId: undefined,
+          operatorSession: run.operatorSession
+            ? {
+                ...run.operatorSession,
+                takeoverState: run.latestCodexResumeCommand ? 'resumable' : 'operator_control',
+                connectionState: 'open'
+              }
+            : {
+                id: `session_${runId}`,
+                runId,
+                sandboxId: run.sandboxId ?? `mock-${runId}`,
+                sessionName: 'operator',
+                startedAt: nowIso(),
+                actorId: 'same-session',
+                actorLabel: 'Operator',
+                connectionState: 'open',
+                takeoverState: run.latestCodexResumeCommand ? 'resumable' : 'operator_control',
+                codexResumeCommand: run.latestCodexResumeCommand
+              }
+        };
+        return updatedRun;
+      })
+    }));
+
+    if (!updatedRun) {
+      throw new Error(`Run ${runId} not found.`);
+    }
+
+    return updatedRun;
+  }
+
   async getRunLogs(runId: string, options?: { tail?: number }): Promise<RunLogEntry[]> {
     const logs = this.store.getSnapshot().logs.filter((log) => log.runId === runId);
     return options?.tail ? logs.slice(-options.tail) : logs;
+  }
+
+  async getRunEvents(runId: string): Promise<RunEvent[]> {
+    return this.store.getSnapshot().events.filter((event) => event.runId === runId);
+  }
+
+  async getRunCommands(runId: string): Promise<RunCommand[]> {
+    return this.store.getSnapshot().commands.filter((command) => command.runId === runId);
+  }
+
+  async getTerminalBootstrap(runId: string): Promise<TerminalBootstrap> {
+    const run = await this.getRun(runId);
+    if (!run.sandboxId || ['DONE', 'FAILED'].includes(run.status)) {
+      return {
+        runId,
+        repoId: run.repoId,
+        taskId: run.taskId,
+        sandboxId: run.sandboxId ?? '',
+        sessionName: 'operator',
+        status: run.status,
+        attachable: false,
+        reason: !run.sandboxId ? 'sandbox_missing' : 'run_not_active',
+        cols: 120,
+        rows: 32,
+        session: run.operatorSession,
+        codexResumeCommand: run.latestCodexResumeCommand
+      };
+    }
+
+    return {
+      runId,
+      repoId: run.repoId,
+      taskId: run.taskId,
+      sandboxId: run.sandboxId,
+      sessionName: 'operator',
+      status: run.status,
+      attachable: true,
+      wsPath: `/api/runs/${encodeURIComponent(runId)}/ws`,
+      cols: 120,
+      rows: 32,
+      session: run.operatorSession,
+      codexResumeCommand: run.latestCodexResumeCommand
+    };
   }
 
   exportState(): string {

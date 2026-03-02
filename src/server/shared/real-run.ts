@@ -24,6 +24,10 @@ export type RunTransitionPatch = {
   evidenceSandboxId?: string;
   commitSha?: string;
   commitMessage?: string;
+  codexProcessId?: string;
+  currentCommandId?: string;
+  latestCodexResumeCommand?: string;
+  operatorSession?: AgentRun['operatorSession'];
   artifactManifest?: ArtifactManifest;
   artifacts?: string[];
   executionSummary?: AgentRun['executionSummary'];

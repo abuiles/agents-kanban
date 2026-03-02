@@ -1,4 +1,18 @@
-import type { AgentRun, BoardSnapshotV1, CodexModel, CodexReasoningEffort, Repo, RunLogEntry, SimulationProfile, Task, TaskDetail, TaskStatus } from './types';
+import type {
+  AgentRun,
+  BoardSnapshotV1,
+  CodexModel,
+  CodexReasoningEffort,
+  Repo,
+  RunCommand,
+  RunEvent,
+  RunLogEntry,
+  SimulationProfile,
+  Task,
+  TaskDetail,
+  TaskStatus,
+  TerminalBootstrap
+} from './types';
 
 export type CreateRepoInput = {
   slug: string;
@@ -52,7 +66,11 @@ export interface AgentBoardApi {
   requestRunChanges(runId: string, input: RequestRunChangesInput): Promise<AgentRun>;
   retryPreview(runId: string): Promise<AgentRun>;
   retryEvidence(runId: string): Promise<AgentRun>;
+  takeOverRun(runId: string): Promise<AgentRun>;
   getRunLogs(runId: string, options?: { tail?: number }): Promise<RunLogEntry[]>;
+  getRunEvents(runId: string): Promise<RunEvent[]>;
+  getRunCommands(runId: string): Promise<RunCommand[]>;
+  getTerminalBootstrap(runId: string): Promise<TerminalBootstrap>;
   exportState(): string;
   importState(serialized: string): Promise<void>;
   getSelectedRepoId(): string | 'all';

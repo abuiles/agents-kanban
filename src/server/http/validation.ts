@@ -1,6 +1,9 @@
 import type { CreateRepoInput, CreateTaskInput, UpdateRepoInput, UpdateTaskInput } from '../../ui/domain/api';
 import { badRequest } from './errors';
 
+const CODEX_MODELS = new Set(['gpt-5.1-codex-mini', 'gpt-5.3-codex', 'gpt-5.3-codex-spark'] as const);
+const CODEX_REASONING_EFFORTS = new Set(['low', 'medium', 'high'] as const);
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
@@ -45,6 +48,19 @@ function readStringArray(value: unknown, field: string, required = true): string
 
   if (!required && typeof value === 'undefined') {
     return undefined;
+  }
+
+  throw badRequest(`Invalid ${field}.`);
+}
+
+function readEnumValue<T extends string>(value: unknown, field: string, allowed: ReadonlySet<T>, required = true): T | undefined {
+  const result = readString(value, field, required);
+  if (typeof result === 'undefined') {
+    return undefined;
+  }
+
+  if (allowed.has(result as T)) {
+    return result as T;
   }
 
   throw badRequest(`Invalid ${field}.`);
@@ -136,8 +152,8 @@ export function parseCreateTaskInput(body: unknown): CreateTaskInput {
     baselineUrlOverride: readString(body.baselineUrlOverride, 'baselineUrlOverride', false),
     status: readString(body.status, 'status', false) as CreateTaskInput['status'],
     simulationProfile: readString(body.simulationProfile, 'simulationProfile', false) as CreateTaskInput['simulationProfile'],
-    codexModel: readString(body.codexModel, 'codexModel', false) as CreateTaskInput['codexModel'],
-    codexReasoningEffort: readString(body.codexReasoningEffort, 'codexReasoningEffort', false) as CreateTaskInput['codexReasoningEffort']
+    codexModel: readEnumValue(body.codexModel, 'codexModel', CODEX_MODELS, false),
+    codexReasoningEffort: readEnumValue(body.codexReasoningEffort, 'codexReasoningEffort', CODEX_REASONING_EFFORTS, false)
   };
 }
 
@@ -157,8 +173,8 @@ export function parseUpdateTaskInput(body: unknown): UpdateTaskInput {
   if (hasOwn(body, 'baselineUrlOverride')) patch.baselineUrlOverride = readString(body.baselineUrlOverride, 'baselineUrlOverride', false);
   if (hasOwn(body, 'status')) patch.status = readString(body.status, 'status', false) as UpdateTaskInput['status'];
   if (hasOwn(body, 'simulationProfile')) patch.simulationProfile = readString(body.simulationProfile, 'simulationProfile', false) as UpdateTaskInput['simulationProfile'];
-  if (hasOwn(body, 'codexModel')) patch.codexModel = readString(body.codexModel, 'codexModel', false) as UpdateTaskInput['codexModel'];
-  if (hasOwn(body, 'codexReasoningEffort')) patch.codexReasoningEffort = readString(body.codexReasoningEffort, 'codexReasoningEffort', false) as UpdateTaskInput['codexReasoningEffort'];
+  if (hasOwn(body, 'codexModel')) patch.codexModel = readEnumValue(body.codexModel, 'codexModel', CODEX_MODELS, false);
+  if (hasOwn(body, 'codexReasoningEffort')) patch.codexReasoningEffort = readEnumValue(body.codexReasoningEffort, 'codexReasoningEffort', CODEX_REASONING_EFFORTS, false);
   if (hasOwn(body, 'runId')) patch.runId = readString(body.runId, 'runId', false);
   return patch;
 }

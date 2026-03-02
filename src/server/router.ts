@@ -157,11 +157,105 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
       return json(await env.REPO_BOARD.getByName(repoId).getRunLogs(runId, tail ? Number(tail) : undefined));
     }
 
+    const runEventsMatch = url.pathname.match(/^\/api\/runs\/([^/]+)\/events$/);
+    if (runEventsMatch && request.method === 'GET') {
+      const runId = decodeURIComponent(runEventsMatch[1]);
+      const repoId = await resolveRepoIdForRun(board, runId);
+      return json(await env.REPO_BOARD.getByName(repoId).getRunEvents(runId));
+    }
+
+    const runCommandsMatch = url.pathname.match(/^\/api\/runs\/([^/]+)\/commands$/);
+    if (runCommandsMatch && request.method === 'GET') {
+      const runId = decodeURIComponent(runCommandsMatch[1]);
+      const repoId = await resolveRepoIdForRun(board, runId);
+      return json(await env.REPO_BOARD.getByName(repoId).getRunCommands(runId));
+    }
+
+    const runTerminalMatch = url.pathname.match(/^\/api\/runs\/([^/]+)\/terminal$/);
+    if (runTerminalMatch && request.method === 'GET') {
+      const runId = decodeURIComponent(runTerminalMatch[1]);
+      const repoId = await resolveRepoIdForRun(board, runId);
+      const bootstrap = await env.REPO_BOARD.getByName(repoId).getTerminalBootstrap(runId);
+      if (!bootstrap.attachable) {
+        return json(bootstrap, { status: 409 });
+      }
+      return json(bootstrap);
+    }
+
+    const runTerminalSocketMatch = url.pathname.match(/^\/api\/runs\/([^/]+)\/ws$/);
+    if (runTerminalSocketMatch && request.method === 'GET') {
+      const runId = decodeURIComponent(runTerminalSocketMatch[1]);
+      const repoId = await resolveRepoIdForRun(board, runId);
+      const bootstrap = await env.REPO_BOARD.getByName(repoId).getTerminalBootstrap(runId);
+      if (!bootstrap.attachable) {
+        return json(bootstrap, { status: 409 });
+      }
+      if (request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') {
+        throw badRequest('Expected WebSocket upgrade request.');
+      }
+
+      const run = await env.REPO_BOARD.getByName(repoId).getRun(runId);
+      const session = {
+        id: `${runId}:${bootstrap.sessionName}`,
+        runId,
+        sandboxId: bootstrap.sandboxId,
+        sessionName: bootstrap.sessionName,
+        startedAt: run.operatorSession?.startedAt ?? new Date().toISOString(),
+        actorId: run.operatorSession?.actorId ?? 'same-session',
+        actorLabel: run.operatorSession?.actorLabel ?? 'Operator',
+        connectionState: 'connecting' as const,
+        takeoverState: run.operatorSession?.takeoverState ?? 'observing',
+        codexThreadId: run.operatorSession?.codexThreadId,
+        codexResumeCommand: run.operatorSession?.codexResumeCommand ?? run.latestCodexResumeCommand
+      };
+      const sandbox = getSandbox(env.Sandbox, bootstrap.sandboxId);
+      try {
+        await sandbox.createSession({
+          id: bootstrap.sessionName,
+          cwd: '/workspace/repo'
+        });
+      } catch (error) {
+        console.warn('Operator session already existed or could not be created with cwd', {
+          runId,
+          sessionName: bootstrap.sessionName,
+          error
+        });
+      }
+      await env.REPO_BOARD.getByName(repoId).updateOperatorSession(runId, session);
+      const sandboxSession = await sandbox.getSession(bootstrap.sessionName);
+      return sandboxSession.terminal(request, { cols: bootstrap.cols, rows: bootstrap.rows });
+    }
+
     const runArtifactsMatch = url.pathname.match(/^\/api\/runs\/([^/]+)\/artifacts$/);
     if (runArtifactsMatch && request.method === 'GET') {
       const runId = decodeURIComponent(runArtifactsMatch[1]);
       const repoId = await resolveRepoIdForRun(board, runId);
       return json(await env.REPO_BOARD.getByName(repoId).getRunArtifacts(runId));
+    }
+
+    const runTakeoverMatch = url.pathname.match(/^\/api\/runs\/([^/]+)\/takeover$/);
+    if (runTakeoverMatch && request.method === 'POST') {
+      const runId = decodeURIComponent(runTakeoverMatch[1]);
+      const repoId = await resolveRepoIdForRun(board, runId);
+      const repoBoard = env.REPO_BOARD.getByName(repoId);
+      const run = await repoBoard.getRun(runId);
+      if (run.sandboxId && run.codexProcessId) {
+        const sandbox = getSandbox(env.Sandbox, run.sandboxId);
+        try {
+          await sandbox.killProcess(run.codexProcessId);
+          const stopDeadline = Date.now() + 3_000;
+          while (Date.now() < stopDeadline) {
+            const process = await sandbox.getProcess(run.codexProcessId);
+            if (!process || process.status !== 'running') {
+              break;
+            }
+            await new Promise((resolve) => setTimeout(resolve, 200));
+          }
+        } catch (error) {
+          console.warn('Failed to kill Codex process during takeover', { runId, processId: run.codexProcessId, error });
+        }
+      }
+      return json(await repoBoard.takeOverRun(runId));
     }
 
     if (url.pathname === '/api/debug/export' && request.method === 'GET') {

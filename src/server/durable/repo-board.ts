@@ -1,5 +1,17 @@
 import type { CreateTaskInput, UpdateTaskInput } from '../../ui/domain/api';
-import type { AgentRun, Repo, RunError, RunLogEntry, Task, TaskDetail, TaskStatus } from '../../ui/domain/types';
+import type {
+  AgentRun,
+  OperatorSession,
+  Repo,
+  RunCommand,
+  RunError,
+  RunEvent,
+  RunLogEntry,
+  Task,
+  TaskDetail,
+  TaskStatus,
+  TerminalBootstrap
+} from '../../ui/domain/types';
 import { DurableObject } from 'cloudflare:workers';
 import { notFound } from '../http/errors';
 import { createRunId, createTaskId } from '../shared/ids';
@@ -23,7 +35,8 @@ export class RepoBoardDO extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     this.ready = this.ctx.blockConcurrencyWhile(async () => {
-      this.state = (await this.ctx.storage.get<RepoBoardState>(STORAGE_KEY)) ?? EMPTY_REPO_BOARD_STATE;
+      const stored = await this.ctx.storage.get<RepoBoardState>(STORAGE_KEY);
+      this.state = normalizeRepoBoardState(stored);
       this.localJobs = (await this.ctx.storage.get<LocalJobs>(LOCAL_JOBS_KEY)) ?? {};
     });
   }
@@ -45,7 +58,7 @@ export class RepoBoardDO extends DurableObject<Env> {
 
   async replaceState(nextState: RepoBoardState) {
     await this.ready;
-    this.state = cloneRepoBoardState(nextState);
+    this.state = cloneRepoBoardState(normalizeRepoBoardState(nextState));
     await this.persist();
   }
 
@@ -273,12 +286,58 @@ export class RepoBoardDO extends DurableObject<Env> {
   async appendRunLogs(runId: string, logs: RunLogEntry[]) {
     await this.ready;
     const run = await this.getRun(runId);
+    const events = logs.map((log) =>
+      buildRunEvent(run, log.level === 'error' ? 'system' : 'sandbox', 'log.appended', log.message, {
+        level: log.level,
+        phase: log.phase ?? 'unknown'
+      })
+    );
     this.state = {
       ...this.state,
-      logs: [...this.state.logs, ...logs]
+      logs: [...this.state.logs, ...logs],
+      events: [...this.state.events, ...events]
     };
     await this.persist();
     await this.emit({ type: 'run.logs_appended', payload: { runId, logs } }, run.repoId);
+    await this.emit({ type: 'run.events_appended', payload: { runId, events } }, run.repoId);
+  }
+
+  async appendRunEvents(runId: string, events: RunEvent[]) {
+    await this.ready;
+    const run = await this.getRun(runId);
+    this.state = {
+      ...this.state,
+      events: [...this.state.events, ...events]
+    };
+    await this.persist();
+    await this.emit({ type: 'run.events_appended', payload: { runId, events } }, run.repoId);
+  }
+
+  async upsertRunCommands(runId: string, commands: RunCommand[]) {
+    await this.ready;
+    const run = await this.getRun(runId);
+    const byId = new Map(this.state.commands.map((command) => [command.id, command]));
+    for (const command of commands) {
+      byId.set(command.id, command);
+    }
+
+    const latestCommand = [...byId.values()]
+      .filter((command) => command.runId === runId && command.status === 'running')
+      .sort((left, right) => right.startedAt.localeCompare(left.startedAt))[0];
+
+    const updatedRun = {
+      ...run,
+      currentCommandId: latestCommand?.id
+    };
+
+    this.state = {
+      ...this.state,
+      commands: [...byId.values()].sort((left, right) => left.startedAt.localeCompare(right.startedAt)),
+      runs: this.state.runs.map((candidate) => (candidate.runId === runId ? updatedRun : candidate))
+    };
+    await this.persist();
+    await this.emit({ type: 'run.updated', payload: { run: updatedRun } }, run.repoId);
+    await this.emit({ type: 'run.commands_upserted', payload: { runId, commands } }, run.repoId);
   }
 
   async transitionRun(runId: string, patch: RunTransitionPatch): Promise<AgentRun> {
@@ -297,15 +356,30 @@ export class RepoBoardDO extends DurableObject<Env> {
       runId: updated.runId,
       updatedAt: nowIso
     };
+    const events = nextStatusChanged(run, updated, patch.appendTimelineNote)
+      ? [
+          buildRunEvent(
+            updated,
+            'workflow',
+            'run.status_changed',
+            `Run status changed from ${run.status} to ${updated.status}.`,
+            { from: run.status, to: updated.status }
+          )
+        ]
+      : [];
 
     this.state = {
       ...this.state,
       tasks: this.state.tasks.map((candidate) => (candidate.taskId === nextTask.taskId ? nextTask : candidate)),
-      runs: this.state.runs.map((candidate) => (candidate.runId === runId ? updated : candidate))
+      runs: this.state.runs.map((candidate) => (candidate.runId === runId ? updated : candidate)),
+      events: [...this.state.events, ...events]
     };
     await this.persist();
     await this.emit({ type: 'task.updated', payload: { task: nextTask } }, updated.repoId);
     await this.emit({ type: 'run.updated', payload: { run: updated } }, updated.repoId);
+    if (events.length) {
+      await this.emit({ type: 'run.events_appended', payload: { runId, events } }, updated.repoId);
+    }
     return updated;
   }
 
@@ -361,6 +435,159 @@ export class RepoBoardDO extends DurableObject<Env> {
     await this.ready;
     const logs = this.state.logs.filter((entry) => entry.runId === runId);
     return tail ? logs.slice(-tail) : logs;
+  }
+
+  async getRunEvents(runId: string) {
+    await this.ready;
+    return this.state.events.filter((entry) => entry.runId === runId);
+  }
+
+  async getRunCommands(runId: string) {
+    await this.ready;
+    return this.state.commands.filter((entry) => entry.runId === runId);
+  }
+
+  async updateOperatorSession(runId: string, session?: OperatorSession) {
+    await this.ready;
+    const run = await this.getRun(runId);
+    const updated = {
+      ...run,
+      operatorSession: session,
+      latestCodexResumeCommand: session?.codexResumeCommand ?? run.latestCodexResumeCommand
+    };
+    this.state = {
+      ...this.state,
+      runs: this.state.runs.map((candidate) => (candidate.runId === runId ? updated : candidate))
+    };
+    await this.persist();
+    await this.emit({ type: 'run.updated', payload: { run: updated } }, updated.repoId);
+    await this.emit({ type: 'run.operator_session_updated', payload: { runId, session } }, updated.repoId);
+    return updated;
+  }
+
+  async getTerminalBootstrap(runId: string): Promise<TerminalBootstrap> {
+    await this.ready;
+    const run = await this.getRun(runId);
+    const sessionName = getOperatorSessionName(run);
+    if (!run.sandboxId) {
+      return {
+        runId,
+        repoId: run.repoId,
+        taskId: run.taskId,
+        sandboxId: '',
+        sessionName,
+        status: run.status,
+        attachable: false,
+        reason: 'sandbox_missing',
+        cols: 120,
+        rows: 32,
+        codexResumeCommand: run.latestCodexResumeCommand
+      };
+    }
+
+    if (isTerminalRunStatus(run.status)) {
+      return {
+        runId,
+        repoId: run.repoId,
+        taskId: run.taskId,
+        sandboxId: run.sandboxId,
+        sessionName,
+        status: run.status,
+        attachable: false,
+        reason: 'run_not_active',
+        cols: 120,
+        rows: 32,
+        session: run.operatorSession,
+        codexResumeCommand: run.latestCodexResumeCommand
+      };
+    }
+
+    return {
+      runId,
+      repoId: run.repoId,
+      taskId: run.taskId,
+      sandboxId: run.sandboxId,
+      sessionName,
+      status: run.status,
+      attachable: true,
+      wsPath: `/api/runs/${encodeURIComponent(runId)}/ws`,
+      cols: 120,
+      rows: 32,
+      session: run.operatorSession,
+      codexResumeCommand: run.latestCodexResumeCommand
+    };
+  }
+
+  async takeOverRun(runId: string, actor = { actorId: 'same-session', actorLabel: 'Operator' }) {
+    await this.ready;
+    const run = await this.getRun(runId);
+    if (!run.sandboxId) {
+      throw notFound(`Sandbox for run ${runId} not found.`, { runId });
+    }
+
+    const now = new Date().toISOString();
+    const sessionName = getOperatorSessionName(run);
+    const session = run.operatorSession ?? {
+      id: `${runId}:${sessionName}`,
+      runId,
+      sandboxId: run.sandboxId,
+      sessionName,
+      startedAt: now,
+      actorId: actor.actorId,
+      actorLabel: actor.actorLabel,
+      connectionState: 'open' as const,
+      takeoverState: 'observing' as const,
+      codexThreadId: undefined,
+      codexResumeCommand: run.latestCodexResumeCommand
+    };
+    const nextSession: OperatorSession = {
+      ...session,
+      actorId: actor.actorId,
+      actorLabel: actor.actorLabel,
+      takeoverState: run.latestCodexResumeCommand ? 'resumable' : 'operator_control',
+      connectionState: session.connectionState === 'failed' ? 'failed' : 'open'
+    };
+
+    const updated = {
+      ...run,
+      status: 'OPERATOR_CONTROLLED' as const,
+      codexProcessId: undefined,
+      currentCommandId: undefined,
+      operatorSession: nextSession
+    };
+    const task = this.state.tasks.find((candidate) => candidate.taskId === run.taskId);
+    if (!task) {
+      throw notFound(`Task ${run.taskId} not found.`, { taskId: run.taskId, runId });
+    }
+    const nextTask: Task = {
+      ...task,
+      status: 'ACTIVE',
+      runId,
+      updatedAt: now
+    };
+    const events: RunEvent[] = [
+      buildRunEvent(updated, 'operator', 'operator.takeover_started', 'Operator took control of the live sandbox session and stopped Codex execution.', { sessionName: nextSession.sessionName })
+    ];
+    if (updated.latestCodexResumeCommand) {
+      events.push(
+        buildRunEvent(updated, 'system', 'codex.resume_available', 'Codex resume command is available for this run.', {
+          command: updated.latestCodexResumeCommand
+        })
+      );
+    }
+
+    this.state = {
+      ...this.state,
+      tasks: this.state.tasks.map((candidate) => (candidate.taskId === nextTask.taskId ? nextTask : candidate)),
+      runs: this.state.runs.map((candidate) => (candidate.runId === runId ? updated : candidate)),
+      events: [...this.state.events, ...events]
+    };
+    await this.persist();
+    await this.emit({ type: 'task.updated', payload: { task: nextTask } }, updated.repoId);
+    await this.emit({ type: 'run.updated', payload: { run: updated } }, updated.repoId);
+    await this.emit({ type: 'run.operator_session_updated', payload: { runId, session: nextSession } }, updated.repoId);
+    await this.emit({ type: 'run.events_appended', payload: { runId, events } }, updated.repoId);
+    return updated;
   }
 
   async scheduleLocalRun(runId: string, mode: 'full_run' | 'evidence_only' | 'preview_only') {
@@ -433,8 +660,36 @@ export class RepoBoardDO extends DurableObject<Env> {
     const runs = [...this.state.runs].sort((left, right) => right.startedAt.localeCompare(left.startedAt));
     const repoIds = [...new Set(tasks.map((task) => task.repoId).concat(runs.map((run) => run.repoId)))];
     const repos = await Promise.all(repoIds.map((repoId) => this.getRepo(repoId)));
-    return { repos, tasks, runs, logs: [...this.state.logs] };
+    return {
+      repos,
+      tasks,
+      runs,
+      logs: [...this.state.logs],
+      events: [...this.state.events],
+      commands: [...this.state.commands]
+    };
   }
+}
+
+function buildRunEvent(
+  run: AgentRun,
+  actorType: RunEvent['actorType'],
+  eventType: RunEvent['eventType'],
+  message: string,
+  metadata?: Record<string, string | number | boolean>
+): RunEvent {
+  const at = new Date().toISOString();
+  return {
+    id: `${run.runId}_${eventType}_${at}_${Math.random().toString(36).slice(2, 8)}`,
+    runId: run.runId,
+    repoId: run.repoId,
+    taskId: run.taskId,
+    at,
+    actorType,
+    eventType,
+    message,
+    metadata
+  };
 }
 
 function sleepForAlarm(_name: string, duration: number | `${number} ${string}`) {
@@ -443,7 +698,7 @@ function sleepForAlarm(_name: string, duration: number | `${number} ${string}`) 
 }
 
 function deriveTaskStatus(run: AgentRun, current: TaskStatus): TaskStatus {
-  if (current === 'DONE' && run.status !== 'QUEUED' && run.status !== 'BOOTSTRAPPING' && run.status !== 'RUNNING_CODEX' && run.status !== 'RUNNING_TESTS' && run.status !== 'PUSHING_BRANCH') {
+  if (current === 'DONE' && run.status !== 'QUEUED' && run.status !== 'BOOTSTRAPPING' && run.status !== 'RUNNING_CODEX' && run.status !== 'OPERATOR_CONTROLLED' && run.status !== 'RUNNING_TESTS' && run.status !== 'PUSHING_BRANCH') {
     return 'DONE';
   }
   if (run.status === 'PR_OPEN' || run.status === 'WAITING_PREVIEW' || run.status === 'EVIDENCE_RUNNING' || run.status === 'DONE') {
@@ -452,14 +707,26 @@ function deriveTaskStatus(run: AgentRun, current: TaskStatus): TaskStatus {
   if (run.status === 'FAILED') {
     return run.prUrl ? 'REVIEW' : 'FAILED';
   }
-  if (run.status === 'QUEUED' || run.status === 'BOOTSTRAPPING' || run.status === 'RUNNING_CODEX' || run.status === 'RUNNING_TESTS' || run.status === 'PUSHING_BRANCH') {
+  if (run.status === 'QUEUED' || run.status === 'BOOTSTRAPPING' || run.status === 'RUNNING_CODEX' || run.status === 'OPERATOR_CONTROLLED' || run.status === 'RUNNING_TESTS' || run.status === 'PUSHING_BRANCH') {
     return 'ACTIVE';
   }
   return current;
 }
 
+function nextStatusChanged(previous: AgentRun, next: AgentRun, note?: string) {
+  return previous.status !== next.status || Boolean(note);
+}
+
 function isTerminalRunStatus(status: AgentRun['status']) {
   return status === 'DONE' || status === 'FAILED';
+}
+
+function getOperatorSessionName(run: AgentRun) {
+  if (!run.operatorSession?.sessionName || run.operatorSession.sessionName === 'operator') {
+    return `operator-${run.runId}`;
+  }
+
+  return run.operatorSession.sessionName;
 }
 
 function cloneRepoBoardState(state: RepoBoardState): RepoBoardState {
@@ -467,12 +734,16 @@ function cloneRepoBoardState(state: RepoBoardState): RepoBoardState {
     tasks: state.tasks.map((task) => ({ ...task, context: { ...task.context, links: task.context.links.map((link) => ({ ...link })) }, uiMeta: task.uiMeta ? { ...task.uiMeta } : undefined })),
     runs: state.runs.map((run) => ({
       ...run,
+      codexProcessId: run.codexProcessId,
       changeRequest: run.changeRequest ? { ...run.changeRequest } : undefined,
+      operatorSession: run.operatorSession ? { ...run.operatorSession } : undefined,
       errors: run.errors.map((error) => ({ ...error })),
       timeline: run.timeline.map((entry) => ({ ...entry })),
       pendingEvents: run.pendingEvents.map((event) => ({ ...event })),
       executionSummary: run.executionSummary ? { ...run.executionSummary } : undefined,
       artifacts: run.artifacts ? [...run.artifacts] : undefined,
+      latestCodexResumeCommand: run.latestCodexResumeCommand,
+      currentCommandId: run.currentCommandId,
       artifactManifest: run.artifactManifest
         ? {
             ...run.artifactManifest,
@@ -485,6 +756,18 @@ function cloneRepoBoardState(state: RepoBoardState): RepoBoardState {
           }
         : undefined
     })),
-    logs: state.logs.map((log) => ({ ...log, metadata: log.metadata ? { ...log.metadata } : undefined }))
+    logs: state.logs.map((log) => ({ ...log, metadata: log.metadata ? { ...log.metadata } : undefined })),
+    events: state.events.map((event) => ({ ...event, metadata: event.metadata ? { ...event.metadata } : undefined })),
+    commands: state.commands.map((command) => ({ ...command }))
+  };
+}
+
+function normalizeRepoBoardState(state?: Partial<RepoBoardState> | null): RepoBoardState {
+  return {
+    tasks: state?.tasks ?? [],
+    runs: state?.runs ?? [],
+    logs: state?.logs ?? [],
+    events: state?.events ?? [],
+    commands: state?.commands ?? []
   };
 }

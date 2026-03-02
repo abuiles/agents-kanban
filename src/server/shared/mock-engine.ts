@@ -15,6 +15,7 @@ const OFFSETS: Record<Exclude<RunStatus, 'FAILED'>, number> = {
   QUEUED: 0,
   BOOTSTRAPPING: 1,
   RUNNING_CODEX: 3,
+  OPERATOR_CONTROLLED: 4,
   RUNNING_TESTS: 8,
   PUSHING_BRANCH: 11,
   PR_OPEN: 13,
@@ -43,6 +44,7 @@ const LOG_MESSAGES: Record<RunStatus, string[]> = {
     'Applying mock code edits based on acceptance criteria.',
     'Preparing branch for test execution.'
   ],
+  OPERATOR_CONTROLLED: ['Operator took over the live sandbox session. Codex execution is paused.'],
   RUNNING_TESTS: ['Running mock test suite and static checks.'],
   PUSHING_BRANCH: ['Pushing branch to origin in the mock remote.'],
   PR_OPEN: ['Opened mock pull request and attached task summary.'],

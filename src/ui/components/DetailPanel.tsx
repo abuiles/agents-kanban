@@ -1,4 +1,4 @@
-import type { AgentRun, Repo, RunLogEntry, TaskDetail } from '../domain/types';
+import type { AgentRun, Repo, RunCommand, RunEvent, RunLogEntry, TaskDetail, TerminalBootstrap } from '../domain/types';
 import { getBaselineUrl } from '../domain/selectors';
 import { useState } from 'react';
 
@@ -37,6 +37,7 @@ function compactUrl(value: string) {
 function statusTone(status: string) {
   if (status === 'FAILED') return 'border-rose-500/25 bg-rose-500/10 text-rose-100';
   if (status === 'DONE') return 'border-emerald-500/25 bg-emerald-500/10 text-emerald-100';
+  if (status === 'OPERATOR_CONTROLLED') return 'border-amber-500/25 bg-amber-500/10 text-amber-100';
   if (status === 'EVIDENCE_RUNNING' || status === 'RUNNING_TESTS' || status === 'RUNNING_CODEX' || status === 'BOOTSTRAPPING') {
     return 'border-cyan-500/25 bg-cyan-500/10 text-cyan-100';
   }
@@ -97,19 +98,29 @@ function ArtifactLinks({ run }: { run?: AgentRun }) {
 export function DetailPanel({
   detail,
   logs,
+  events,
+  commands,
+  terminalBootstrap,
   onEditTask,
   onRequestChanges,
   onRetryRun,
   onRetryPreview,
-  onRetryEvidence
+  onRetryEvidence,
+  onOpenTerminal,
+  onTakeOverRun
 }: {
   detail?: TaskDetail;
   logs: RunLogEntry[];
+  events: RunEvent[];
+  commands: RunCommand[];
+  terminalBootstrap?: TerminalBootstrap;
   onEditTask: (taskId: string) => void;
   onRequestChanges: (runId: string) => void;
   onRetryRun: (runId: string) => void;
   onRetryPreview: (runId: string) => void;
   onRetryEvidence: (runId: string) => void;
+  onOpenTerminal: (runId: string) => void;
+  onTakeOverRun: (runId: string) => void;
 }) {
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle');
 
@@ -132,6 +143,9 @@ export function DetailPanel({
   const canCopyLogs = logs.length > 0;
   const codexModel = task.uiMeta?.codexModel ?? 'gpt-5.1-codex-mini';
   const codexReasoningEffort = task.uiMeta?.codexReasoningEffort ?? 'medium';
+  const latestCommands = latestRun ? commands.filter((command) => command.runId === latestRun.runId) : [];
+  const latestEvents = latestRun ? events.filter((event) => event.runId === latestRun.runId) : [];
+  const currentCommand = latestRun?.currentCommandId ? latestCommands.find((command) => command.id === latestRun.currentCommandId) : undefined;
 
   async function copyLogs() {
     if (!canCopyLogs) {
@@ -296,6 +310,107 @@ export function DetailPanel({
                     </div>
                   </div>
                 ))}
+              </div>
+            </div>
+
+            <div className="rounded-lg border border-slate-800 bg-slate-900/70 p-3">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">Operator terminal</div>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => onOpenTerminal(latestRun.runId)}
+                    className="inline-flex h-8 items-center rounded-lg border border-cyan-400/35 bg-cyan-500/15 px-3 text-xs font-medium text-cyan-50 transition hover:bg-cyan-500/25"
+                  >
+                    Open terminal
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onTakeOverRun(latestRun.runId)}
+                    className="inline-flex h-8 items-center rounded-lg border border-amber-400/35 bg-amber-500/15 px-3 text-xs font-medium text-amber-50 transition hover:bg-amber-500/25"
+                  >
+                      Take over
+                  </button>
+                </div>
+              </div>
+              <p className="text-sm text-slate-400">
+                Open the terminal in a dedicated modal window. It attaches to a separate operator session, so Codex can keep running unless you explicitly take over.
+              </p>
+              {terminalBootstrap && !terminalBootstrap.attachable ? (
+                <div className="mt-3 rounded-lg border border-slate-800 bg-slate-950/70 px-3 py-2 text-sm text-slate-400">
+                  Terminal unavailable: {terminalBootstrap.reason ?? 'unknown error'}.
+                </div>
+              ) : null}
+              {latestRun.operatorSession || terminalBootstrap ? (
+                <div className="mt-3 grid gap-2 sm:grid-cols-3">
+                  <div className="rounded-lg border border-slate-800 bg-slate-950/70 px-3 py-2">
+                    <div className="text-[11px] uppercase tracking-[0.16em] text-slate-500">Session</div>
+                    <div className="mt-1 text-xs text-slate-200">
+                      {latestRun.operatorSession?.connectionState ?? (terminalBootstrap?.attachable ? 'ready' : 'idle')}
+                    </div>
+                  </div>
+                  <div className="rounded-lg border border-slate-800 bg-slate-950/70 px-3 py-2">
+                    <div className="text-[11px] uppercase tracking-[0.16em] text-slate-500">Control</div>
+                    <div className="mt-1 text-xs text-slate-200">{latestRun.operatorSession?.takeoverState ?? 'codex_control'}</div>
+                  </div>
+                  <div className="rounded-lg border border-slate-800 bg-slate-950/70 px-3 py-2">
+                    <div className="text-[11px] uppercase tracking-[0.16em] text-slate-500">Target</div>
+                    <div className="mt-1 text-xs text-slate-200">
+                      {terminalBootstrap?.sessionName ?? latestRun.operatorSession?.sessionName ?? 'operator'}
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+              {latestRun.latestCodexResumeCommand ? (
+                <div className="mt-3 rounded-lg border border-slate-800 bg-slate-950/70 px-3 py-2">
+                  <div className="text-[11px] uppercase tracking-[0.16em] text-slate-500">Codex resume</div>
+                  <code className="mt-1 block break-all text-xs text-cyan-200">{latestRun.latestCodexResumeCommand}</code>
+                </div>
+              ) : null}
+            </div>
+
+            <div className="rounded-lg border border-slate-800 bg-slate-900/70 p-3">
+              <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">Current command</div>
+              {currentCommand ? (
+                <div className="rounded-lg border border-slate-800 bg-slate-950/70 px-3 py-2">
+                  <div className="flex items-center justify-between gap-3 text-xs text-slate-400">
+                    <span>{currentCommand.phase}</span>
+                    <span>{currentCommand.status}</span>
+                  </div>
+                  <code className="mt-2 block whitespace-pre-wrap break-words text-xs text-slate-200">{currentCommand.command}</code>
+                </div>
+              ) : (
+                <p className="text-sm text-slate-500">No active command recorded.</p>
+              )}
+            </div>
+
+            <div className="rounded-lg border border-slate-800 bg-slate-900/70 p-3">
+              <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">Command history</div>
+              <div className="space-y-2">
+                {latestCommands.length ? latestCommands.map((command) => (
+                  <div key={command.id} className="rounded-lg border border-slate-800 bg-slate-950/70 px-3 py-2">
+                    <div className="flex items-center justify-between gap-3 text-xs text-slate-400">
+                      <span>{command.phase}</span>
+                      <span>{command.status}{typeof command.exitCode === 'number' ? ` · ${command.exitCode}` : ''}</span>
+                    </div>
+                    <code className="mt-2 block whitespace-pre-wrap break-words text-xs text-slate-200">{command.command}</code>
+                  </div>
+                )) : <p className="text-sm text-slate-500">Commands will appear here as the run progresses.</p>}
+              </div>
+            </div>
+
+            <div className="rounded-lg border border-slate-800 bg-slate-900/70 p-3">
+              <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">Event timeline</div>
+              <div className="space-y-2">
+                {latestEvents.length ? latestEvents.map((event) => (
+                  <div key={event.id} className="rounded-lg border border-slate-800 bg-slate-950/70 px-3 py-2">
+                    <div className="flex items-center justify-between gap-3 text-xs text-slate-400">
+                      <span>{event.eventType}</span>
+                      <span title={formatTimestamp(event.at)}>{formatRelativeTime(event.at)}</span>
+                    </div>
+                    <p className="mt-2 text-sm text-slate-200">{event.message}</p>
+                  </div>
+                )) : <p className="text-sm text-slate-500">Events will appear here once the run starts.</p>}
               </div>
             </div>
           </div>

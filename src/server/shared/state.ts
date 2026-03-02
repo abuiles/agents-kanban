@@ -1,9 +1,11 @@
-import type { AgentRun, BoardSnapshotV1, Repo, RunLogEntry, Task } from '../../ui/domain/types';
+import type { AgentRun, BoardSnapshotV1, Repo, RunCommand, RunEvent, RunLogEntry, Task } from '../../ui/domain/types';
 
 export type RepoBoardState = {
   tasks: Task[];
   runs: AgentRun[];
   logs: RunLogEntry[];
+  events: RunEvent[];
+  commands: RunCommand[];
 };
 
 export type BoardSyncResponse = {
@@ -11,12 +13,16 @@ export type BoardSyncResponse = {
   tasks: Task[];
   runs: AgentRun[];
   logs: RunLogEntry[];
+  events: RunEvent[];
+  commands: RunCommand[];
 };
 
 export const EMPTY_REPO_BOARD_STATE: RepoBoardState = {
   tasks: [],
   runs: [],
-  logs: []
+  logs: [],
+  events: [],
+  commands: []
 };
 
 export function buildBoardSnapshot(sync: BoardSyncResponse): BoardSnapshotV1 {
@@ -26,6 +32,8 @@ export function buildBoardSnapshot(sync: BoardSyncResponse): BoardSnapshotV1 {
     tasks: sync.tasks,
     runs: sync.runs,
     logs: sync.logs,
+    events: sync.events,
+    commands: sync.commands,
     ui: {
       selectedRepoId: 'all',
       seeded: false

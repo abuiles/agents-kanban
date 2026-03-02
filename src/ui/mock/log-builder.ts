@@ -8,6 +8,7 @@ const messages: Record<RunStatus, string[]> = {
     'Applying mock code edits based on acceptance criteria.',
     'Preparing branch for test execution.'
   ],
+  OPERATOR_CONTROLLED: ['Operator took over the live sandbox session. Codex execution is paused.'],
   RUNNING_TESTS: ['Running mock test suite and static checks.'],
   PUSHING_BRANCH: ['Pushing branch to origin in the mock remote.'],
   PR_OPEN: ['Opened mock pull request and attached task summary.'],

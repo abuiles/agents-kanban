@@ -94,12 +94,16 @@ export class BoardIndexDO extends DurableObject<Env> {
     const tasks = slices.flatMap((slice) => slice.tasks);
     const runs = slices.flatMap((slice) => slice.runs);
     const logs = slices.flatMap((slice) => slice.logs);
+    const events = slices.flatMap((slice) => slice.events ?? []);
+    const commands = slices.flatMap((slice) => slice.commands ?? []);
 
     return {
       repos,
       tasks: tasks.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)),
       runs: runs.sort((left, right) => right.startedAt.localeCompare(left.startedAt)),
-      logs: logs.sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+      logs: logs.sort((left, right) => left.createdAt.localeCompare(right.createdAt)),
+      events: events.sort((left, right) => left.at.localeCompare(right.at)),
+      commands: commands.sort((left, right) => left.startedAt.localeCompare(right.startedAt))
     };
   }
 
@@ -123,6 +127,11 @@ export class BoardIndexDO extends DurableObject<Env> {
           runs: snapshot.runs.filter((run) => run.repoId === repoId),
           logs: snapshot.logs.filter((log) => {
             const run = snapshot.runs.find((candidate) => candidate.runId === log.runId);
+            return run?.repoId === repoId;
+          }),
+          events: snapshot.events.filter((event) => event.repoId === repoId),
+          commands: snapshot.commands.filter((command) => {
+            const run = snapshot.runs.find((candidate) => candidate.runId === command.runId);
             return run?.repoId === repoId;
           })
         };

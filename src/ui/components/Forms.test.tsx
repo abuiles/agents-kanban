@@ -39,7 +39,7 @@ describe('TaskForm', () => {
     await user.type(sourceRefField!, 'https://github.com/abuiles/minions-demo/pull/4');
     await user.type(screen.getByLabelText('Task prompt'), 'Create a simple snake game on the homepage.');
     await user.type(acceptanceCriteriaField!, 'A playable snake game appears on index.');
-    await user.selectOptions(codexModelField! as unknown as Element, 'gpt-5.3-codex');
+    await user.selectOptions(codexModelField! as unknown as Element, 'gpt-5.3-codex-spark');
     await user.selectOptions(reasoningEffortField! as unknown as Element, 'high');
 
     await user.click(screen.getByRole('button', { name: 'Create task' }));
@@ -51,7 +51,7 @@ describe('TaskForm', () => {
       sourceRef: 'https://github.com/abuiles/minions-demo/pull/4',
       taskPrompt: 'Create a simple snake game on the homepage.',
       acceptanceCriteria: ['A playable snake game appears on index.'],
-      codexModel: 'gpt-5.3-codex',
+      codexModel: 'gpt-5.3-codex-spark',
       codexReasoningEffort: 'high'
     });
   });

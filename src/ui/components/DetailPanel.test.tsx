@@ -66,19 +66,34 @@ function buildDetail(): TaskDetail {
   };
 }
 
+function buildProps() {
+  return {
+    detail: buildDetail(),
+    logs: [],
+    events: [],
+    commands: [],
+    terminalBootstrap: undefined,
+    onEditTask: vi.fn(),
+    onRequestChanges: vi.fn(),
+    onRetryRun: vi.fn(),
+    onRetryPreview: vi.fn(),
+    onRetryEvidence: vi.fn(),
+    onOpenTerminal: vi.fn(),
+    onTakeOverRun: vi.fn()
+  };
+}
+
 describe('DetailPanel', () => {
   it('routes preview retry clicks to the preview handler only', async () => {
     const user = userEvent.setup();
     const onRetryRun = vi.fn();
     const onRetryPreview = vi.fn();
     const onRetryEvidence = vi.fn();
+    const props = buildProps();
 
     render(
       <DetailPanel
-        detail={buildDetail()}
-        logs={[]}
-        onEditTask={vi.fn()}
-        onRequestChanges={vi.fn()}
+        {...props}
         onRetryRun={onRetryRun}
         onRetryPreview={onRetryPreview}
         onRetryEvidence={onRetryEvidence}
@@ -103,7 +118,7 @@ describe('DetailPanel', () => {
 
     render(
       <DetailPanel
-        detail={buildDetail()}
+        {...buildProps()}
         logs={[
           {
             id: 'log_1',
@@ -114,11 +129,6 @@ describe('DetailPanel', () => {
             message: 'Preview discovery matched a Cloudflare preview URL.'
           }
         ]}
-        onEditTask={vi.fn()}
-        onRequestChanges={vi.fn()}
-        onRetryRun={vi.fn()}
-        onRetryPreview={vi.fn()}
-        onRetryEvidence={vi.fn()}
       />
     );
 
@@ -138,13 +148,7 @@ describe('DetailPanel', () => {
   it('shows the task source ref', () => {
     render(
       <DetailPanel
-        detail={buildDetail()}
-        logs={[]}
-        onEditTask={vi.fn()}
-        onRequestChanges={vi.fn()}
-        onRetryRun={vi.fn()}
-        onRetryPreview={vi.fn()}
-        onRetryEvidence={vi.fn()}
+        {...buildProps()}
       />
     );
 
@@ -161,13 +165,8 @@ describe('DetailPanel', () => {
 
     render(
       <DetailPanel
-        detail={buildDetail()}
-        logs={[]}
+        {...buildProps()}
         onEditTask={onEditTask}
-        onRequestChanges={vi.fn()}
-        onRetryRun={vi.fn()}
-        onRetryPreview={vi.fn()}
-        onRetryEvidence={vi.fn()}
       />
     );
 
@@ -183,13 +182,8 @@ describe('DetailPanel', () => {
 
     render(
       <DetailPanel
-        detail={buildDetail()}
-        logs={[]}
-        onEditTask={vi.fn()}
+        {...buildProps()}
         onRequestChanges={onRequestChanges}
-        onRetryRun={vi.fn()}
-        onRetryPreview={vi.fn()}
-        onRetryEvidence={vi.fn()}
       />
     );
 
@@ -197,5 +191,25 @@ describe('DetailPanel', () => {
 
     expect(onRequestChanges).toHaveBeenCalledTimes(1);
     expect(onRequestChanges).toHaveBeenCalledWith('run_demo');
+  });
+
+  it('routes terminal and takeover clicks to the corresponding handlers', async () => {
+    const user = userEvent.setup();
+    const onOpenTerminal = vi.fn();
+    const onTakeOverRun = vi.fn();
+
+    render(
+      <DetailPanel
+        {...buildProps()}
+        onOpenTerminal={onOpenTerminal}
+        onTakeOverRun={onTakeOverRun}
+      />
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Open terminal' }));
+    await user.click(screen.getByRole('button', { name: 'Take over' }));
+
+    expect(onOpenTerminal).toHaveBeenCalledWith('run_demo');
+    expect(onTakeOverRun).toHaveBeenCalledWith('run_demo');
   });
 });

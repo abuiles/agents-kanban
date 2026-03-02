@@ -18,5 +18,10 @@ export function deriveTaskStatusFromRun(run: AgentRun, current: TaskStatus): Tas
 }
 
 function isExecutionPhase(status: AgentRun['status']) {
-  return status === 'QUEUED' || status === 'BOOTSTRAPPING' || status === 'RUNNING_CODEX' || status === 'RUNNING_TESTS' || status === 'PUSHING_BRANCH';
+  return status === 'QUEUED'
+    || status === 'BOOTSTRAPPING'
+    || status === 'RUNNING_CODEX'
+    || status === 'OPERATOR_CONTROLLED'
+    || status === 'RUNNING_TESTS'
+    || status === 'PUSHING_BRANCH';
 }

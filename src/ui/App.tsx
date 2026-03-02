@@ -5,8 +5,9 @@ import { ControlSurfaceHeader, SummaryRow } from './components/ControlSurface';
 import { DetailPanel } from './components/DetailPanel';
 import { RepoForm, TaskForm } from './components/Forms';
 import { Modal } from './components/Modal';
+import { RunTerminal } from './components/RunTerminal';
 import { getTaskDetail, getTasksByColumn, getTasksForRepo } from './domain/selectors';
-import type { RunLogEntry, TaskStatus } from './domain/types';
+import type { RunCommand, RunEvent, RunLogEntry, TaskStatus, TerminalBootstrap } from './domain/types';
 import type { AgentBoardApi } from './domain/api';
 import { getAgentBoardApi } from './api';
 import { downloadJson } from './store/import-export';
@@ -25,6 +26,11 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
   const [taskToEditId, setTaskToEditId] = useState<string | undefined>();
   const [changeRequestRunId, setChangeRequestRunId] = useState<string | undefined>();
   const [changeRequestPrompt, setChangeRequestPrompt] = useState('');
+  const [selectedRunEvents, setSelectedRunEvents] = useState<RunEvent[]>([]);
+  const [selectedRunCommands, setSelectedRunCommands] = useState<RunCommand[]>([]);
+  const [terminalBootstrap, setTerminalBootstrap] = useState<TerminalBootstrap | undefined>();
+  const [terminalModalRunId, setTerminalModalRunId] = useState<string | undefined>();
+  const [terminalResumeCopied, setTerminalResumeCopied] = useState(false);
   const [notice, setNotice] = useState<string | undefined>();
   const [taskSelectionHydrated, setTaskSelectionHydrated] = useState(false);
 
@@ -40,6 +46,23 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
   const logs: RunLogEntry[] = detail?.latestRun
     ? snapshot.logs.filter((entry) => entry.runId === detail.latestRun?.runId)
     : [];
+  const terminalRun = terminalModalRunId ? snapshot.runs.find((run) => run.runId === terminalModalRunId) : undefined;
+  const terminalLogs = terminalModalRunId ? snapshot.logs.filter((entry) => entry.runId === terminalModalRunId) : [];
+  const terminalCodexLogs = terminalLogs.filter((entry) => entry.phase === 'codex');
+  const terminalStreamLogs = terminalCodexLogs.length ? terminalCodexLogs : terminalLogs;
+
+  useEffect(() => {
+    const runId = detail?.latestRun?.runId;
+    if (!runId) {
+      setSelectedRunEvents([]);
+      setSelectedRunCommands([]);
+      setTerminalBootstrap(undefined);
+      return;
+    }
+
+    void api.getRunEvents(runId).then(setSelectedRunEvents).catch(() => setSelectedRunEvents([]));
+    void api.getRunCommands(runId).then(setSelectedRunCommands).catch(() => setSelectedRunCommands([]));
+  }, [api, detail?.latestRun?.runId]);
 
   useEffect(() => {
     if (taskSelectionHydrated) {
@@ -122,6 +145,24 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
     setNotice('Retrying evidence for the current PR.');
   }
 
+  async function openTerminal(runId: string) {
+    try {
+      const bootstrap = await api.getTerminalBootstrap(runId);
+      setTerminalBootstrap(bootstrap);
+      setTerminalModalRunId(runId);
+      setTerminalResumeCopied(false);
+      setNotice(bootstrap.attachable ? 'Terminal connected to the live sandbox session.' : `Terminal unavailable: ${bootstrap.reason ?? 'unknown error'}.`);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'Failed to open terminal.');
+    }
+  }
+
+  async function takeOverRun(runId: string) {
+    const run = await api.takeOverRun(runId);
+    await api.setSelectedTaskId(run.taskId);
+    setNotice('Operator takeover recorded for the live sandbox.');
+  }
+
   async function requestChanges(runId: string) {
     const prompt = changeRequestPrompt.trim();
     if (!prompt) {
@@ -138,6 +179,22 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
 
   async function toggleTaskSelection(taskId: string) {
     await api.setSelectedTaskId(selectedTaskId === taskId ? undefined : taskId);
+  }
+
+  async function copyTerminalResumeCommand() {
+    const command = terminalRun?.latestCodexResumeCommand;
+    if (!command) {
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(command);
+      setTerminalResumeCopied(true);
+      setNotice('Copied the latest Codex resume command.');
+      window.setTimeout(() => setTerminalResumeCopied(false), 2_000);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'Failed to copy the Codex resume command.');
+    }
   }
 
   async function handleImport(event: ChangeEvent<HTMLInputElement>) {
@@ -190,11 +247,16 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
           <DetailPanel
             detail={detail}
             logs={logs}
+            events={selectedRunEvents}
+            commands={selectedRunCommands}
+            terminalBootstrap={terminalBootstrap}
             onEditTask={(taskId) => setTaskToEditId(taskId)}
             onRequestChanges={(runId) => setChangeRequestRunId(runId)}
             onRetryRun={(runId) => void retryRun(runId)}
             onRetryPreview={(runId) => void retryPreview(runId)}
             onRetryEvidence={(runId) => void retryEvidence(runId)}
+            onOpenTerminal={(runId) => void openTerminal(runId)}
+            onTakeOverRun={(runId) => void takeOverRun(runId)}
           />
         </main>
       </div>
@@ -304,6 +366,88 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
               Start review rerun
             </button>
           </form>
+        </Modal>
+      ) : null}
+
+      {terminalModalRunId && terminalBootstrap ? (
+        <Modal
+          title={`Live terminal · ${terminalRun?.branchName ?? terminalModalRunId}`}
+          closeLabel="Disconnect"
+          className="max-w-7xl"
+          onClose={() => {
+            setTerminalModalRunId(undefined);
+            setTerminalBootstrap(undefined);
+            setTerminalResumeCopied(false);
+          }}
+        >
+          <div className="grid gap-4 xl:grid-cols-[minmax(0,1.7fr)_minmax(22rem,0.85fr)]">
+            <section className="space-y-3 rounded-xl border border-slate-800 bg-slate-950/70 p-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Operator session</div>
+                  <div className="mt-1 text-sm text-slate-200">
+                    {terminalRun?.operatorSession?.connectionState ?? (terminalBootstrap.attachable ? 'connecting' : 'unavailable')}
+                    {' · '}
+                    {terminalRun?.operatorSession?.takeoverState ?? 'observing'}
+                  </div>
+                  <div className="mt-1 text-xs text-slate-500">
+                    Separate operator shell. Codex keeps running until you explicitly take over.
+                  </div>
+                </div>
+                <div className="text-xs text-slate-500">
+                  {terminalBootstrap.sessionName} · {terminalBootstrap.cols}x{terminalBootstrap.rows}
+                </div>
+              </div>
+              {terminalBootstrap.attachable ? (
+                <RunTerminal bootstrap={terminalBootstrap} />
+              ) : (
+                <div className="rounded-xl border border-slate-800 bg-slate-900/70 px-4 py-3 text-sm text-slate-400">
+                  Terminal unavailable: {terminalBootstrap.reason ?? 'unknown error'}.
+                </div>
+              )}
+            </section>
+
+            <section className="space-y-3 rounded-xl border border-slate-800 bg-slate-950/70 p-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Live Codex stream</div>
+                  <div className="mt-1 text-sm text-slate-300">
+                    {terminalCodexLogs.length ? 'Streaming Codex output.' : 'Showing live run logs while Codex output is unavailable.'}
+                  </div>
+                </div>
+                {terminalRun?.latestCodexResumeCommand ? (
+                  <button
+                    type="button"
+                    onClick={() => void copyTerminalResumeCommand()}
+                    className="inline-flex h-8 items-center rounded-lg border border-cyan-400/35 bg-cyan-500/15 px-3 text-xs font-medium text-cyan-50 transition hover:bg-cyan-500/25"
+                  >
+                    {terminalResumeCopied ? 'Copied resume' : 'Copy resume'}
+                  </button>
+                ) : null}
+              </div>
+              {terminalRun?.latestCodexResumeCommand ? (
+                <div className="rounded-xl border border-slate-800 bg-slate-900/80 px-3 py-2">
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">Resume command</div>
+                  <code className="mt-2 block break-all text-xs text-cyan-200">{terminalRun.latestCodexResumeCommand}</code>
+                </div>
+              ) : null}
+              <div className="max-h-[28rem] space-y-2 overflow-auto rounded-xl border border-slate-900 bg-[#040812] p-3 font-mono text-xs">
+                {terminalStreamLogs.length ? (
+                  terminalStreamLogs.map((log) => (
+                    <div key={log.id} className="rounded-lg border border-slate-900/80 bg-slate-950/80 px-3 py-2">
+                      <div className="flex items-center justify-between gap-2 text-[11px] uppercase tracking-[0.14em] text-slate-500">
+                        <span className={log.level === 'error' ? 'text-rose-300' : 'text-cyan-300'}>{log.phase ?? 'run'}</span>
+                        <span>{new Date(log.createdAt).toLocaleTimeString()}</span>
+                      </div>
+                      <code className="mt-2 block whitespace-pre-wrap break-words text-slate-200">{log.message}</code>
+                    </div>
+                  ))
+                ) : (
+                  <p className="text-slate-500">Logs will stream here once the run emits output.</p>
+                )}
+              </div>
+            </section>
+          </div>
         </Modal>
       ) : null}
     </div>

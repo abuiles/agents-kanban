@@ -2,6 +2,12 @@ import { useEffect, useState } from 'react';
 import type { CreateRepoInput, CreateTaskInput } from '../domain/api';
 import type { CodexModel, CodexReasoningEffort, Repo, TaskContextLink, TaskStatus } from '../domain/types';
 
+const CODEX_MODELS: Array<{ value: CodexModel; label: string }> = [
+  { value: 'gpt-5.1-codex-mini', label: 'gpt-5.1-codex-mini (default)' },
+  { value: 'gpt-5.3-codex', label: 'gpt-5.3-codex' },
+  { value: 'gpt-5.3-codex-spark', label: 'gpt-5.3-codex-spark' }
+];
+
 function FieldShell({ label, children, hint }: { label: string; children: React.ReactNode; hint?: string }) {
   return (
     <label className="grid gap-2 text-sm">
@@ -304,8 +310,11 @@ export function TaskForm({
       <div className="grid gap-4 md:grid-cols-2">
         <FieldShell label="Codex model" hint="Per-task execution model.">
           <select className={inputClass()} value={codexModel} onChange={(event) => setCodexModel(event.target.value as CodexModel)}>
-            <option value="gpt-5.1-codex-mini">gpt-5.1-codex-mini (default)</option>
-            <option value="gpt-5.3-codex">gpt-5.3-codex</option>
+            {CODEX_MODELS.map((model) => (
+              <option key={model.value} value={model.value}>
+                {model.label}
+              </option>
+            ))}
           </select>
         </FieldShell>
         <FieldShell label="Reasoning effort" hint="Passed to Codex as model reasoning effort.">

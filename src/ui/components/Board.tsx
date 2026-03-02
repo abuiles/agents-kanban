@@ -59,9 +59,12 @@ function deriveRunSignal(run?: AgentRun) {
     case 'QUEUED':
     case 'BOOTSTRAPPING':
     case 'RUNNING_CODEX':
+    case 'OPERATOR_CONTROLLED':
     case 'RUNNING_TESTS':
     case 'PUSHING_BRANCH':
-      return { label: 'Running', tone: 'text-cyan-300' };
+      return run.status === 'OPERATOR_CONTROLLED'
+        ? { label: 'Operator', tone: 'text-amber-300' }
+        : { label: 'Running', tone: 'text-cyan-300' };
     case 'PR_OPEN':
     case 'WAITING_PREVIEW':
       return { label: 'PR open', tone: 'text-violet-300' };

@@ -141,4 +141,17 @@ describe('App', () => {
 
     expect(await screen.findByText('Started a review rerun on the existing PR branch.')).toBeInTheDocument();
   });
+
+  it('opens the terminal in a modal with the live stream panel', async () => {
+    const user = userEvent.setup();
+
+    render(<App api={getLocalAgentBoardApi()} />);
+
+    await screen.findByRole('heading', { name: 'Fix settings navigation overflow' });
+    await user.click(screen.getByRole('button', { name: 'Open terminal' }));
+
+    expect(await screen.findByRole('heading', { name: /Live terminal/i })).toBeInTheDocument();
+    expect(screen.getByText('Live Codex stream')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Disconnect' })).toBeInTheDocument();
+  });
 });

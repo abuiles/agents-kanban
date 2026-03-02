@@ -1,4 +1,4 @@
-import type { AgentRun, BoardSnapshotV1, Repo, RunLogEntry, Task } from '../domain/types';
+import type { AgentRun, BoardSnapshotV1, Repo, RunCommand, RunEvent, RunLogEntry, Task } from '../domain/types';
 
 const now = new Date('2026-03-01T12:00:00.000Z');
 
@@ -123,6 +123,7 @@ const runs: AgentRun[] = [
     repoId: 'repo_dashboard',
     status: 'RUNNING_TESTS',
     branchName: 'agent/task_nav/run_nav_1',
+    sandboxId: 'run_nav_1',
     errors: [],
     startedAt: iso(12),
     timeline: [
@@ -147,6 +148,7 @@ const runs: AgentRun[] = [
     repoId: 'repo_dashboard',
     status: 'DONE',
     branchName: 'agent/task_kpi/run_kpi_1',
+    sandboxId: 'run_kpi_1',
     headSha: 'abc1234',
     prUrl: 'https://github.com/acme/internal-dashboard/pull/104',
     prNumber: 104,
@@ -186,6 +188,7 @@ const runs: AgentRun[] = [
     repoId: 'repo_dashboard',
     status: 'FAILED',
     branchName: 'agent/task_auth/run_auth_1',
+    sandboxId: 'run_auth_1',
     errors: [{ at: iso(31), message: 'Mock tests failed during auth settings suite.' }],
     startedAt: iso(35),
     endedAt: iso(31),
@@ -203,12 +206,15 @@ const runs: AgentRun[] = [
 ];
 
 const logs: RunLogEntry[] = [
-  { id: 'log_1', runId: 'run_nav_1', createdAt: iso(12), level: 'info', message: 'Queued task and reserved a mock sandbox.' },
-  { id: 'log_2', runId: 'run_nav_1', createdAt: iso(10), level: 'info', message: 'Codex is updating responsive navigation styles.' },
-  { id: 'log_3', runId: 'run_nav_1', createdAt: iso(9), level: 'info', message: 'Running dashboard test suite.' },
+  { id: 'log_1', runId: 'run_nav_1', createdAt: iso(12), level: 'info', phase: 'bootstrap', message: 'Queued task and reserved a mock sandbox.' },
+  { id: 'log_2', runId: 'run_nav_1', createdAt: iso(10), level: 'info', phase: 'codex', message: 'Codex is updating responsive navigation styles.' },
+  { id: 'log_3', runId: 'run_nav_1', createdAt: iso(9), level: 'info', phase: 'tests', message: 'Running dashboard test suite.' },
   { id: 'log_4', runId: 'run_kpi_1', createdAt: iso(14), level: 'info', message: 'Evidence complete. Mock before/after screenshots attached.' },
   { id: 'log_5', runId: 'run_auth_1', createdAt: iso(31), level: 'error', message: 'Test failure: region selector never resolved.' }
 ];
+
+const events: RunEvent[] = [];
+const commands: RunCommand[] = [];
 
 export function createSeedSnapshot(): BoardSnapshotV1 {
   return {
@@ -217,6 +223,8 @@ export function createSeedSnapshot(): BoardSnapshotV1 {
     tasks,
     runs,
     logs,
+    events,
+    commands,
     ui: {
       selectedRepoId: 'all',
       selectedTaskId: 'task_nav',

@@ -4,6 +4,7 @@ export type RunStatus =
   | 'QUEUED'
   | 'BOOTSTRAPPING'
   | 'RUNNING_CODEX'
+  | 'OPERATOR_CONTROLLED'
   | 'RUNNING_TESTS'
   | 'PUSHING_BRANCH'
   | 'PR_OPEN'
@@ -13,8 +14,21 @@ export type RunStatus =
   | 'FAILED';
 
 export type SimulationProfile = 'happy_path' | 'fail_tests' | 'fail_preview';
-export type CodexModel = 'gpt-5.3-codex' | 'gpt-5.1-codex-mini';
+export type CodexModel = 'gpt-5.3-codex' | 'gpt-5.3-codex-spark' | 'gpt-5.1-codex-mini';
 export type CodexReasoningEffort = 'low' | 'medium' | 'high';
+
+export type RunEventType =
+  | 'run.status_changed'
+  | 'command.started'
+  | 'command.completed'
+  | 'log.appended'
+  | 'operator.attached'
+  | 'operator.detached'
+  | 'operator.takeover_started'
+  | 'operator.takeover_ended'
+  | 'codex.resume_available';
+
+export type RunCommandPhase = 'bootstrap' | 'codex' | 'tests' | 'push' | 'pr' | 'preview' | 'evidence' | 'operator';
 
 export type Repo = {
   repoId: string;
@@ -109,6 +123,64 @@ export type ArtifactPointer = {
   url: string;
 };
 
+export type RunEvent = {
+  id: string;
+  runId: string;
+  repoId: string;
+  taskId: string;
+  at: string;
+  actorType: 'workflow' | 'sandbox' | 'system' | 'operator';
+  eventType: RunEventType;
+  message: string;
+  metadata?: Record<string, string | number | boolean>;
+};
+
+export type RunCommand = {
+  id: string;
+  runId: string;
+  phase: RunCommandPhase;
+  startedAt: string;
+  completedAt?: string;
+  command: string;
+  exitCode?: number;
+  status: 'running' | 'completed' | 'failed';
+  source: 'system' | 'operator';
+  stdoutPreview?: string;
+  stderrPreview?: string;
+};
+
+export type OperatorSession = {
+  id: string;
+  runId: string;
+  sandboxId: string;
+  sessionName: string;
+  startedAt: string;
+  endedAt?: string;
+  actorId: string;
+  actorLabel: string;
+  connectionState: 'connecting' | 'open' | 'closed' | 'failed';
+  takeoverState: 'codex_control' | 'observing' | 'operator_control' | 'resumable';
+  codexThreadId?: string;
+  codexResumeCommand?: string;
+  closeReason?: string;
+};
+
+export type TerminalBootstrap = {
+  runId: string;
+  repoId: string;
+  taskId: string;
+  sandboxId: string;
+  sessionName: string;
+  status: RunStatus;
+  attachable: boolean;
+  reason?: string;
+  wsPath?: string;
+  cols: number;
+  rows: number;
+  session?: OperatorSession;
+  codexResumeCommand?: string;
+};
+
 export type ArtifactManifest = {
   logs: { key: string; label: string; url?: string };
   before?: ArtifactPointer;
@@ -172,6 +244,10 @@ export type AgentRun = {
   evidenceSandboxId?: string;
   commitSha?: string;
   commitMessage?: string;
+  codexProcessId?: string;
+  currentCommandId?: string;
+  latestCodexResumeCommand?: string;
+  operatorSession?: OperatorSession;
   dependencyContext?: {
     sourceTaskId?: string;
     sourceRunId?: string;
@@ -218,6 +294,8 @@ export type BoardSnapshotV1 = {
   tasks: Task[];
   runs: AgentRun[];
   logs: RunLogEntry[];
+  events: RunEvent[];
+  commands: RunCommand[];
   ui: {
     selectedRepoId: string | 'all';
     selectedTaskId?: string;

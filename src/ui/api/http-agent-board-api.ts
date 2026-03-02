@@ -1,5 +1,5 @@
 import type { AgentBoardApi, CreateRepoInput, CreateTaskInput, RequestRunChangesInput, UpdateRepoInput, UpdateTaskInput } from '../domain/api';
-import type { AgentRun, BoardSnapshotV1, Repo, RunLogEntry, Task, TaskDetail } from '../domain/types';
+import type { AgentRun, BoardSnapshotV1, OperatorSession, Repo, RunCommand, RunEvent, RunLogEntry, Task, TaskDetail, TerminalBootstrap } from '../domain/types';
 import { getTaskDetail } from '../domain/selectors';
 import { parseBoardSnapshot } from '../store/board-snapshot';
 import { UiPreferencesStore } from '../store/ui-preferences-store';
@@ -10,13 +10,15 @@ const EMPTY_SNAPSHOT: BoardSnapshotV1 = {
   tasks: [],
   runs: [],
   logs: [],
+  events: [],
+  commands: [],
   ui: {
     selectedRepoId: 'all',
     seeded: false
   }
 };
 
-type BoardSyncResponse = Pick<BoardSnapshotV1, 'repos' | 'tasks' | 'runs' | 'logs'>;
+type BoardSyncResponse = Pick<BoardSnapshotV1, 'repos' | 'tasks' | 'runs' | 'logs' | 'events' | 'commands'>;
 
 type BoardEvent =
   | { type: 'board.snapshot'; payload: BoardSyncResponse }
@@ -24,6 +26,9 @@ type BoardEvent =
   | { type: 'task.updated'; payload: { task: Task } }
   | { type: 'run.updated'; payload: { run: AgentRun } }
   | { type: 'run.logs_appended'; payload: { runId: string; logs: RunLogEntry[] } }
+  | { type: 'run.events_appended'; payload: { runId: string; events: RunEvent[] } }
+  | { type: 'run.commands_upserted'; payload: { runId: string; commands: RunCommand[] } }
+  | { type: 'run.operator_session_updated'; payload: { runId: string; session?: OperatorSession } }
   | { type: 'server.error'; payload: { message: string } };
 
 export class HttpAgentBoardApi implements AgentBoardApi {
@@ -133,6 +138,12 @@ export class HttpAgentBoardApi implements AgentBoardApi {
     return run;
   }
 
+  async takeOverRun(runId: string) {
+    const run = await this.request<AgentRun>(`/api/runs/${encodeURIComponent(runId)}/takeover`, { method: 'POST' });
+    await this.refresh();
+    return run;
+  }
+
   async getRunLogs(runId: string, options?: { tail?: number }) {
     const search = options?.tail ? `?tail=${options.tail}` : '';
     const logs = await this.request<RunLogEntry[]>(`/api/runs/${encodeURIComponent(runId)}/logs${search}`);
@@ -142,6 +153,30 @@ export class HttpAgentBoardApi implements AgentBoardApi {
     });
     this.emit();
     return logs;
+  }
+
+  async getRunEvents(runId: string) {
+    const events = await this.request<RunEvent[]>(`/api/runs/${encodeURIComponent(runId)}/events`);
+    this.snapshot = this.composeSnapshot({
+      ...this.snapshot,
+      events: dedupeById([...this.snapshot.events.filter((entry) => entry.runId !== runId), ...events], 'id')
+    });
+    this.emit();
+    return events;
+  }
+
+  async getRunCommands(runId: string) {
+    const commands = await this.request<RunCommand[]>(`/api/runs/${encodeURIComponent(runId)}/commands`);
+    this.snapshot = this.composeSnapshot({
+      ...this.snapshot,
+      commands: dedupeById([...this.snapshot.commands.filter((entry) => entry.runId !== runId), ...commands], 'id')
+    });
+    this.emit();
+    return commands;
+  }
+
+  async getTerminalBootstrap(runId: string) {
+    return this.request<TerminalBootstrap>(`/api/runs/${encodeURIComponent(runId)}/terminal`);
   }
 
   exportState() {
@@ -237,6 +272,27 @@ export class HttpAgentBoardApi implements AgentBoardApi {
         });
         this.emit();
         return;
+      case 'run.events_appended':
+        this.snapshot = this.composeSnapshot({
+          ...this.snapshot,
+          events: dedupeById([...this.snapshot.events, ...event.payload.events], 'id')
+        });
+        this.emit();
+        return;
+      case 'run.commands_upserted':
+        this.snapshot = this.composeSnapshot({
+          ...this.snapshot,
+          commands: dedupeById([...this.snapshot.commands, ...event.payload.commands], 'id')
+        });
+        this.emit();
+        return;
+      case 'run.operator_session_updated':
+        this.snapshot = this.composeSnapshot({
+          ...this.snapshot,
+          runs: this.snapshot.runs.map((run) => (run.runId === event.payload.runId ? { ...run, operatorSession: event.payload.session } : run))
+        });
+        this.emit();
+        return;
       case 'server.error':
         console.error('Board websocket server error', event.payload.message);
         return;
@@ -323,6 +379,18 @@ function dedupeLogs(logs: RunLogEntry[]) {
       return false;
     }
     seen.add(entry.id);
+    return true;
+  });
+}
+
+function dedupeById<T extends { id: string }>(items: T[], key: 'id') {
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    const value = item[key];
+    if (seen.has(value)) {
+      return false;
+    }
+    seen.add(value);
     return true;
   });
 }

@@ -8,7 +8,13 @@ export function isBoardSnapshot(value: unknown): value is BoardSnapshotV1 {
   }
 
   const snapshot = value as Partial<BoardSnapshotV1>;
-  return snapshot.version === 1 && Array.isArray(snapshot.repos) && Array.isArray(snapshot.tasks) && Array.isArray(snapshot.runs) && Array.isArray(snapshot.logs);
+  return snapshot.version === 1
+    && Array.isArray(snapshot.repos)
+    && Array.isArray(snapshot.tasks)
+    && Array.isArray(snapshot.runs)
+    && Array.isArray(snapshot.logs)
+    && Array.isArray(snapshot.events)
+    && Array.isArray(snapshot.commands);
 }
 
 export function parseBoardSnapshot(serialized: string): BoardSnapshotV1 {

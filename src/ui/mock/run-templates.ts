@@ -4,6 +4,7 @@ const offsets: Record<Exclude<RunStatus, 'FAILED'>, number> = {
   QUEUED: 0,
   BOOTSTRAPPING: 1,
   RUNNING_CODEX: 3,
+  OPERATOR_CONTROLLED: 4,
   RUNNING_TESTS: 8,
   PUSHING_BRANCH: 11,
   PR_OPEN: 13,

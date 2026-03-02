@@ -1,4 +1,4 @@
-import type { AgentRun, ArtifactManifest, RunLogEntry, RunStatus, Task } from '../domain/types';
+import type { AgentRun, ArtifactManifest, RunCommand, RunEvent, RunLogEntry, RunStatus, Task } from '../domain/types';
 import { buildLogsForStatus } from './log-builder';
 import { buildSimulationPlan } from './run-templates';
 import { getBaselineUrl } from '../domain/selectors';
@@ -57,6 +57,7 @@ export class RunSimulator {
       repoId: task.repoId,
       status: 'QUEUED',
       branchName: options?.branchName ?? `agent/${task.taskId}/${runId}`,
+      sandboxId: runId,
       baseRunId: options?.baseRunId,
       changeRequest: options?.changeRequest,
       prUrl: options?.prUrl,
@@ -161,9 +162,10 @@ export class RunSimulator {
         ...run,
         status,
         pendingEvents,
-        currentStepStartedAt: now,
-        timeline: [...run.timeline, { status, at: now, note }]
-      };
+      currentStepStartedAt: now,
+      currentCommandId: undefined,
+      timeline: [...run.timeline, { status, at: now, note }]
+    };
 
       if (status === 'PR_OPEN') {
         nextRun.prNumber = nextRun.prNumber ?? Math.floor((Date.now() / 1_000) % 10_000);
@@ -203,6 +205,34 @@ export class RunSimulator {
         ...snapshot,
         tasks: nextTask,
         runs: snapshot.runs.map((candidate) => (candidate.runId === runId ? nextRun : candidate)),
+        events: [
+          ...snapshot.events,
+          {
+            id: `${runId}_event_${status}_${now}`,
+            runId,
+            repoId: run.repoId,
+            taskId: run.taskId,
+            at: now,
+            actorType: 'workflow',
+            eventType: 'run.status_changed',
+            message: `Mock run moved to ${status}.`
+          } satisfies RunEvent
+        ],
+        commands: status === 'QUEUED'
+          ? snapshot.commands
+          : [
+              ...snapshot.commands,
+              {
+                id: `${runId}_command_${status}_${now}`,
+                runId,
+                phase: status === 'RUNNING_CODEX' ? 'codex' : status === 'RUNNING_TESTS' ? 'tests' : status === 'PUSHING_BRANCH' ? 'push' : status === 'WAITING_PREVIEW' ? 'preview' : status === 'EVIDENCE_RUNNING' ? 'evidence' : 'bootstrap',
+                startedAt: now,
+                completedAt: ['DONE', 'FAILED'].includes(status) ? now : undefined,
+                command: `mock ${status.toLowerCase()}`,
+                status: ['DONE', 'FAILED'].includes(status) ? 'completed' : 'running',
+                source: 'system'
+              } satisfies RunCommand
+            ],
         logs: [...snapshot.logs, ...generatedLogs]
       };
     });
