@@ -1261,16 +1261,22 @@ Stage 3 is complete when:
 12. Wire all real transitions/logs back through `RepoBoardDO` and existing WebSockets.
 13. Run integration and end-to-end verification on a real repo.
 
-## What Stage 4 should cover
+## What the next stages should cover
 
 Stage 3 should deliberately stop at the first complete real run system.
 
-The next stage should focus on:
+The next five stages should focus on:
 
-- operator tooling
-- security hardening and policy controls
-- execution determinism controls
-- scaling and scheduling
-- richer observability and auditability
+- live operator visibility and sandbox attach
+- command and decision explainability
+- operator control and deterministic execution options
+- scaling, queueing, and multi-run behavior
+- security, policy, and credential hardening
 
-That stage is documented in `docs/stage_4.md`.
+Those stages are documented in:
+
+- `docs/stage_4.md`
+- `docs/stage_5.md`
+- `docs/stage_6.md`
+- `docs/stage_7.md`
+- `docs/stage_8.md`
