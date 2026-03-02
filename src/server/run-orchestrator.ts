@@ -7,14 +7,15 @@ import { NonRetryableError } from 'cloudflare:workflows';
 import { inspectPreviewDiscovery } from './preview-discovery';
 import { LineLogBuffer } from './line-log-buffer';
 import { buildWorkflowInvocationId } from './workflow-id';
-import { normalizeTaskSourceRef, resolveTaskSourceRef } from './source-ref';
 import { shouldRunEvidence, shouldRunPreview } from './shared/repo-execution-policy';
 import {
   formatCodexRateLimitSnapshot,
   getCodexCapacityDecision,
   type CodexRateLimitsResponse
 } from './codex-rate-limit';
-import { buildGithubApiBaseUrl, buildGithubGitUrl, getRepoHost } from '../shared/scm';
+import { getRepoHost } from '../shared/scm';
+import type { ScmAdapter, ScmAdapterCredential } from './scm/adapter';
+import { getScmAdapter } from './scm/registry';
 
 type WorkflowBinding<T> = {
   create(options?: { id?: string; params?: T; retention?: { successRetention?: string | number; errorRetention?: string | number } }): Promise<{ id: string }>;
@@ -55,6 +56,7 @@ export async function executeRunJob(env: Env, params: RunJobParams, sleepFn: Sle
     return;
   }
   const repo = await board.getRepo(params.repoId);
+  const scmAdapter = getScmAdapter(repo);
   const codexModel = detail.task.uiMeta?.codexModel ?? 'gpt-5.1-codex-mini';
   const codexReasoningEffort = detail.task.uiMeta?.codexReasoningEffort ?? 'medium';
 
@@ -71,10 +73,19 @@ export async function executeRunJob(env: Env, params: RunJobParams, sleepFn: Sle
       await finishRunWithoutPreview(repoBoard, params.runId, 'Preview discovery is disabled for this repo.');
       return;
     }
-    return discoverPreviewAndRunEvidence(env as Stage3Env, repoBoard, detail.task, repo, params.runId, sleepFn, await getGithubPat(env as Stage3Env, board, repo));
+    return discoverPreviewAndRunEvidence(
+      env as Stage3Env,
+      repoBoard,
+      detail.task,
+      repo,
+      params.runId,
+      sleepFn,
+      scmAdapter,
+      await getScmCredential(env as Stage3Env, board, repo, scmAdapter)
+    );
   }
 
-  const pat = await getGithubPat(env as Stage3Env, board, repo);
+  const scmCredential = await getScmCredential(env as Stage3Env, board, repo, scmAdapter);
   const sandbox = getSandbox(env.Sandbox, params.runId);
 
   await repoBoard.appendRunLogs(params.runId, [buildRunLog(params.runId, `Starting sandbox run for ${repo.slug}.`, 'bootstrap')]);
@@ -82,10 +93,10 @@ export async function executeRunJob(env: Env, params: RunJobParams, sleepFn: Sle
 
   try {
     await emitCommandLifecycle(repoBoard, params.runId, 'bootstrap', 'mkdir -p /workspace/repo', () => sandbox.exec('mkdir -p /workspace/repo'));
-    await repoBoard.appendRunLogs(params.runId, [buildRunLog(params.runId, `GitHub PAT suffix: ${pat.slice(-4)}`, 'bootstrap')]);
+    await repoBoard.appendRunLogs(params.runId, [buildRunLog(params.runId, `${scmAdapter.provider} token suffix: ${scmCredential.token.slice(-4)}`, 'bootstrap')]);
     await restoreCodexAuth(env as Stage3Env, sandbox, repo, params.runId, repoBoard);
     await logCodexAuthDiagnostics(sandbox, params.runId, repoBoard);
-    await sandbox.gitCheckout(buildGithubCloneUrl(repo, pat), {
+    await sandbox.gitCheckout(scmAdapter.buildCloneUrl(repo, scmCredential), {
       branch: repo.defaultBranch,
       targetDir: '/workspace/repo'
     });
@@ -96,7 +107,7 @@ export async function executeRunJob(env: Env, params: RunJobParams, sleepFn: Sle
       `cd /workspace/repo && git config user.name 'AgentsKanban' && git config user.email 'agentskanban@local'`,
       () => sandbox.exec(`cd /workspace/repo && git config user.name 'AgentsKanban' && git config user.email 'agentskanban@local'`)
     );
-    await prepareRunBranchFromTaskSource(sandbox, repoBoard, params.runId, detail.task, repo, run);
+    await prepareRunBranchFromTaskSource(sandbox, repoBoard, params.runId, detail.task, repo, run, scmAdapter);
   } catch (error) {
     await failRun(repoBoard, params.runId, 'BOOTSTRAP_FAILED', 'bootstrap', error);
     throw error;
@@ -251,7 +262,7 @@ cat /workspace/task.txt | codex exec -m ${codexModel} -c model_reasoning_effort=
         appendTimelineNote: 'Existing pull request updated with requested changes.'
       });
     } else {
-      const pr = await createPullRequest(repo, detail.task, latestRun, pat);
+      const pr = await scmAdapter.createReviewRequest(repo, detail.task, latestRun, scmCredential);
       await repoBoard.transitionRun(params.runId, {
         status: 'PR_OPEN',
         prNumber: pr.number,
@@ -270,7 +281,7 @@ cat /workspace/task.txt | codex exec -m ${codexModel} -c model_reasoning_effort=
     return;
   }
 
-  await discoverPreviewAndRunEvidence(env as Stage3Env, repoBoard, detail.task, repo, params.runId, sleepFn, pat);
+  await discoverPreviewAndRunEvidence(env as Stage3Env, repoBoard, detail.task, repo, params.runId, sleepFn, scmAdapter, scmCredential);
 }
 
 async function runEvidence(
@@ -329,13 +340,22 @@ npx -y playwright install chromium
   const updated = await repoBoard.storeArtifactManifest(runId);
   await persistArtifactManifest(env, updated.runId, updated.artifactManifest);
   if (updated.prNumber) {
-    const pat = await getGithubPat(env, board, repo);
-    await upsertRunComment(repo, task, updated, pat);
+    const scmAdapter = getScmAdapter(repo);
+    const scmCredential = await getScmCredential(env, board, repo, scmAdapter);
+    await scmAdapter.upsertRunComment(repo, task, updated, scmCredential);
   }
   await repoBoard.transitionRun(runId, { status: 'DONE', evidenceStatus: 'READY', endedAt: new Date().toISOString(), appendTimelineNote: 'Evidence captured and manifest stored.' });
 }
 
-async function waitForPreview(env: Stage3Env, repoBoard: DurableObjectStub<RepoBoardDO>, repo: Repo, runId: string, sleepFn: SleepFn, pat: string) {
+async function waitForPreview(
+  env: Stage3Env,
+  repoBoard: DurableObjectStub<RepoBoardDO>,
+  repo: Repo,
+  runId: string,
+  sleepFn: SleepFn,
+  scmAdapter: ScmAdapter,
+  scmCredential: ScmAdapterCredential
+) {
   const attempts = 12;
   const headSha = (await repoBoard.getRun(runId)).headSha;
   if (!headSha) {
@@ -343,7 +363,7 @@ async function waitForPreview(env: Stage3Env, repoBoard: DurableObjectStub<RepoB
   }
 
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    const discovery = await lookupPreviewUrl(repo, headSha, pat, repo.previewCheckName);
+    const discovery = await lookupPreviewUrl(repo, headSha, scmAdapter, scmCredential, repo.previewCheckName);
     await repoBoard.appendRunLogs(runId, [
       buildRunLog(runId, `Preview discovery attempt ${attempt}/${attempts}.`, 'preview', 'info', { headSha }),
       buildRunLog(
@@ -376,14 +396,15 @@ async function discoverPreviewAndRunEvidence(
   repo: Repo,
   runId: string,
   sleepFn: SleepFn,
-  pat: string
+  scmAdapter: ScmAdapter,
+  scmCredential: ScmAdapterCredential
 ) {
   await repoBoard.transitionRun(runId, {
     status: 'WAITING_PREVIEW',
     previewStatus: 'DISCOVERING',
-    appendTimelineNote: 'Polling GitHub checks for preview URL.'
+    appendTimelineNote: 'Polling SCM checks for preview URL.'
   });
-  const previewUrl = await waitForPreview(env, repoBoard, repo, runId, sleepFn, pat);
+  const previewUrl = await waitForPreview(env, repoBoard, repo, runId, sleepFn, scmAdapter, scmCredential);
   if (!previewUrl) {
     await failRun(repoBoard, runId, 'PREVIEW_TIMEOUT', 'preview', 'Preview URL did not appear before timeout.', false);
     return;
@@ -422,18 +443,24 @@ async function finishRunWithoutEvidence(repoBoard: DurableObjectStub<RepoBoardDO
   });
 }
 
-async function lookupPreviewUrl(repo: Repo, headSha: string, pat: string, previewCheckName?: string) {
-  const response = await githubRequest(repo, `/commits/${headSha}/check-runs`, pat);
-  const payload = await response.json() as {
-    check_runs?: Array<{
-      name?: string;
-      details_url?: string;
-      html_url?: string;
-      output?: { summary?: string | null };
-      app?: { slug?: string };
-    }>;
-  };
-  return inspectPreviewDiscovery({ ...repo, previewCheckName }, payload.check_runs ?? []);
+async function lookupPreviewUrl(
+  repo: Repo,
+  headSha: string,
+  scmAdapter: ScmAdapter,
+  scmCredential: ScmAdapterCredential,
+  previewCheckName?: string
+) {
+  const checks = await scmAdapter.listCommitChecks(repo, headSha, scmCredential);
+  return inspectPreviewDiscovery(
+    { ...repo, previewCheckName },
+    checks.map((check) => ({
+      name: check.name,
+      details_url: check.detailsUrl,
+      html_url: check.htmlUrl,
+      output: { summary: check.summary ?? null },
+      app: { slug: check.appSlug }
+    }))
+  );
 }
 
 function formatPreviewDiscoveryLog(discovery: Awaited<ReturnType<typeof lookupPreviewUrl>>) {
@@ -459,93 +486,26 @@ function formatPreviewDiscoveryLog(discovery: Awaited<ReturnType<typeof lookupPr
   return `Preview discovery found no usable preview URL. checks: ${checks}`;
 }
 
-async function createPullRequest(repo: Repo, task: Task, run: Awaited<ReturnType<RepoBoardDO['getRun']>>, pat: string) {
-  const response = await githubRequest(repo, '/pulls', pat, {
-    method: 'POST',
-    body: JSON.stringify({
-      title: task.title,
-      head: run.branchName,
-      base: repo.defaultBranch,
-      body: buildPullRequestBody(task, run)
-    })
-  });
-  if (!response.ok) {
-    throw new Error(`GitHub PR creation failed with status ${response.status}.`);
-  }
-  const payload = await response.json() as { number: number; html_url: string };
-  return { number: payload.number, url: payload.html_url };
-}
-
-async function upsertRunComment(repo: Repo, task: Task, run: Awaited<ReturnType<RepoBoardDO['getRun']>>, pat: string) {
-  if (!run.prNumber) return;
-  const marker = `<!-- agentboard-run:${run.runId} -->`;
-  const body = [
-    marker,
-    `Task: ${task.title}`,
-    '',
-    `Run: ${run.runId}`,
-    run.previewUrl ? `Preview: ${run.previewUrl}` : 'Preview: pending',
-    run.artifactManifest?.before ? `Before: ${run.artifactManifest.before.key}` : undefined,
-    run.artifactManifest?.after ? `After: ${run.artifactManifest.after.key}` : undefined,
-    run.artifactManifest?.trace ? `Trace: ${run.artifactManifest.trace.key}` : undefined,
-    run.artifactManifest?.video ? `Video: ${run.artifactManifest.video.key}` : undefined
-  ].filter(Boolean).join('\n');
-
-  const commentsResponse = await githubRequest(repo, `/issues/${run.prNumber}/comments`, pat);
-  const comments = await commentsResponse.json() as Array<{ id: number; body?: string }>;
-  const existing = comments.find((comment) => comment.body?.includes(marker));
-  if (existing) {
-    await githubRequest(repo, `/issues/comments/${existing.id}`, pat, { method: 'PATCH', body: JSON.stringify({ body }) });
-    return;
-  }
-  await githubRequest(repo, `/issues/${run.prNumber}/comments`, pat, { method: 'POST', body: JSON.stringify({ body }) });
-}
-
-async function githubRequest(repo: Repo, path: string, pat: string, init?: RequestInit) {
-  const response = await fetch(`${buildGithubApiBaseUrl(repo)}/repos/${repo.slug}${path}`, {
-    ...init,
-    headers: {
-      Accept: 'application/vnd.github+json',
-      Authorization: `Bearer ${pat}`,
-      'User-Agent': 'AgentsKanban',
-      ...(init?.headers ?? {})
-    }
-  });
-  if (!response.ok && response.status >= 500) {
-    throw new Error(`GitHub API request failed with status ${response.status}.`);
-  }
-  return response;
-}
-
-function buildPullRequestBody(task: Task, run: Awaited<ReturnType<RepoBoardDO['getRun']>>) {
-  return [
-    `Task: ${task.title}`,
-    '',
-    task.description ?? '',
-    task.sourceRef ? `Source ref: ${task.sourceRef}` : undefined,
-    '',
-    'Acceptance criteria:',
-    ...task.acceptanceCriteria.map((item) => `- ${item}`),
-    '',
-    `Run ID: ${run.runId}`
-  ].join('\n');
-}
-
-async function getGithubPat(env: Stage3Env, board: DurableObjectStub<BoardIndexDO>, repo: Repo) {
-  if (repo.scmProvider && repo.scmProvider !== 'github') {
-    throw new NonRetryableError(`SCM provider ${repo.scmProvider} is not supported by the GitHub adapter yet.`);
-  }
-
-  const registryToken = await board.getScmCredentialSecret('github', getRepoHost(repo));
+async function getScmCredential(
+  env: Stage3Env,
+  board: DurableObjectStub<BoardIndexDO>,
+  repo: Repo,
+  scmAdapter: ScmAdapter
+): Promise<ScmAdapterCredential> {
+  const registryToken = await board.getScmCredentialSecret(scmAdapter.provider, getRepoHost(repo));
   if (registryToken) {
-    return registryToken;
+    return { token: registryToken };
   }
 
-  const pat = await env.SECRETS_KV?.get('github_pat');
-  if (!pat) {
-    throw new NonRetryableError('Missing GitHub credential for this host. Configure the SCM credential registry or `github_pat` in KV.');
+  if (scmAdapter.provider === 'github') {
+    const pat = await env.SECRETS_KV?.get('github_pat');
+    if (!pat) {
+      throw new NonRetryableError('Missing GitHub credential for this host. Configure the SCM credential registry or `github_pat` in KV.');
+    }
+    return { token: pat };
   }
-  return pat;
+
+  throw new NonRetryableError(`Missing SCM credential for provider ${scmAdapter.provider} host ${getRepoHost(repo)}.`);
 }
 
 function bytesToBase64(buffer: ArrayBuffer) {
@@ -1291,10 +1251,6 @@ async function runCodexProcessWithLogs(
   return result;
 }
 
-function buildGithubCloneUrl(repo: Repo, pat: string) {
-  return buildGithubGitUrl(repo, pat);
-}
-
 function buildCodexPrompt(task: Task, repo: Repo, run: Awaited<ReturnType<RepoBoardDO['getRun']>>) {
   return [
     `You are working on the Git repository for ${repo.slug}.`,
@@ -1335,7 +1291,8 @@ async function prepareRunBranchFromTaskSource(
   runId: string,
   task: Task,
   repo: Repo,
-  run: Awaited<ReturnType<RepoBoardDO['getRun']>>
+  run: Awaited<ReturnType<RepoBoardDO['getRun']>>,
+  scmAdapter: ScmAdapter
 ) {
   if (run.changeRequest?.prompt && run.prUrl) {
     await repoBoard.appendRunLogs(runId, [
@@ -1383,7 +1340,9 @@ async function prepareRunBranchFromTaskSource(
     return;
   }
 
-  const explicitSourceRef = task.branchSource?.kind === 'explicit_source_ref' ? task.branchSource.resolvedRef : resolveTaskSourceRef(task);
+  const explicitSourceRef = task.branchSource?.kind === 'explicit_source_ref'
+    ? task.branchSource.resolvedRef
+    : scmAdapter.inferSourceRefFromTask(task, repo);
   if (!explicitSourceRef) {
     const checkout = await sandbox.exec(`cd /workspace/repo && git checkout -b ${shellEscape(run.branchName)}`);
     await appendCommandLogs(repoBoard, runId, 'bootstrap', checkout.stdout, checkout.stderr);
@@ -1393,7 +1352,7 @@ async function prepareRunBranchFromTaskSource(
     return;
   }
 
-  const normalized = normalizeTaskSourceRef(explicitSourceRef, repo.slug);
+  const normalized = scmAdapter.normalizeSourceRef(explicitSourceRef, repo);
   await repoBoard.appendRunLogs(runId, [
     buildRunLog(runId, `Preparing run branch ${run.branchName} from explicit source ref ${normalized.label}.`, 'bootstrap')
   ]);
