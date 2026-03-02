@@ -1,10 +1,12 @@
 import type { ArtifactManifest, AgentRun, Repo, RunError, RunLogEntry, RunStatus, Task } from '../../ui/domain/types';
 import { DEFAULT_SUPPORTS_RESUME_BY_ADAPTER, normalizeRunLlmState, normalizeTaskUiMeta } from '../../shared/llm';
 import { normalizeRunReviewMetadata } from '../../shared/scm';
+import { normalizeTenantId } from '../../shared/tenant';
 
 export type RunJobMode = 'full_run' | 'evidence_only' | 'preview_only';
 
 export type RunJobParams = {
+  tenantId: string;
   repoId: string;
   taskId: string;
   runId: string;
@@ -159,34 +161,36 @@ export function buildRunLog(runId: string, message: string, phase: RunError['pha
 }
 
 export function buildArtifactManifest(run: AgentRun, task: Task, repo: Repo, environmentId: string): ArtifactManifest {
+  const baseKey = buildTenantRunArtifactBaseKey(run.tenantId, run.runId);
   return {
     logs: {
-      key: `runs/${run.runId}/logs/executor.txt`,
+      key: `${baseKey}/logs/executor.txt`,
       label: 'Executor logs'
     },
     before: {
-      key: `runs/${run.runId}/evidence/before.png`,
+      key: `${baseKey}/evidence/before.png`,
       label: 'Before screenshot',
       url: repo.baselineUrl
     },
     after: run.previewUrl
       ? {
-          key: `runs/${run.runId}/evidence/after.png`,
+          key: `${baseKey}/evidence/after.png`,
           label: 'After screenshot',
           url: run.previewUrl
         }
       : undefined,
     trace: {
-      key: `runs/${run.runId}/evidence/trace.zip`,
+      key: `${baseKey}/evidence/trace.zip`,
       label: 'Playwright trace',
-      url: `r2://runs/${run.runId}/evidence/trace.zip`
+      url: `r2://${baseKey}/evidence/trace.zip`
     },
     video: {
-      key: `runs/${run.runId}/evidence/video.mp4`,
+      key: `${baseKey}/evidence/video.mp4`,
       label: 'Playwright video',
-      url: `r2://runs/${run.runId}/evidence/video.mp4`
+      url: `r2://${baseKey}/evidence/video.mp4`
     },
     metadata: {
+      tenantId: normalizeTenantId(run.tenantId),
       generatedAt: new Date().toISOString(),
       environmentId,
       workflowInstanceId: run.workflowInstanceId,
@@ -196,4 +200,8 @@ export function buildArtifactManifest(run: AgentRun, task: Task, repo: Repo, env
       baselineUrl: task.baselineUrlOverride ?? repo.baselineUrl
     }
   };
+}
+
+export function buildTenantRunArtifactBaseKey(tenantId: string | undefined, runId: string) {
+  return `tenants/${normalizeTenantId(tenantId)}/runs/${runId}`;
 }

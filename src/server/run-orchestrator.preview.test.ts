@@ -123,7 +123,7 @@ describe('executeRunJob preview flows', () => {
       ]
     }), { status: 200 })));
 
-    await executeRunJob(harness.env, { repoId: repo.repoId, taskId: 'task_1', runId: 'run_1', mode: 'preview_only' }, async () => {});
+    await executeRunJob(harness.env, { tenantId: 'tenant_legacy', repoId: repo.repoId, taskId: 'task_1', runId: 'run_1', mode: 'preview_only' }, async () => {});
 
     expect(harness.getRun()).toMatchObject({
       status: 'DONE',
@@ -173,7 +173,7 @@ describe('executeRunJob preview flows', () => {
       throw new Error(`Unexpected fetch URL: ${url}`);
     }));
 
-    await executeRunJob(harness.env, { repoId: repo.repoId, taskId: 'task_1', runId: 'run_1', mode: 'preview_only' }, async () => {});
+    await executeRunJob(harness.env, { tenantId: 'tenant_legacy', repoId: repo.repoId, taskId: 'task_1', runId: 'run_1', mode: 'preview_only' }, async () => {});
 
     expect(harness.getRun()).toMatchObject({
       status: 'DONE',
@@ -192,7 +192,7 @@ describe('executeRunJob preview flows', () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
 
-    await executeRunJob(harness.env, { repoId: repo.repoId, taskId: 'task_1', runId: 'run_1', mode: 'preview_only' }, async () => {});
+    await executeRunJob(harness.env, { tenantId: 'tenant_legacy', repoId: repo.repoId, taskId: 'task_1', runId: 'run_1', mode: 'preview_only' }, async () => {});
 
     expect(fetchMock).not.toHaveBeenCalled();
     expect(harness.getRun()).toMatchObject({

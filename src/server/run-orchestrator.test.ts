@@ -1,11 +1,14 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { buildWorkflowInvocationId } from './workflow-id';
 import { getCodexCapacityDecision } from './codex-rate-limit';
 import { shouldRunEvidence, shouldRunPreview } from './shared/repo-execution-policy';
+import { scheduleRunJob } from './run-orchestrator';
+import { buildArtifactManifest } from './shared/real-run';
 
 describe('buildWorkflowInvocationId', () => {
   it('includes a time suffix so retries for the same run get a fresh workflow id', () => {
     const params = {
+      tenantId: 'tenant_legacy',
       repoId: 'repo_demo',
       taskId: 'task_demo',
       runId: 'run_demo',
@@ -109,5 +112,74 @@ describe('repo execution policies', () => {
 
     expect(shouldRunPreview(repo)).toBe(false);
     expect(shouldRunEvidence(repo)).toBe(false);
+  });
+});
+
+describe('tenant workflow and artifact layout', () => {
+  it('passes tenantId through workflow invocation params', async () => {
+    const create = vi.fn().mockResolvedValue({ id: 'wf_1' });
+    const env = {
+      RUN_WORKFLOW: { create }
+    } as unknown as Env;
+
+    await scheduleRunJob(env, {} as ExecutionContext, {
+      tenantId: 'tenant_acme',
+      repoId: 'repo_demo',
+      taskId: 'task_demo',
+      runId: 'run_demo',
+      mode: 'full_run'
+    });
+
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({
+      params: expect.objectContaining({
+        tenantId: 'tenant_acme',
+        runId: 'run_demo'
+      })
+    }));
+  });
+
+  it('builds tenant-prefixed artifact keys', () => {
+    const manifest = buildArtifactManifest(
+      {
+        tenantId: 'tenant_acme',
+        runId: 'run_demo',
+        taskId: 'task_demo',
+        repoId: 'repo_demo',
+        status: 'DONE',
+        branchName: 'agent/task_demo/run_demo',
+        errors: [],
+        startedAt: '2026-03-02T00:00:00.000Z',
+        simulationProfile: 'happy_path',
+        timeline: [],
+        pendingEvents: []
+      },
+      {
+        tenantId: 'tenant_acme',
+        taskId: 'task_demo',
+        repoId: 'repo_demo',
+        title: 'Demo',
+        taskPrompt: 'Prompt',
+        acceptanceCriteria: ['Done'],
+        context: { links: [] },
+        status: 'REVIEW',
+        createdAt: '2026-03-02T00:00:00.000Z',
+        updatedAt: '2026-03-02T00:00:00.000Z'
+      },
+      {
+        tenantId: 'tenant_acme',
+        repoId: 'repo_demo',
+        slug: 'acme/demo',
+        defaultBranch: 'main',
+        baselineUrl: 'https://example.com',
+        enabled: true,
+        createdAt: '2026-03-02T00:00:00.000Z',
+        updatedAt: '2026-03-02T00:00:00.000Z'
+      },
+      'env_1'
+    );
+
+    expect(manifest.logs.key).toBe('tenants/tenant_acme/runs/run_demo/logs/executor.txt');
+    expect(manifest.before?.key).toBe('tenants/tenant_acme/runs/run_demo/evidence/before.png');
+    expect(manifest.metadata.tenantId).toBe('tenant_acme');
   });
 });

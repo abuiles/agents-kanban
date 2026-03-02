@@ -317,7 +317,7 @@ describe('executeRunJob LLM adapter coverage', () => {
       { type: 'exit', exitCode: 0 }
     ]);
 
-    await executeRunJob(harness.env, { repoId: repo.repoId, taskId: task.taskId, runId: 'run_1', mode: 'full_run' }, async () => {});
+    await executeRunJob(harness.env, { tenantId: 'tenant_legacy', repoId: repo.repoId, taskId: task.taskId, runId: 'run_1', mode: 'full_run' }, async () => {});
 
     expect(harness.getRun()).toMatchObject({
       status: 'DONE',
@@ -357,7 +357,7 @@ describe('executeRunJob LLM adapter coverage', () => {
       { type: 'exit', exitCode: 0 }
     ]);
 
-    await executeRunJob(harness.env, { repoId: repo.repoId, taskId: task.taskId, runId: 'run_1', mode: 'full_run' }, async () => {});
+    await executeRunJob(harness.env, { tenantId: 'tenant_legacy', repoId: repo.repoId, taskId: task.taskId, runId: 'run_1', mode: 'full_run' }, async () => {});
 
     expect(harness.getRun()).toMatchObject({
       status: 'DONE',
