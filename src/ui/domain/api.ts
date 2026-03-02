@@ -19,6 +19,9 @@ export type CreateRepoInput = {
   defaultBranch?: string;
   baselineUrl: string;
   enabled?: boolean;
+  previewMode?: Repo['previewMode'];
+  evidenceMode?: Repo['evidenceMode'];
+  previewProvider?: Repo['previewProvider'];
   previewCheckName?: string;
   codexAuthBundleR2Key?: string;
 };

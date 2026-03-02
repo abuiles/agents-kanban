@@ -1,4 +1,4 @@
-# AgentBoard Stage 3 (Run)
+# AgentsKanban Stage 3 (Run)
 
 ## Goal
 
@@ -15,7 +15,7 @@ A task moved to `ACTIVE` should:
 - persist logs and artifacts durably
 - project the full lifecycle back into the board in real time
 
-Stage 3 is the first fully functional AgentBoard release.
+Stage 3 is the first fully functional AgentsKanban release.
 
 ## Stage 2 baseline this plan assumes
 
@@ -1020,7 +1020,7 @@ The evidence runner must:
 
 ### PR comment behavior
 
-Use one AgentBoard comment per run.
+Use one AgentsKanban comment per run.
 
 Requirements:
 
@@ -1077,7 +1077,7 @@ Use `exposePort()` plus preview URL routing when an external client must connect
 
 Use `wsConnect()` when the Worker should authenticate and route a WebSocket connection into the sandbox.
 
-### AgentBoard decision
+### AgentsKanban decision
 
 For future operator tooling, prefer Worker-routed `wsConnect()` because:
 

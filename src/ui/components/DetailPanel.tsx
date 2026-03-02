@@ -131,17 +131,7 @@ export function DetailPanel({
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle');
 
   if (!detail) {
-    return (
-      <aside className="rounded-2xl border border-slate-800/80 bg-slate-950/70 p-6 shadow-[0_16px_44px_rgba(2,6,23,0.38)]">
-        <div className="grid min-h-[24rem] place-items-center rounded-2xl border border-dashed border-slate-800 bg-slate-950/60 text-center">
-          <div className="max-w-sm space-y-2 px-6">
-            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Inspector</p>
-            <h2 className="text-xl font-semibold text-white">Select a task</h2>
-            <p className="text-sm leading-6 text-slate-400">Inspect the latest run, retry actions, preview links, artifacts, and logs from the right-side console.</p>
-          </div>
-        </div>
-      </aside>
-    );
+    return null;
   }
 
   const { task, repo, latestRun } = detail;

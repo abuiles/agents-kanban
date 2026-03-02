@@ -1,4 +1,4 @@
-# AgentBoard Stage 8 (Harden)
+# AgentsKanban Stage 8 (Harden)
 
 ## Goal
 

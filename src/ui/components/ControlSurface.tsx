@@ -80,7 +80,7 @@ export function ControlSurfaceHeader({
         <div className="flex min-w-0 flex-col gap-1">
           <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-cyan-300/80">Control surface</p>
           <div>
-            <h1 className="text-3xl font-semibold tracking-tight text-white">AgentBoard</h1>
+            <h1 className="text-3xl font-semibold tracking-tight text-white">AgentsKanban</h1>
             <p className="mt-1 text-sm text-slate-400">Multi-repo background agent control room.</p>
           </div>
         </div>

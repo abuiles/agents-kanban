@@ -1,8 +1,8 @@
-# AgentBoard Stage 7 (Scale)
+# AgentsKanban Stage 7 (Scale)
 
 ## Goal
 
-Stage 7 makes AgentBoard behave coherently across many repos and concurrent runs.
+Stage 7 makes AgentsKanban behave coherently across many repos and concurrent runs.
 
 ## Scope
 

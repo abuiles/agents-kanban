@@ -1,4 +1,4 @@
-# AgentBoard Stage 5 (Explain)
+# AgentsKanban Stage 5 (Explain)
 
 ## Goal
 

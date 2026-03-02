@@ -37,6 +37,8 @@ export type Repo = {
   baselineUrl: string;
   enabled: boolean;
   githubAuthMode?: 'kv_pat';
+  previewMode?: 'auto' | 'skip';
+  evidenceMode?: 'auto' | 'skip';
   previewProvider?: 'cloudflare';
   previewCheckName?: string;
   previewUrlPattern?: string;

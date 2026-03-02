@@ -9,6 +9,6 @@ describe('import/export', () => {
   });
 
   it('rejects an invalid snapshot', () => {
-    expect(() => parseImportedBoard(JSON.stringify({ version: 2 }))).toThrow('Invalid AgentBoard snapshot.');
+    expect(() => parseImportedBoard(JSON.stringify({ version: 2 }))).toThrow('Invalid AgentsKanban snapshot.');
   });
 });

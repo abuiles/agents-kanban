@@ -223,6 +223,9 @@ export function parseCreateRepoInput(body: unknown): CreateRepoInput {
     defaultBranch: readTrimmedString(body.defaultBranch, 'defaultBranch', false),
     baselineUrl: readTrimmedString(body.baselineUrl, 'baselineUrl')!,
     enabled: readBoolean(body.enabled, 'enabled', false),
+    previewMode: readEnumValue(body.previewMode, 'previewMode', new Set(['auto', 'skip'] as const), false),
+    evidenceMode: readEnumValue(body.evidenceMode, 'evidenceMode', new Set(['auto', 'skip'] as const), false),
+    previewProvider: readEnumValue(body.previewProvider, 'previewProvider', new Set(['cloudflare'] as const), false),
     previewCheckName: readTrimmedString(body.previewCheckName, 'previewCheckName', false),
     codexAuthBundleR2Key: readTrimmedString(body.codexAuthBundleR2Key, 'codexAuthBundleR2Key', false)
   };
@@ -238,6 +241,9 @@ export function parseUpdateRepoInput(body: unknown): UpdateRepoInput {
   if (hasOwn(body, 'defaultBranch')) patch.defaultBranch = readTrimmedString(body.defaultBranch, 'defaultBranch', false);
   if (hasOwn(body, 'baselineUrl')) patch.baselineUrl = readTrimmedString(body.baselineUrl, 'baselineUrl', false);
   if (hasOwn(body, 'enabled')) patch.enabled = readBoolean(body.enabled, 'enabled', false);
+  if (hasOwn(body, 'previewMode')) patch.previewMode = readEnumValue(body.previewMode, 'previewMode', new Set(['auto', 'skip'] as const), false);
+  if (hasOwn(body, 'evidenceMode')) patch.evidenceMode = readEnumValue(body.evidenceMode, 'evidenceMode', new Set(['auto', 'skip'] as const), false);
+  if (hasOwn(body, 'previewProvider')) patch.previewProvider = readEnumValue(body.previewProvider, 'previewProvider', new Set(['cloudflare'] as const), false);
   if (hasOwn(body, 'previewCheckName')) patch.previewCheckName = readTrimmedString(body.previewCheckName, 'previewCheckName', false);
   if (hasOwn(body, 'codexAuthBundleR2Key')) patch.codexAuthBundleR2Key = readTrimmedString(body.codexAuthBundleR2Key, 'codexAuthBundleR2Key', false);
   return patch;

@@ -223,7 +223,7 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
           onAddRepo={() => setRepoModalOpen(true)}
           onEditRepo={selectedRepo ? () => setRepoToEditId(selectedRepo.repoId) : undefined}
           onCreateTask={() => setTaskModalOpen(true)}
-          onExport={() => downloadJson('agentboard-export.json', api.exportState())}
+          onExport={() => downloadJson('agents-kanban-export.json', api.exportState())}
           onImport={handleImport}
         />
 
@@ -235,7 +235,7 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
           </div>
         ) : null}
 
-        <main className="grid gap-4 xl:grid-cols-[minmax(0,2.15fr)_minmax(20rem,0.85fr)] 2xl:grid-cols-[minmax(0,2.35fr)_minmax(22rem,0.78fr)]">
+        <main className={detail ? 'grid gap-4 xl:grid-cols-[minmax(0,2.15fr)_minmax(20rem,0.85fr)] 2xl:grid-cols-[minmax(0,2.35fr)_minmax(22rem,0.78fr)]' : 'grid gap-4'}>
           <Board
             tasksByColumn={tasksByColumn}
             repos={repos}
@@ -244,20 +244,22 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
             onSelectTask={(taskId) => void toggleTaskSelection(taskId)}
             onMoveTask={(taskId, status) => void moveTask(taskId, status)}
           />
-          <DetailPanel
-            detail={detail}
-            logs={logs}
-            events={selectedRunEvents}
-            commands={selectedRunCommands}
-            terminalBootstrap={terminalBootstrap}
-            onEditTask={(taskId) => setTaskToEditId(taskId)}
-            onRequestChanges={(runId) => setChangeRequestRunId(runId)}
-            onRetryRun={(runId) => void retryRun(runId)}
-            onRetryPreview={(runId) => void retryPreview(runId)}
-            onRetryEvidence={(runId) => void retryEvidence(runId)}
-            onOpenTerminal={(runId) => void openTerminal(runId)}
-            onTakeOverRun={(runId) => void takeOverRun(runId)}
-          />
+          {detail ? (
+            <DetailPanel
+              detail={detail}
+              logs={logs}
+              events={selectedRunEvents}
+              commands={selectedRunCommands}
+              terminalBootstrap={terminalBootstrap}
+              onEditTask={(taskId) => setTaskToEditId(taskId)}
+              onRequestChanges={(runId) => setChangeRequestRunId(runId)}
+              onRetryRun={(runId) => void retryRun(runId)}
+              onRetryPreview={(runId) => void retryPreview(runId)}
+              onRetryEvidence={(runId) => void retryEvidence(runId)}
+              onOpenTerminal={(runId) => void openTerminal(runId)}
+              onTakeOverRun={(runId) => void takeOverRun(runId)}
+            />
+          ) : null}
         </main>
       </div>
 

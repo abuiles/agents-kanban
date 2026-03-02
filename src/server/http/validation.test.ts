@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseCreateTaskInput, parseUpdateTaskInput } from './validation';
+import { parseCreateRepoInput, parseCreateTaskInput, parseUpdateRepoInput, parseUpdateTaskInput } from './validation';
 
 function createTaskPayload(overrides: Record<string, unknown> = {}) {
   return {
@@ -96,5 +96,29 @@ describe('task validation', () => {
         }
       })
     ).toThrow('Invalid branchSource.upstreamPrNumber.');
+  });
+});
+
+describe('repo validation', () => {
+  it('parses preview and evidence execution policy fields', () => {
+    const parsed = parseCreateRepoInput({
+      slug: 'abuiles/minions',
+      baselineUrl: 'https://example.com',
+      previewMode: 'skip',
+      evidenceMode: 'skip',
+      previewProvider: 'cloudflare'
+    });
+
+    expect(parsed.previewMode).toBe('skip');
+    expect(parsed.evidenceMode).toBe('skip');
+    expect(parsed.previewProvider).toBe('cloudflare');
+  });
+
+  it('rejects invalid repo execution policy values', () => {
+    expect(() =>
+      parseUpdateRepoInput({
+        previewMode: 'sometimes'
+      })
+    ).toThrow('Invalid previewMode.');
   });
 });

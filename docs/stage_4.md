@@ -1,8 +1,8 @@
-# AgentBoard Stage 4 (Observe & Attach)
+# AgentsKanban Stage 4 (Observe & Attach)
 
 ## Goal
 
-Stage 4 turns AgentBoard into a live operator surface for active runs.
+Stage 4 turns AgentsKanban into a live operator surface for active runs.
 
 Stage 3 proves the system can execute real runs end to end. Stage 4 makes those runs inspectable and attachable in real time by adding:
 

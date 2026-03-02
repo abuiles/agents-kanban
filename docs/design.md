@@ -1,8 +1,8 @@
-Spec: AgentBoard — Multi-Repo Task Kanban + Background Agents (Crawl → Walk → Run)
+Spec: AgentsKanban — Multi-Repo Task Kanban + Background Agents (Crawl → Walk → Run)
 
 Purpose
 
-Build AgentBoard, a lightweight system to run background coding agents (Codex in Cloudflare Sandboxes) against multiple GitHub repos. The primary interaction model is:
+Build AgentsKanban, a lightweight system to run background coding agents (Codex in Cloudflare Sandboxes) against multiple GitHub repos. The primary interaction model is:
 	•	You create Tasks with context (prompt, links, acceptance criteria).
 	•	Tasks appear as cards on a simple kanban board.
 	•	Moving a card into Active triggers an Agent Run (ephemeral sandbox).

@@ -1,8 +1,8 @@
-# AgentBoard Stage 4.5 (Tenant Metering)
+# AgentsKanban Stage 4.5 (Tenant Metering)
 
 ## Goal
 
-Stage 4.5 adds the minimum tenant model and usage accounting needed to run AgentBoard as a shared SaaS.
+Stage 4.5 adds the minimum tenant model and usage accounting needed to run AgentsKanban as a shared SaaS.
 
 Stage 4 already adds the runtime visibility needed to meter usage:
 
@@ -32,9 +32,12 @@ Stage 4.5 fixes that timing problem without re-scoping Stage 4.
 - Stage 4 remains unchanged in scope and sequencing
 - Stage 4.5 is the first tenancy-aware stage
 - the initial business model is shared SaaS, not one deployment per customer
+- tenant core, tenant memberships/seats, tenant-scoped access, and usage/metering all land in Stage 4.5
 - cost tracking is approximate attribution, not invoice-grade billing
 - usage is recorded per run and aggregated per tenant
 - usage accounting must be product-generated, not inferred only from Cloudflare dashboards
+- provider credential ownership is explicitly deferred to a later stage
+- Stage 4.5 must work whether execution currently relies on a developer-connected account or a later tenant-owned provider credential model
 - all new entities added after this stage must carry `tenantId`
 
 ## Scope
@@ -42,6 +45,7 @@ Stage 4.5 fixes that timing problem without re-scoping Stage 4.
 In scope:
 
 - first-class `tenantId` ownership
+- tenant membership and seat assignment
 - tenant-scoped repos, tasks, runs, events, commands, and operator sessions
 - per-run usage ledger entries
 - per-tenant aggregated usage and estimated cost views
@@ -54,6 +58,9 @@ Out of scope:
 - payment collection
 - customer invoicing UI
 - full RBAC design
+- tenant-owned OpenAI API keys
+- tenant-owned ChatGPT, Codex, or Cursor account connections
+- per-tenant provider credential switching or policy
 - per-tenant dedicated infrastructure deployments
 - exact Cloudflare invoice reconciliation
 
@@ -67,8 +74,34 @@ type Tenant = {
   slug: string;
   name: string;
   status: 'active' | 'suspended';
+  seatLimit: number;
   createdAt: string;
   updatedAt: string;
+};
+```
+
+### Tenant membership
+
+```ts
+type TenantMember = {
+  id: string;
+  tenantId: string;
+  userId: string;
+  role: 'owner' | 'member';
+  seatState: 'active' | 'invited' | 'revoked';
+  createdAt: string;
+  updatedAt: string;
+};
+```
+
+### Seat summary
+
+```ts
+type TenantSeatSummary = {
+  tenantId: string;
+  seatLimit: number;
+  seatsUsed: number;
+  seatsAvailable: number;
 };
 ```
 
@@ -90,6 +123,8 @@ Rules:
 - a repo belongs to exactly one tenant
 - a task belongs to the same tenant as its repo
 - a run belongs to the same tenant as its task and repo
+- every authenticated operator acts through a tenant membership
+- an operator can access a tenant only if they hold an active seat in that tenant
 - cross-tenant reads and writes are forbidden server-side
 
 ### Usage ledger
@@ -220,6 +255,8 @@ Recommended initial model:
 - one active tenant context per session or request
 - explicit tenant selection in the UI
 - all list and detail endpoints filter by current tenant
+- membership lookup and seat enforcement happen before repo/task/run authorization
+- provider credential ownership is not resolved here; Stage 4.5 only establishes who can act for a tenant, not which external AI account the tenant owns
 
 ### New endpoints
 
@@ -347,6 +384,7 @@ Rules:
 Add:
 
 - tenant selector in the app shell
+- tenant member and seat summary surface, even if invite management stays minimal
 - tenant-scoped board and repo views
 - tenant usage summary page
 - run detail usage panel showing per-run consumption and estimated cost
@@ -366,6 +404,7 @@ Display at minimum:
 Stage 4.5 is complete when:
 
 - every repo, task, run, event, command, and operator session has a `tenantId`
+- every operator-facing request resolves through an active tenant membership and seat check
 - APIs and board subscriptions are tenant-scoped server-side
 - every run emits usage ledger entries
 - the product can show per-run and per-tenant estimated usage and cost
@@ -378,6 +417,8 @@ Stage 4.5 is complete when:
 ### Ownership and isolation
 
 - creating a repo requires a tenant owner
+- switching tenant context requires an active membership in that tenant
+- a revoked or seatless member cannot open board, run, or usage views for that tenant
 - listing repos only returns repos for the active tenant
 - reading a task or run from another tenant returns an authorization failure
 - board WebSocket only streams tenant-owned updates
@@ -408,16 +449,240 @@ Stage 4.5 is complete when:
 - Stage 5 audit design can consume tenant-aware run data without schema rewrite
 - Stage 7 queueing can add tenant-level quotas without changing run ownership again
 
-## Recommended build order
+## Execution-ready task graph
 
-1. Add Stage 4.5 docs and lock the tenancy and metering contract.
-2. Add `tenantId` to core DTOs and persisted state.
-3. Add tenant-aware auth and tenant-scoped API filtering.
-4. Add usage ledger model and write paths from Workflow, Worker, and operator session flows.
-5. Add R2 tenant-prefixed object layout and access checks.
-6. Add tenant usage APIs and run usage detail API.
-7. Add tenant selector and usage views in the UI.
-8. Validate aggregate estimated totals against Cloudflare account-level metrics.
+### S45-00. Lock contract and explicit deferrals
+
+Deliverables:
+
+- freeze Stage 4.5 scope around tenant core, memberships/seats, tenant-scoped access, and usage/metering
+- document that provider credential ownership is deferred
+- document that current execution may continue using the existing developer-connected credential path until a later stage introduces tenant-owned provider credentials
+
+Depends on:
+
+- none
+
+Unblocks:
+
+- every other Stage 4.5 task
+
+### S45-10. Tenant core data model
+
+Deliverables:
+
+- add `Tenant` model and persistence contract
+- add `tenantId` ownership to repo/task/run/event/command/operator-session/artifact projection models
+- define ownership invariants and required migration defaults for pre-tenant records
+
+Depends on:
+
+- `S45-00`
+
+Unblocks:
+
+- `S45-20`
+- `S45-30`
+- `S45-40`
+- `S45-50`
+- `S45-60`
+
+### S45-20. Tenant memberships and seats
+
+Deliverables:
+
+- add `TenantMember` and seat summary model
+- define active membership and seat enforcement rules
+- define minimal owner/member role semantics needed for Stage 4.5 authorization
+
+Depends on:
+
+- `S45-10`
+
+Unblocks:
+
+- `S45-30`
+- `S45-80`
+
+### S45-30. Tenant context resolution and access control
+
+Deliverables:
+
+- resolve authenticated operator -> allowed tenant set -> active tenant context
+- enforce membership and seat checks before repo/task/run access
+- define authorization failure behavior for cross-tenant reads, writes, attach, and takeover
+
+Depends on:
+
+- `S45-10`
+- `S45-20`
+
+Unblocks:
+
+- `S45-40`
+- `S45-50`
+- `S45-70`
+- `S45-80`
+
+### S45-40. Tenant-scoped persistence, APIs, and board fanout
+
+Deliverables:
+
+- persist tenant-owned records in `BoardIndexDO` and `RepoBoardDO`
+- add tenant-scoped filtering to board, repo, task, and run APIs
+- make board snapshots and WebSocket fanout tenant-scoped
+
+Depends on:
+
+- `S45-10`
+- `S45-30`
+
+Unblocks:
+
+- `S45-50`
+- `S45-60`
+- `S45-70`
+- `S45-80`
+
+### S45-50. Workflow propagation and tenant-owned artifact layout
+
+Deliverables:
+
+- require `tenantId` in workflow input and runtime metadata
+- move artifacts and logs to tenant-prefixed R2 keys
+- enforce tenant checks on artifact download, terminal attach, and takeover-related resource reads
+
+Depends on:
+
+- `S45-10`
+- `S45-30`
+- `S45-40`
+
+Unblocks:
+
+- `S45-60`
+- `S45-70`
+
+### S45-60. Usage ledger emission
+
+Deliverables:
+
+- add `UsageLedgerEntry` storage and rate-version metadata
+- emit ledger entries from workflow lifecycle, sandbox lifecycle, operator sessions, artifact reads/writes, and control-plane estimates
+- guarantee partial usage recording for failed runs
+
+Depends on:
+
+- `S45-10`
+- `S45-40`
+- `S45-50`
+
+Unblocks:
+
+- `S45-70`
+- `S45-80`
+
+### S45-70. Usage aggregation and reporting APIs
+
+Deliverables:
+
+- add per-run usage detail endpoint
+- add tenant usage summary and run-list usage endpoints
+- implement daily/monthly aggregation that is reproducible from ledger entries and rate versions
+
+Depends on:
+
+- `S45-30`
+- `S45-40`
+- `S45-50`
+- `S45-60`
+
+Unblocks:
+
+- `S45-80`
+- Stage 7 tenant quotas
+- Stage 8 billing and policy hardening
+
+### S45-80. Tenant-aware UI shell and operator surfaces
+
+Deliverables:
+
+- add tenant selector and active-tenant app shell treatment
+- show tenant-scoped board and repo/task/run views
+- add tenant usage summary, per-run usage panel, and member/seat summary view
+- label estimated cost clearly and preserve current Stage 4 attach workflows inside the active tenant
+
+Depends on:
+
+- `S45-20`
+- `S45-30`
+- `S45-40`
+- `S45-60`
+- `S45-70`
+
+Unblocks:
+
+- operator validation
+- rollout readiness
+
+## Dependency graph
+
+```text
+S45-00
+  -> S45-10
+S45-10
+  -> S45-20
+  -> S45-30
+  -> S45-40
+  -> S45-50
+  -> S45-60
+S45-20
+  -> S45-30
+  -> S45-80
+S45-30
+  -> S45-40
+  -> S45-50
+  -> S45-70
+  -> S45-80
+S45-40
+  -> S45-50
+  -> S45-60
+  -> S45-70
+  -> S45-80
+S45-50
+  -> S45-60
+  -> S45-70
+S45-60
+  -> S45-70
+  -> S45-80
+S45-70
+  -> S45-80
+  -> Stage 7 quotas
+  -> Stage 8 billing/policy
+```
+
+## Parallel fanout points
+
+- After `S45-10`, split work between tenant membership/seats (`S45-20`) and raw ownership propagation (`S45-40` prep and `S45-50` prep).
+- After `S45-30`, API/board isolation (`S45-40`) and workflow/artifact changes (`S45-50`) can proceed in parallel if both consume the same tenant-resolution contract.
+- After `S45-60`, reporting APIs (`S45-70`) and UI presentation wiring (`S45-80` partial work) can overlap, but `S45-80` should not finalize until aggregation contracts are stable.
+
+## Explicit deferral: provider credential ownership
+
+Stage 4.5 must not decide whether a tenant brings:
+
+- its own OpenAI API key
+- a tenant-owned ChatGPT account
+- a tenant-owned Codex account
+- a tenant-owned Cursor account
+
+Stage 4.5 only establishes:
+
+- which tenant a run belongs to
+- which members have seats and can act for that tenant
+- how tenant-owned activity is isolated and metered
+
+Later work can layer provider credential ownership onto this model by attaching credentials or account connections to a tenant without rewriting tenant ownership, membership, or usage semantics.
 
 ## Assumptions and defaults
 
@@ -426,6 +691,8 @@ Stage 4.5 is complete when:
 - cost reporting is approximate attribution, not invoice-grade billing
 - one repo belongs to one tenant only
 - one operator request is evaluated in one tenant context at a time
+- seat enforcement is required for tenant access even if seat purchase and invite workflows remain minimal in Stage 4.5
 - platform-admin cross-tenant views are out of scope for this stage
+- execution may continue using the existing developer-connected provider path until tenant-owned provider credentials are introduced later
 - rate tables are configurable and versioned
 - Cloudflare native analytics are used for reconciliation, not direct tenant billing

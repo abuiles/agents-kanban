@@ -1,8 +1,8 @@
-# AgentBoard Stage 3.1 (Dependency Fanout)
+# AgentsKanban Stage 3.1 (Dependency Fanout)
 
 ## Goal
 
-Stage 3.1 teaches AgentBoard how to chain related tasks inside the same repo.
+Stage 3.1 teaches AgentsKanban how to chain related tasks inside the same repo.
 
 The product outcome is simple:
 
@@ -15,7 +15,7 @@ Stage 3.1 is about orchestration and task readiness. It does not change the core
 
 ## Why this stage exists
 
-Stage 3 gives AgentBoard one real run at a time with real branches, PRs, previews, and evidence.
+Stage 3 gives AgentsKanban one real run at a time with real branches, PRs, previews, and evidence.
 
 What it does not yet do is carry momentum across related tasks. Today an operator still has to notice that task B depends on task A, wait for task A to reach review, then manually decide when to start task B and which branch it should inherit from.
 
@@ -70,7 +70,7 @@ The board can still show the task in `INBOX` or `READY`, but execution decisions
 
 ## 3. Upstream `REVIEW` can fan out downstream work
 
-When an upstream task reaches `REVIEW`, AgentBoard should reevaluate dependent tasks in the same repo.
+When an upstream task reaches `REVIEW`, AgentsKanban should reevaluate dependent tasks in the same repo.
 
 If a downstream task is:
 
@@ -103,7 +103,7 @@ Sometimes the upstream task reaches `REVIEW`, but no downstream task starts yet 
 - the downstream task is in `READY` but not auto-start eligible
 - the upstream lands in `main` before follow-on work begins
 
-In that case, once AgentBoard can confirm the upstream branch has landed in the repo default branch, downstream `INBOX` and `READY` tasks should be treated as ready from `main`.
+In that case, once AgentsKanban can confirm the upstream branch has landed in the repo default branch, downstream `INBOX` and `READY` tasks should be treated as ready from `main`.
 
 That means:
 
@@ -278,6 +278,25 @@ Stage 3.1 is complete when:
 - multi-upstream review-lineage fanout does not auto-start without a declared `primary`
 - merge-to-default-branch readiness requires merged PR state plus default-branch confirmation
 - already-started downstream runs are not silently restarted when upstream state changes later
+
+## Implementation status
+
+Stage 3.1 is complete.
+
+Completed in product:
+
+- same-repo task dependencies are supported
+- downstream readiness is recomputed from upstream task and run transitions
+- eligible downstream tasks can auto-start from upstream review lineage
+- downstream runs persist dependency and branch-source context
+- merged-to-default-branch fallback readiness works for not-yet-started downstream tasks
+- duplicate fanout signals are guarded against
+- the stage was dogfooded end-to-end in `abuiles/minions` through `S31-01` to `S31-09`
+
+Known cleanup follow-up:
+
+- repos configured to skip preview and evidence should not leave successful review-ready runs in a misleading `PREVIEW_TIMEOUT` terminal run state
+- this does not block Stage 3.1 completion, but the workflow should be aligned so run status matches repo execution mode
 
 ## Recommended build order
 

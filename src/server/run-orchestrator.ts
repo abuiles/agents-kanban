@@ -8,6 +8,7 @@ import { inspectPreviewDiscovery } from './preview-discovery';
 import { LineLogBuffer } from './line-log-buffer';
 import { buildWorkflowInvocationId } from './workflow-id';
 import { normalizeTaskSourceRef, resolveTaskSourceRef } from './source-ref';
+import { shouldRunEvidence, shouldRunPreview } from './shared/repo-execution-policy';
 import {
   formatCodexRateLimitSnapshot,
   getCodexCapacityDecision,
@@ -57,10 +58,18 @@ export async function executeRunJob(env: Env, params: RunJobParams, sleepFn: Sle
   const codexReasoningEffort = detail.task.uiMeta?.codexReasoningEffort ?? 'medium';
 
   if (params.mode === 'evidence_only') {
+    if (!shouldRunEvidence(repo)) {
+      await finishRunWithoutEvidence(repoBoard, params.runId, 'Evidence execution is disabled for this repo.');
+      return;
+    }
     return runEvidence(env as Stage3Env, repoBoard, detail.task, repo, params.runId, sleepFn);
   }
 
   if (params.mode === 'preview_only') {
+    if (!shouldRunPreview(repo)) {
+      await finishRunWithoutPreview(repoBoard, params.runId, 'Preview discovery is disabled for this repo.');
+      return;
+    }
     return discoverPreviewAndRunEvidence(env as Stage3Env, repoBoard, detail.task, repo, params.runId, sleepFn, await getGithubPat(env as Stage3Env));
   }
 
@@ -83,8 +92,8 @@ export async function executeRunJob(env: Env, params: RunJobParams, sleepFn: Sle
       repoBoard,
       params.runId,
       'bootstrap',
-      `cd /workspace/repo && git config user.name 'AgentBoard' && git config user.email 'agentboard@local'`,
-      () => sandbox.exec(`cd /workspace/repo && git config user.name 'AgentBoard' && git config user.email 'agentboard@local'`)
+      `cd /workspace/repo && git config user.name 'AgentsKanban' && git config user.email 'agentskanban@local'`,
+      () => sandbox.exec(`cd /workspace/repo && git config user.name 'AgentsKanban' && git config user.email 'agentskanban@local'`)
     );
     await prepareRunBranchFromTaskSource(sandbox, repoBoard, params.runId, detail.task, repo, run);
   } catch (error) {
@@ -185,7 +194,7 @@ cat /workspace/task.txt | codex exec -m ${codexModel} -c model_reasoning_effort=
 
     let commitMessage: string;
     if (hasWorkingTreeChanges) {
-      commitMessage = `AgentBoard: ${detail.task.title}`;
+      commitMessage = `AgentsKanban: ${detail.task.title}`;
       const commitResult = await emitCommandLifecycle(
         repoBoard,
         params.runId,
@@ -203,7 +212,7 @@ cat /workspace/task.txt | codex exec -m ${codexModel} -c model_reasoning_effort=
       if (!commitMessageResult.success) {
         throw new Error(commitMessageResult.stderr || 'Failed to read the existing commit message.');
       }
-      commitMessage = commitMessageResult.stdout.trim() || `AgentBoard: ${detail.task.title}`;
+      commitMessage = commitMessageResult.stdout.trim() || `AgentsKanban: ${detail.task.title}`;
       await repoBoard.appendRunLogs(params.runId, [
         buildRunLog(params.runId, 'Detected an existing local commit from Codex; pushing it without creating another commit.', 'push')
       ]);
@@ -253,6 +262,11 @@ cat /workspace/task.txt | codex exec -m ${codexModel} -c model_reasoning_effort=
   } catch (error) {
     await failRun(repoBoard, params.runId, 'PR_CREATE_FAILED', 'pr', error);
     throw error;
+  }
+
+  if (!shouldRunPreview(repo)) {
+    await finishRunWithoutPreview(repoBoard, params.runId, 'Preview discovery and evidence are disabled for this repo.');
+    return;
   }
 
   await discoverPreviewAndRunEvidence(env as Stage3Env, repoBoard, detail.task, repo, params.runId, sleepFn, pat);
@@ -369,11 +383,34 @@ async function discoverPreviewAndRunEvidence(
   await repoBoard.transitionRun(runId, {
     previewUrl,
     previewStatus: 'READY',
-    status: 'EVIDENCE_RUNNING',
-    evidenceStatus: 'RUNNING',
-    appendTimelineNote: 'Running Playwright evidence.'
+    status: shouldRunEvidence(repo) ? 'EVIDENCE_RUNNING' : 'DONE',
+    evidenceStatus: shouldRunEvidence(repo) ? 'RUNNING' : 'NOT_STARTED',
+    endedAt: shouldRunEvidence(repo) ? undefined : new Date().toISOString(),
+    appendTimelineNote: shouldRunEvidence(repo) ? 'Running Playwright evidence.' : 'Preview discovered. Evidence execution is disabled for this repo.'
   });
+  if (!shouldRunEvidence(repo)) {
+    return;
+  }
   await runEvidence(env, repoBoard, task, repo, runId, sleepFn);
+}
+
+async function finishRunWithoutPreview(repoBoard: DurableObjectStub<RepoBoardDO>, runId: string, note: string) {
+  await repoBoard.transitionRun(runId, {
+    status: 'DONE',
+    previewStatus: 'UNKNOWN',
+    evidenceStatus: 'NOT_STARTED',
+    endedAt: new Date().toISOString(),
+    appendTimelineNote: note
+  });
+}
+
+async function finishRunWithoutEvidence(repoBoard: DurableObjectStub<RepoBoardDO>, runId: string, note: string) {
+  await repoBoard.transitionRun(runId, {
+    status: 'DONE',
+    evidenceStatus: 'NOT_STARTED',
+    endedAt: new Date().toISOString(),
+    appendTimelineNote: note
+  });
 }
 
 async function lookupPreviewUrl(repo: Repo, headSha: string, pat: string, previewCheckName?: string) {
@@ -461,7 +498,7 @@ async function githubRequest(slug: string, path: string, pat: string, init?: Req
     headers: {
       Accept: 'application/vnd.github+json',
       Authorization: `Bearer ${pat}`,
-      'User-Agent': 'AgentBoard',
+      'User-Agent': 'AgentsKanban',
       ...(init?.headers ?? {})
     }
   });

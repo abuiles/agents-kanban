@@ -17,25 +17,25 @@ afterEach(() => {
 describe('App', () => {
   it('renders seeded board content', async () => {
     render(<App api={getLocalAgentBoardApi()} />);
-    expect(await screen.findByRole('heading', { name: 'AgentBoard' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'AgentsKanban' })).toBeInTheDocument();
     expect(await screen.findByText('Refresh homepage hero copy')).toBeInTheDocument();
     expect(await screen.findAllByText('Fix settings navigation overflow')).toHaveLength(2);
   });
 
-  it('toggles the inspector when clicking the selected card again', async () => {
+  it('shows and hides the inspector only when a task is selected', async () => {
     const user = userEvent.setup();
     render(<App api={getLocalAgentBoardApi()} />);
 
     const [taskCard] = await screen.findAllByRole('button', { name: /fix settings navigation overflow/i });
-    expect(screen.queryByRole('heading', { name: 'Select a task' })).not.toBeInTheDocument();
+    await user.click(taskCard);
+
+    expect(screen.queryByRole('heading', { name: 'Fix settings navigation overflow' })).not.toBeInTheDocument();
+    expect(screen.queryByText('Inspector')).not.toBeInTheDocument();
+    expect(screen.queryByText('Select a task')).not.toBeInTheDocument();
 
     await user.click(taskCard);
 
-    expect(screen.getByRole('heading', { name: 'Select a task' })).toBeInTheDocument();
-
-    await user.click(taskCard);
-
-    expect(screen.queryByRole('heading', { name: 'Select a task' })).not.toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Fix settings navigation overflow' })).toBeInTheDocument();
   });
 
   it('updates repo details from the edit repo modal', async () => {

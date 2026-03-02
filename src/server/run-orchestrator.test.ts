@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { buildWorkflowInvocationId } from './workflow-id';
 import { getCodexCapacityDecision } from './codex-rate-limit';
+import { shouldRunEvidence, shouldRunPreview } from './shared/repo-execution-policy';
 
 describe('buildWorkflowInvocationId', () => {
   it('includes a time suffix so retries for the same run get a fresh workflow id', () => {
@@ -74,5 +75,39 @@ describe('getCodexCapacityDecision', () => {
 
     const decision = getCodexCapacityDecision(payload, 'gpt-5.3-codex', nowMs);
     expect(decision.shouldWait).toBe(false);
+  });
+});
+
+describe('repo execution policies', () => {
+  it('runs preview and evidence by default', () => {
+    const repo = {
+      repoId: 'repo_demo',
+      slug: 'acme/demo',
+      defaultBranch: 'main',
+      baselineUrl: 'https://example.com',
+      enabled: true,
+      createdAt: '2026-03-02T00:00:00.000Z',
+      updatedAt: '2026-03-02T00:00:00.000Z'
+    };
+
+    expect(shouldRunPreview(repo)).toBe(true);
+    expect(shouldRunEvidence(repo)).toBe(true);
+  });
+
+  it('skips preview and evidence when explicitly disabled', () => {
+    const repo = {
+      repoId: 'repo_demo',
+      slug: 'acme/demo',
+      defaultBranch: 'main',
+      baselineUrl: 'https://example.com',
+      enabled: true,
+      previewMode: 'skip' as const,
+      evidenceMode: 'skip' as const,
+      createdAt: '2026-03-02T00:00:00.000Z',
+      updatedAt: '2026-03-02T00:00:00.000Z'
+    };
+
+    expect(shouldRunPreview(repo)).toBe(false);
+    expect(shouldRunEvidence(repo)).toBe(false);
   });
 });

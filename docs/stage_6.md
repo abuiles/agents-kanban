@@ -1,4 +1,4 @@
-# AgentBoard Stage 6 (Control)
+# AgentsKanban Stage 6 (Control)
 
 ## Goal
 

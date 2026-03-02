@@ -1,8 +1,8 @@
-# AgentBoard Stage 2 (Walk)
+# AgentsKanban Stage 2 (Walk)
 
 ## Goal
 
-Stage 2 turns AgentBoard into a real server-backed application:
+Stage 2 turns AgentsKanban into a real server-backed application:
 
 - Cloudflare Worker hosts the SPA and `/api/*`
 - Durable Objects own repos, tasks, runs, and logs

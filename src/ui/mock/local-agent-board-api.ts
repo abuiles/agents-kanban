@@ -37,6 +37,11 @@ export class LocalAgentBoardApi implements AgentBoardApi {
       defaultBranch: input.defaultBranch ?? 'main',
       baselineUrl: input.baselineUrl,
       enabled: input.enabled ?? true,
+      previewMode: input.previewMode ?? 'auto',
+      evidenceMode: input.evidenceMode ?? 'auto',
+      previewProvider: input.previewProvider ?? 'cloudflare',
+      previewCheckName: input.previewCheckName,
+      codexAuthBundleR2Key: input.codexAuthBundleR2Key,
       createdAt: timestamp,
       updatedAt: timestamp
     };

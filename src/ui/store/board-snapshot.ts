@@ -20,7 +20,7 @@ export function isBoardSnapshot(value: unknown): value is BoardSnapshotV1 {
 export function parseBoardSnapshot(serialized: string): BoardSnapshotV1 {
   const parsed = JSON.parse(serialized) as unknown;
   if (!isBoardSnapshot(parsed)) {
-    throw new Error('Invalid AgentBoard snapshot.');
+    throw new Error('Invalid AgentsKanban snapshot.');
   }
 
   return parsed;

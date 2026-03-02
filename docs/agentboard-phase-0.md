@@ -1,4 +1,4 @@
-# AgentBoard Phase 0
+# AgentsKanban Phase 0
 
 ## What this build demonstrates
 
