@@ -30,6 +30,9 @@ export type CreateTaskInput = {
   title: string;
   description?: string;
   sourceRef?: string;
+  dependencies?: Task['dependencies'];
+  automationState?: Task['automationState'];
+  branchSource?: Task['branchSource'];
   taskPrompt: string;
   acceptanceCriteria: string[];
   context: Task['context'];

@@ -98,6 +98,82 @@ function readContext(value: unknown, required = true): CreateTaskInput['context'
   };
 }
 
+function readDependencies(value: unknown, required = true): CreateTaskInput['dependencies'] | undefined {
+  if (!required && typeof value === 'undefined') {
+    return undefined;
+  }
+
+  if (!Array.isArray(value)) {
+    throw badRequest('Invalid dependencies.');
+  }
+
+  const dependencies = value.map((item, index) => {
+    if (!isRecord(item)) {
+      throw badRequest(`Invalid dependencies[${index}].`);
+    }
+
+    const upstreamTaskId = readTrimmedString(item.upstreamTaskId, `dependencies[${index}].upstreamTaskId`)!;
+    if (!upstreamTaskId) {
+      throw badRequest(`Invalid dependencies[${index}].upstreamTaskId.`);
+    }
+
+    return {
+      upstreamTaskId,
+      mode: readEnumValue(item.mode, `dependencies[${index}].mode`, new Set(['review_ready'] as const))!,
+      primary: readBoolean(item.primary, `dependencies[${index}].primary`, false)
+    };
+  });
+
+  if (dependencies.filter((dependency) => dependency.primary).length > 1) {
+    throw badRequest('Invalid dependencies: only one primary dependency is allowed.');
+  }
+
+  return dependencies;
+}
+
+function readAutomationState(value: unknown, required = true): CreateTaskInput['automationState'] | undefined {
+  if (!required && typeof value === 'undefined') {
+    return undefined;
+  }
+
+  if (!isRecord(value)) {
+    throw badRequest('Invalid automationState.');
+  }
+
+  return {
+    autoStartEligible: readBoolean(value.autoStartEligible, 'automationState.autoStartEligible', true)!,
+    autoStartedAt: readString(value.autoStartedAt, 'automationState.autoStartedAt', false),
+    lastDependencyRefreshAt: readString(value.lastDependencyRefreshAt, 'automationState.lastDependencyRefreshAt', false)
+  };
+}
+
+function readBranchSource(value: unknown, required = true): CreateTaskInput['branchSource'] | undefined {
+  if (!required && typeof value === 'undefined') {
+    return undefined;
+  }
+
+  if (!isRecord(value)) {
+    throw badRequest('Invalid branchSource.');
+  }
+
+  return {
+    kind: readEnumValue(value.kind, 'branchSource.kind', new Set(['explicit_source_ref', 'dependency_review_head', 'default_branch'] as const))!,
+    upstreamTaskId: readString(value.upstreamTaskId, 'branchSource.upstreamTaskId', false),
+    upstreamRunId: readString(value.upstreamRunId, 'branchSource.upstreamRunId', false),
+    upstreamPrNumber: hasOwn(value, 'upstreamPrNumber')
+      ? (() => {
+          if (typeof value.upstreamPrNumber !== 'number' || !Number.isInteger(value.upstreamPrNumber) || value.upstreamPrNumber < 1) {
+            throw badRequest('Invalid branchSource.upstreamPrNumber.');
+          }
+          return value.upstreamPrNumber;
+        })()
+      : undefined,
+    upstreamHeadSha: readString(value.upstreamHeadSha, 'branchSource.upstreamHeadSha', false),
+    resolvedRef: readString(value.resolvedRef, 'branchSource.resolvedRef')!,
+    resolvedAt: readString(value.resolvedAt, 'branchSource.resolvedAt')!
+  };
+}
+
 export async function readJson(request: Request) {
   try {
     return (await request.json()) as unknown;
@@ -146,6 +222,9 @@ export function parseCreateTaskInput(body: unknown): CreateTaskInput {
     title: readString(body.title, 'title')!,
     description: readString(body.description, 'description', false),
     sourceRef: readTrimmedString(body.sourceRef, 'sourceRef', false),
+    dependencies: readDependencies(body.dependencies, false),
+    automationState: readAutomationState(body.automationState, false),
+    branchSource: readBranchSource(body.branchSource, false),
     taskPrompt: readString(body.taskPrompt, 'taskPrompt')!,
     acceptanceCriteria: readStringArray(body.acceptanceCriteria, 'acceptanceCriteria')!,
     context: readContext(body.context)!,
@@ -167,6 +246,9 @@ export function parseUpdateTaskInput(body: unknown): UpdateTaskInput {
   if (hasOwn(body, 'title')) patch.title = readString(body.title, 'title', false);
   if (hasOwn(body, 'description')) patch.description = readString(body.description, 'description', false);
   if (hasOwn(body, 'sourceRef')) patch.sourceRef = readTrimmedString(body.sourceRef, 'sourceRef', false);
+  if (hasOwn(body, 'dependencies')) patch.dependencies = readDependencies(body.dependencies, false);
+  if (hasOwn(body, 'automationState')) patch.automationState = readAutomationState(body.automationState, false);
+  if (hasOwn(body, 'branchSource')) patch.branchSource = readBranchSource(body.branchSource, false);
   if (hasOwn(body, 'taskPrompt')) patch.taskPrompt = readString(body.taskPrompt, 'taskPrompt', false);
   if (hasOwn(body, 'acceptanceCriteria')) patch.acceptanceCriteria = readStringArray(body.acceptanceCriteria, 'acceptanceCriteria', false);
   if (hasOwn(body, 'context')) patch.context = readContext(body.context, false);
