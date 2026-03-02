@@ -40,6 +40,9 @@ export class LocalAgentBoardApi implements AgentBoardApi {
       scmProvider: input.scmProvider,
       scmBaseUrl: input.scmBaseUrl,
       projectPath: input.projectPath,
+      llmAdapter: input.llmAdapter,
+      llmProfileId: input.llmProfileId,
+      llmAuthBundleR2Key: input.llmAuthBundleR2Key ?? input.codexAuthBundleR2Key,
       defaultBranch: input.defaultBranch ?? 'main',
       baselineUrl: input.baselineUrl,
       enabled: input.enabled ?? true,
@@ -49,7 +52,7 @@ export class LocalAgentBoardApi implements AgentBoardApi {
       previewConfig: input.previewConfig,
       previewProvider: input.previewProvider ?? 'cloudflare',
       previewCheckName: input.previewCheckName,
-      codexAuthBundleR2Key: input.codexAuthBundleR2Key,
+      codexAuthBundleR2Key: input.codexAuthBundleR2Key ?? input.llmAuthBundleR2Key,
       createdAt: timestamp,
       updatedAt: timestamp
     });

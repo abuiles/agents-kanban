@@ -36,7 +36,8 @@ describe('RepoForm', () => {
       slug: 'group/platform/repo',
       scmProvider: 'gitlab',
       scmBaseUrl: 'https://gitlab.example.com',
-      projectPath: 'group/platform/repo'
+      projectPath: 'group/platform/repo',
+      llmAdapter: 'codex'
     }));
   });
 
@@ -82,11 +83,13 @@ describe('TaskForm', () => {
 
     const acceptanceCriteriaField = screen.getByText('Acceptance criteria').closest('label')?.querySelector('textarea');
     const dependenciesField = screen.getByText('Dependencies').closest('label')?.querySelector('textarea');
-    const codexModelField = screen.getByText('Codex model').closest('label')?.querySelector('select');
+    const llmAdapterField = screen.getByText('LLM adapter').closest('label')?.querySelector('select');
+    const llmModelField = screen.getByText('LLM model').closest('label')?.querySelector('select');
     const reasoningEffortField = screen.getByText('Reasoning effort').closest('label')?.querySelector('select');
     expect(acceptanceCriteriaField).not.toBeNull();
     expect(dependenciesField).not.toBeNull();
-    expect(codexModelField).not.toBeNull();
+    expect(llmAdapterField).not.toBeNull();
+    expect(llmModelField).not.toBeNull();
     expect(reasoningEffortField).not.toBeNull();
 
     const sourceRefField = screen.getByText('Source ref').closest('label')?.querySelector('input');
@@ -98,7 +101,8 @@ describe('TaskForm', () => {
     await user.type(acceptanceCriteriaField!, 'A playable snake game appears on index.');
     await user.type(dependenciesField!, 'task_repo_123abc\ntask_repo_456def|primary');
     await user.click(screen.getByRole('checkbox'));
-    await user.selectOptions(codexModelField! as unknown as Element, 'gpt-5.3-codex-spark');
+    await user.selectOptions(llmAdapterField! as unknown as Element, 'codex');
+    await user.selectOptions(llmModelField! as unknown as Element, 'gpt-5.3-codex-spark');
     await user.selectOptions(reasoningEffortField! as unknown as Element, 'high');
 
     await user.click(screen.getByRole('button', { name: 'Create task' }));
@@ -117,6 +121,9 @@ describe('TaskForm', () => {
       },
       taskPrompt: 'Create a simple snake game on the homepage.',
       acceptanceCriteria: ['A playable snake game appears on index.'],
+      llmAdapter: 'codex',
+      llmModel: 'gpt-5.3-codex-spark',
+      llmReasoningEffort: 'high',
       codexModel: 'gpt-5.3-codex-spark',
       codexReasoningEffort: 'high'
     });

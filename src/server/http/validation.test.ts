@@ -221,6 +221,8 @@ describe('repo validation', () => {
       scmProvider: 'gitlab',
       scmBaseUrl: 'https://gitlab.example.com',
       projectPath: 'group/platform/repo',
+      llmAdapter: 'cursor_cli',
+      llmProfileId: 'cursor-default',
       baselineUrl: 'https://repo.example.com'
     });
 
@@ -228,7 +230,9 @@ describe('repo validation', () => {
       scmProvider: 'gitlab',
       scmBaseUrl: 'https://gitlab.example.com',
       projectPath: 'group/platform/repo',
-      slug: 'group/platform/repo'
+      slug: 'group/platform/repo',
+      llmAdapter: 'cursor_cli',
+      llmProfileId: 'cursor-default'
     });
   });
 
@@ -258,6 +262,17 @@ describe('repo validation', () => {
     })).toMatchObject({
       slug: 'acme/renamed',
       projectPath: 'acme/renamed'
+    });
+  });
+
+  it('accepts generic llm auth bundle key and mirrors codex compatibility alias', () => {
+    expect(parseCreateRepoInput({
+      slug: 'acme/renamed',
+      baselineUrl: 'https://example.com',
+      llmAuthBundleR2Key: 'auth/llm.tgz'
+    })).toMatchObject({
+      llmAuthBundleR2Key: 'auth/llm.tgz',
+      codexAuthBundleR2Key: 'auth/llm.tgz'
     });
   });
 });

@@ -51,6 +51,11 @@ function dependencyReasonTone(state: 'missing' | 'not_ready' | 'ready') {
   return 'border-amber-500/25 bg-amber-500/10 text-amber-100';
 }
 
+function llmAdapterLabel(adapter?: AgentRun['llmAdapter']) {
+  if (adapter === 'cursor_cli') return 'Cursor CLI';
+  return 'Codex';
+}
+
 function PanelSection({ title, children, aside }: { title: string; children: React.ReactNode; aside?: React.ReactNode }) {
   return (
     <section className="rounded-xl border border-slate-800 bg-slate-950/70 p-4">
@@ -137,8 +142,10 @@ export function DetailPanel({
   const { task, repo, latestRun } = detail;
   const baselineUrl = getBaselineUrl(task, repo as Repo);
   const canCopyLogs = logs.length > 0;
-  const codexModel = task.uiMeta?.codexModel ?? 'gpt-5.1-codex-mini';
-  const codexReasoningEffort = task.uiMeta?.codexReasoningEffort ?? 'medium';
+  const taskLlmAdapter = task.uiMeta?.llmAdapter ?? 'codex';
+  const taskLlmModel = task.uiMeta?.llmModel ?? task.uiMeta?.codexModel ?? 'gpt-5.1-codex-mini';
+  const taskLlmReasoningEffort = task.uiMeta?.llmReasoningEffort ?? task.uiMeta?.codexReasoningEffort ?? 'medium';
+  const latestRunResumeCommand = latestRun?.llmResumeCommand ?? latestRun?.latestCodexResumeCommand;
   const latestCommands = latestRun ? commands.filter((command) => command.runId === latestRun.runId) : [];
   const latestEvents = latestRun ? events.filter((event) => event.runId === latestRun.runId) : [];
   const currentCommand = latestRun?.currentCommandId ? latestCommands.find((command) => command.id === latestRun.currentCommandId) : undefined;
@@ -286,6 +293,18 @@ export function DetailPanel({
                   <div className="mt-1 text-xs text-slate-500">Waiting for preview</div>
                 )}
               </div>
+              <div className="rounded-lg border border-slate-800 bg-slate-900/70 px-3 py-2">
+                <div className="text-[11px] uppercase tracking-[0.16em] text-slate-500">Executor</div>
+                <div className="mt-1 text-xs text-slate-200">{llmAdapterLabel(latestRun.llmAdapter)}</div>
+              </div>
+              <div className="rounded-lg border border-slate-800 bg-slate-900/70 px-3 py-2">
+                <div className="text-[11px] uppercase tracking-[0.16em] text-slate-500">Model</div>
+                <code className="mt-1 block break-all text-xs text-slate-200">{latestRun.llmModel ?? taskLlmModel}</code>
+              </div>
+              <div className="rounded-lg border border-slate-800 bg-slate-900/70 px-3 py-2">
+                <div className="text-[11px] uppercase tracking-[0.16em] text-slate-500">Reasoning</div>
+                <code className="mt-1 block break-all text-xs text-slate-200">{latestRun.llmReasoningEffort ?? taskLlmReasoningEffort}</code>
+              </div>
             </div>
             <div className="rounded-lg border border-slate-800 bg-slate-900/70 p-3">
               <div className="mb-2 flex items-center justify-between gap-3">
@@ -330,7 +349,7 @@ export function DetailPanel({
                 </div>
               </div>
               <p className="text-sm text-slate-400">
-                Open the terminal in a dedicated modal window. It attaches to a separate operator session, so Codex can keep running unless you explicitly take over.
+                Open the terminal in a dedicated modal window. It attaches to a separate operator session, so the executor can keep running unless you explicitly take over.
               </p>
               {terminalBootstrap && !terminalBootstrap.attachable ? (
                 <div className="mt-3 rounded-lg border border-slate-800 bg-slate-950/70 px-3 py-2 text-sm text-slate-400">
@@ -357,10 +376,18 @@ export function DetailPanel({
                   </div>
                 </div>
               ) : null}
-              {latestRun.latestCodexResumeCommand ? (
+              {latestRun ? (
                 <div className="mt-3 rounded-lg border border-slate-800 bg-slate-950/70 px-3 py-2">
-                  <div className="text-[11px] uppercase tracking-[0.16em] text-slate-500">Codex resume</div>
-                  <code className="mt-1 block break-all text-xs text-cyan-200">{latestRun.latestCodexResumeCommand}</code>
+                  <div className="text-[11px] uppercase tracking-[0.16em] text-slate-500">Resume capability</div>
+                  {latestRun.llmSupportsResume ? (
+                    latestRunResumeCommand ? (
+                      <code className="mt-1 block break-all text-xs text-cyan-200">{latestRunResumeCommand}</code>
+                    ) : (
+                      <div className="mt-1 text-xs text-slate-400">{llmAdapterLabel(latestRun.llmAdapter)} supports resume, but no command is available yet.</div>
+                    )
+                  ) : (
+                    <div className="mt-1 text-xs text-slate-400">{llmAdapterLabel(latestRun.llmAdapter)} does not advertise resumable takeover for this run.</div>
+                  )}
                 </div>
               ) : null}
             </div>
@@ -425,14 +452,18 @@ export function DetailPanel({
         </summary>
         <div className="mt-4 grid gap-4 xl:grid-cols-1">
           <PanelSection title="Execution">
-            <div className="grid gap-2 sm:grid-cols-2">
+            <div className="grid gap-2 sm:grid-cols-3">
+              <div className="rounded-lg border border-slate-800 bg-slate-900/70 px-3 py-2">
+                <div className="text-[11px] uppercase tracking-[0.16em] text-slate-500">Adapter</div>
+                <code className="mt-1 block break-all text-xs text-slate-200">{llmAdapterLabel(taskLlmAdapter)}</code>
+              </div>
               <div className="rounded-lg border border-slate-800 bg-slate-900/70 px-3 py-2">
                 <div className="text-[11px] uppercase tracking-[0.16em] text-slate-500">Model</div>
-                <code className="mt-1 block break-all text-xs text-slate-200">{codexModel}</code>
+                <code className="mt-1 block break-all text-xs text-slate-200">{taskLlmModel}</code>
               </div>
               <div className="rounded-lg border border-slate-800 bg-slate-900/70 px-3 py-2">
                 <div className="text-[11px] uppercase tracking-[0.16em] text-slate-500">Reasoning</div>
-                <code className="mt-1 block break-all text-xs text-slate-200">{codexReasoningEffort}</code>
+                <code className="mt-1 block break-all text-xs text-slate-200">{taskLlmReasoningEffort}</code>
               </div>
             </div>
           </PanelSection>

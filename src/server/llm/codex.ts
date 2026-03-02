@@ -32,19 +32,20 @@ export const codexLlmAdapter: LlmAdapter = {
   async restoreAuth(context) {
     const env = context.env as Env & { RUN_ARTIFACTS?: R2Bucket };
     const { sandbox, repoBoard, runId, repo } = context;
+    const authBundleKey = repo.codexAuthBundleR2Key ?? repo.llmAuthBundleR2Key;
 
-    if (!repo.codexAuthBundleR2Key || !env.RUN_ARTIFACTS) {
-      const reason = !repo.codexAuthBundleR2Key
+    if (!authBundleKey || !env.RUN_ARTIFACTS) {
+      const reason = !authBundleKey
         ? 'No Codex auth bundle configured for this repo.'
         : 'RUN_ARTIFACTS binding is not configured.';
       await repoBoard.appendRunLogs(runId, [buildRunLog(runId, reason, 'bootstrap', 'error')]);
       throw await createNonRetryableError(reason);
     }
 
-    const object = await env.RUN_ARTIFACTS.get(repo.codexAuthBundleR2Key);
+    const object = await env.RUN_ARTIFACTS.get(authBundleKey);
     if (!object) {
-      await repoBoard.appendRunLogs(runId, [buildRunLog(runId, `Codex auth bundle ${repo.codexAuthBundleR2Key} was not found in R2.`, 'bootstrap', 'error')]);
-      throw await createNonRetryableError(`Codex auth bundle ${repo.codexAuthBundleR2Key} was not found in R2.`);
+      await repoBoard.appendRunLogs(runId, [buildRunLog(runId, `Codex auth bundle ${authBundleKey} was not found in R2.`, 'bootstrap', 'error')]);
+      throw await createNonRetryableError(`Codex auth bundle ${authBundleKey} was not found in R2.`);
     }
 
     const archiveBase64 = bytesToBase64(await object.arrayBuffer());
