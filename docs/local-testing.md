@@ -24,7 +24,7 @@ The runtime resolves credentials in this order:
 Set this for local examples:
 
 ```bash
-BASE="http://127.0.0.1:8787/api"
+BASE="http://localhost:5173/api"
 ```
 
 ### GitHub keys
@@ -146,16 +146,26 @@ Run from the repo root:
 ```bash
 npm install
 npm run build
-npx wrangler dev
+npm run dev
 ```
 
 Base URL example:
 
 ```text
-http://127.0.0.1:8787/api
+http://localhost:5173/api
 ```
 
+You can continue to use `npx wrangler dev` for Worker-only execution on the legacy port in this environment if needed, but this document defaults to the Vite/Workers bridge port `5173` for API and UI.
+
 ## 6) Minimal end-to-end local test
+
+0. Seed a local org and operator context (Stage 4.5):
+
+   - `POST /api/auth/signup` with email/password + tenant name/slug
+   - `POST /api/auth/login` and capture session token/cookie
+   - `GET /api/me` to confirm active user + tenant context
+   - `POST /api/me/tenant-context` to set active tenant if multiple memberships exist
+   - `GET /api/tenants` to verify tenant visibility
 
 1. Create/get board and repo
    - `GET /api/board?repoId=all`

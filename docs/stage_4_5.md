@@ -1,6 +1,20 @@
 # AgentsKanban Stage 4.5 (Tenant Metering)
 
-**Status:** ⏳ Pending
+**Status:** ⚙️ In Progress
+
+## Execution defaults
+
+- Run the local app from `localhost:5173`.
+- Use same-origin API calls at `http://localhost:5173/api`.
+- All implementation tasks in this plan use:
+  - `codexModel`: `gpt-5.3-codex-spark`
+  - `codexReasoningEffort`: `medium`
+
+Execution baseline command:
+
+```bash
+npm run dev
+```
 
 ## Goal
 
@@ -45,6 +59,11 @@ Stage 4.5 fixes that timing problem without re-scoping Stage 4.
 - Stage 4.5 must work whether execution currently relies on a developer-connected account or a later tenant-owned provider credential model
 - all new entities added after this stage must carry `tenantId`
 
+## Organization model additions
+
+- Stage 4.5 introduces persistent operator identity for org signup and membership enforcement.
+- Minimal implementation baseline uses D1 for identity + tenant metadata and DOs for board/task/run workflow state.
+
 ## Scope
 
 In scope:
@@ -79,7 +98,11 @@ type Tenant = {
   slug: string;
   name: string;
   status: 'active' | 'suspended';
+  domain?: string;
+  createdByUserId: string;
+  defaultSeatLimit: number;
   seatLimit: number;
+  settings?: Record<string, string | number | boolean>;
   createdAt: string;
   updatedAt: string;
 };
@@ -96,6 +119,32 @@ type TenantMember = {
   seatState: 'active' | 'invited' | 'revoked';
   createdAt: string;
   updatedAt: string;
+};
+```
+
+### User
+
+```ts
+type User = {
+  id: string;
+  email: string;
+  displayName?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+```
+
+### Session
+
+```ts
+type UserSession = {
+  id: string;
+  userId: string;
+  tenantId: string;
+  activeTenantId: string;
+  tokenHash: string;
+  expiresAt: string;
+  lastSeenAt: string;
 };
 ```
 
@@ -269,6 +318,17 @@ Recommended initial model:
 Add:
 
 - `GET /api/tenants`
+- `POST /api/tenants`
+- `GET /api/tenants/:tenantId`
+- `PATCH /api/tenants/:tenantId`
+- `GET /api/tenants/:tenantId/members`
+- `POST /api/tenants/:tenantId/members`
+- `PATCH /api/tenants/:tenantId/members/:memberId`
+- `POST /api/me/tenant-context`
+- `POST /api/auth/signup`
+- `POST /api/auth/login`
+- `POST /api/auth/logout`
+- `GET /api/me`
 - `GET /api/tenant-usage?tenantId=&from=&to=`
 - `GET /api/tenant-usage/runs?tenantId=&from=&to=`
 - `GET /api/runs/:runId/usage`
@@ -361,12 +421,14 @@ Rules:
 
 Recommended implementation:
 
-- store usage ledger entries in a dedicated SQLite-backed Durable Object namespace unless reporting needs force a later move to D1
+- store identity, tenant metadata, and usage ledger entries in D1
+- keep repo/task/run/event/command/operator-session projections in Durable Objects
+- keep short-horizon counters and workflow telemetry in Durable Objects when needed for low-latency reads
 
 Default:
 
-- continue with SQLite-backed Durable Objects for consistency with the current architecture
-- revisit D1 only if reporting queries become awkward or too expensive
+- use D1 as the canonical store for tenant/auth and usage tables
+- use DO-backed projections for active runtime state and board streams
 
 ## Analytics integration
 
@@ -459,6 +521,8 @@ Stage 4.5 is complete when:
 
 ### S45-00. Lock contract and explicit deferrals
 
+Assigned execution model: `gpt-5.3-codex-spark`, `codexReasoningEffort: medium`.
+
 Deliverables:
 
 - freeze Stage 4.5 scope around tenant core, memberships/seats, tenant-scoped access, and usage/metering
@@ -475,11 +539,14 @@ Unblocks:
 
 ### S45-10. Tenant core data model
 
+Assigned execution model: `gpt-5.3-codex-spark`, `codexReasoningEffort: medium`.
+
 Deliverables:
 
 - add `Tenant` model and persistence contract
 - add `tenantId` ownership to repo/task/run/event/command/operator-session/artifact projection models
 - define ownership invariants and required migration defaults for pre-tenant records
+- add D1 tables for `tenants`, `users`, `user_sessions`, and `tenant_memberships` (schema and seed strategy)
 
 Depends on:
 
@@ -495,11 +562,17 @@ Unblocks:
 
 ### S45-20. Tenant memberships and seats
 
+Assigned execution model: `gpt-5.3-codex-spark`, `codexReasoningEffort: medium`.
+
 Deliverables:
 
 - add `TenantMember` and seat summary model
 - define active membership and seat enforcement rules
 - define minimal owner/member role semantics needed for Stage 4.5 authorization
+- implement tenant signup and membership endpoints:
+  - `POST /api/tenants`
+  - `POST /api/tenants/:tenantId/members`
+  - `PATCH /api/tenants/:tenantId/members/:memberId`
 
 Depends on:
 
@@ -512,11 +585,14 @@ Unblocks:
 
 ### S45-30. Tenant context resolution and access control
 
+Assigned execution model: `gpt-5.3-codex-spark`, `codexReasoningEffort: medium`.
+
 Deliverables:
 
 - resolve authenticated operator -> allowed tenant set -> active tenant context
 - enforce membership and seat checks before repo/task/run access
 - define authorization failure behavior for cross-tenant reads, writes, attach, and takeover
+- implement `/api/auth/signup`, `/api/auth/login`, `/api/auth/logout`, `GET /api/me`, `POST /api/me/tenant-context`
 
 Depends on:
 
@@ -531,6 +607,8 @@ Unblocks:
 - `S45-80`
 
 ### S45-40. Tenant-scoped persistence, APIs, and board fanout
+
+Assigned execution model: `gpt-5.3-codex-spark`, `codexReasoningEffort: medium`.
 
 Deliverables:
 
@@ -552,6 +630,8 @@ Unblocks:
 
 ### S45-50. Workflow propagation and tenant-owned artifact layout
 
+Assigned execution model: `gpt-5.3-codex-spark`, `codexReasoningEffort: medium`.
+
 Deliverables:
 
 - require `tenantId` in workflow input and runtime metadata
@@ -571,6 +651,8 @@ Unblocks:
 
 ### S45-60. Usage ledger emission
 
+Assigned execution model: `gpt-5.3-codex-spark`, `codexReasoningEffort: medium`.
+
 Deliverables:
 
 - add `UsageLedgerEntry` storage and rate-version metadata
@@ -589,6 +671,8 @@ Unblocks:
 - `S45-80`
 
 ### S45-70. Usage aggregation and reporting APIs
+
+Assigned execution model: `gpt-5.3-codex-spark`, `codexReasoningEffort: medium`.
 
 Deliverables:
 
@@ -610,6 +694,8 @@ Unblocks:
 - Stage 8 billing and policy hardening
 
 ### S45-80. Tenant-aware UI shell and operator surfaces
+
+Assigned execution model: `gpt-5.3-codex-spark`, `codexReasoningEffort: medium`.
 
 Deliverables:
 

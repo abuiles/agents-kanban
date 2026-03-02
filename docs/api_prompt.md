@@ -5,13 +5,13 @@ Use this app through its same-origin API.
 Base URL:
 
 ```text
-<PREVIEW_URL>
+http://localhost:5173
 ```
 
 API base:
 
 ```text
-<PREVIEW_URL>/api
+http://localhost:5173/api
 ```
 
 Your job:
@@ -64,7 +64,7 @@ Useful task payload:
     "notes": "Keep this intentionally small."
   },
   "status": "INBOX",
-  "codexModel": "gpt-5.1-codex-mini",
+  "codexModel": "gpt-5.3-codex-spark",
   "codexReasoningEffort": "medium"
 }
 ```

@@ -10,7 +10,7 @@
 | 3.5 | ✅ Implemented | [docs/stage_3_5.md](stage_3_5.md) |
 | 4 | ✅ Implemented (core) | [docs/stage_4.md](stage_4.md) |
 | 6 | ⚠️ Partial | [docs/stage_6.md](stage_6.md) |
-| 4.5 | ⏳ Pending | [docs/stage_4_5.md](stage_4_5.md) |
+| 4.5 | ⚙️ In progress | [docs/stage_4_5.md](stage_4_5.md) |
 | 5 | ⏳ Pending | [docs/stage_5.md](stage_5.md) |
 | 7 | ⏳ Pending | [docs/stage_7.md](stage_7.md) |
 | 8 | ⏳ Pending | [docs/stage_8.md](stage_8.md) |
@@ -35,7 +35,7 @@
 - [x] Stage 3.1 complete
 - [x] Stage 3.5 complete
 - [x] Stage 4 core complete
-- [ ] Stage 4.5 complete
+- [ ] Stage 4.5 in progress
 - [ ] Stage 5 complete
 - [ ] Stage 6 full control complete
 - [ ] Stage 7 complete
