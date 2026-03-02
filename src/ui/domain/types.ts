@@ -20,6 +20,11 @@ export type LlmAdapter = 'codex' | 'cursor_cli';
 export type LlmReasoningEffort = 'low' | 'medium' | 'high';
 export type ScmProvider = 'github' | 'gitlab';
 export type ReviewProvider = ScmProvider;
+export type PreviewAdapterKind = 'cloudflare_checks' | 'prompt_recipe';
+export type RepoPreviewConfig = {
+  checkName?: string;
+  promptRecipe?: string;
+};
 
 export type RunEventType =
   | 'run.status_changed'
@@ -46,6 +51,8 @@ export type Repo = {
   githubAuthMode?: 'kv_pat';
   previewMode?: 'auto' | 'skip';
   evidenceMode?: 'auto' | 'skip';
+  previewAdapter?: PreviewAdapterKind;
+  previewConfig?: RepoPreviewConfig;
   previewProvider?: 'cloudflare';
   previewCheckName?: string;
   previewUrlPattern?: string;

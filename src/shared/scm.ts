@@ -1,4 +1,5 @@
 import type { AgentRun, Repo, ScmProvider, TaskBranchSource } from '../ui/domain/types';
+import { normalizeRepoPreviewConfig } from './preview';
 
 export const SCM_PROVIDERS = new Set(['github', 'gitlab'] as const);
 
@@ -53,13 +54,13 @@ export function normalizeRepo(repo: RepoScmLike & Omit<Repo, 'slug' | 'scmProvid
     throw new Error('Repo project path is required.');
   }
 
-  return {
+  return normalizeRepoPreviewConfig({
     ...repo,
     slug: projectPath,
     scmProvider,
     scmBaseUrl: normalizeScmBaseUrl(scmProvider, repo.scmBaseUrl),
     projectPath
-  };
+  });
 }
 
 export function getRepoScmProvider(repo: RepoScmLike): ScmProvider {

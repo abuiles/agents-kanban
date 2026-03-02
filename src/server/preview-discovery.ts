@@ -1,6 +1,7 @@
 import type { Repo } from '../ui/domain/types';
+import { normalizeRepoPreviewConfig, resolvePreviewCheckName } from '../shared/preview';
 
-type GithubCheckRun = {
+export type PreviewDiscoveryCheckRun = {
   name?: string;
   details_url?: string;
   html_url?: string;
@@ -14,8 +15,8 @@ type GithubCheckRun = {
 
 type PreviewDiscoveryAdapter = {
   name: string;
-  supports: (repo: Repo, checkRun: GithubCheckRun) => boolean;
-  extractPreviewUrl: (repo: Repo, checkRun: GithubCheckRun) => { url?: string; source?: 'summary' | 'details_url' | 'html_url' };
+  supports: (repo: Repo, checkRun: PreviewDiscoveryCheckRun) => boolean;
+  extractPreviewUrl: (repo: Repo, checkRun: PreviewDiscoveryCheckRun) => { url?: string; source?: 'summary' | 'details_url' | 'html_url' };
 };
 
 export type PreviewDiscoveryResult = {
@@ -43,7 +44,9 @@ const adapters: PreviewDiscoveryAdapter[] = [
   {
     name: 'cloudflare',
     supports: (repo, checkRun) => {
-      return (repo.previewProvider === 'cloudflare' && checkRun.name === repo.previewCheckName)
+      const normalizedRepo = normalizeRepoPreviewConfig(repo);
+      const previewCheckName = resolvePreviewCheckName(normalizedRepo);
+      return (normalizedRepo.previewProvider === 'cloudflare' && checkRun.name === previewCheckName)
         || checkRun.app?.slug === 'cloudflare-workers-and-pages'
         || checkRun.name?.startsWith('Workers Builds:')
         || checkRun.details_url?.includes('dash.cloudflare.com')
@@ -68,23 +71,25 @@ const adapters: PreviewDiscoveryAdapter[] = [
   {
     name: 'generic-direct-url',
     supports: (repo, checkRun) => {
-      return checkRun.name === repo.previewCheckName || Boolean(firstDirectPreviewUrl(checkRun));
+      const previewCheckName = resolvePreviewCheckName(repo);
+      return checkRun.name === previewCheckName || Boolean(firstDirectPreviewUrl(checkRun));
     },
     extractPreviewUrl: (_repo, checkRun) => firstDirectPreviewUrl(checkRun)
   }
 ];
 
-export function discoverPreviewUrl(repo: Repo, checkRuns: GithubCheckRun[]) {
+export function discoverPreviewUrl(repo: Repo, checkRuns: PreviewDiscoveryCheckRun[]) {
   return inspectPreviewDiscovery(repo, checkRuns).previewUrl;
 }
 
-export function inspectPreviewDiscovery(repo: Repo, checkRuns: GithubCheckRun[]): PreviewDiscoveryResult {
-  const orderedCheckRuns = [...checkRuns].sort((left, right) => scoreCheckRun(repo, right) - scoreCheckRun(repo, left));
+export function inspectPreviewDiscovery(repo: Repo, checkRuns: PreviewDiscoveryCheckRun[]): PreviewDiscoveryResult {
+  const normalizedRepo = normalizeRepoPreviewConfig(repo);
+  const orderedCheckRuns = [...checkRuns].sort((left, right) => scoreCheckRun(normalizedRepo, right) - scoreCheckRun(normalizedRepo, left));
   const checks: PreviewDiscoveryResult['checks'] = [];
 
   for (const checkRun of orderedCheckRuns) {
-    const adapter = adapters.find((candidate) => candidate.supports(repo, checkRun));
-    const score = scoreCheckRun(repo, checkRun);
+    const adapter = adapters.find((candidate) => candidate.supports(normalizedRepo, checkRun));
+    const score = scoreCheckRun(normalizedRepo, checkRun);
     if (!adapter) {
       checks.push({
         name: checkRun.name,
@@ -117,10 +122,11 @@ export function inspectPreviewDiscovery(repo: Repo, checkRuns: GithubCheckRun[])
   return { checks };
 }
 
-function scoreCheckRun(repo: Repo, checkRun: GithubCheckRun) {
+function scoreCheckRun(repo: Repo, checkRun: PreviewDiscoveryCheckRun) {
   let score = 0;
+  const previewCheckName = resolvePreviewCheckName(repo);
 
-  if (repo.previewCheckName && checkRun.name === repo.previewCheckName) {
+  if (previewCheckName && checkRun.name === previewCheckName) {
     score += 100;
   }
 
@@ -139,7 +145,7 @@ function scoreCheckRun(repo: Repo, checkRun: GithubCheckRun) {
   return score;
 }
 
-function firstDirectPreviewUrl(checkRun: GithubCheckRun) {
+function firstDirectPreviewUrl(checkRun: PreviewDiscoveryCheckRun) {
   if (isPreviewUrl(checkRun.details_url)) {
     return { url: checkRun.details_url, source: 'details_url' as const };
   }

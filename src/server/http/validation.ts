@@ -5,6 +5,7 @@ import { SCM_PROVIDERS } from '../../shared/scm';
 const CODEX_MODELS = new Set(['gpt-5.1-codex-mini', 'gpt-5.3-codex', 'gpt-5.3-codex-spark'] as const);
 const CODEX_REASONING_EFFORTS = new Set(['low', 'medium', 'high'] as const);
 const LLM_ADAPTERS = new Set(['codex', 'cursor_cli'] as const);
+const PREVIEW_ADAPTERS = new Set(['cloudflare_checks', 'prompt_recipe'] as const);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -271,6 +272,60 @@ function readTaskLlmFields(body: Record<string, unknown>, mode: 'create' | 'upda
   };
 }
 
+function readPreviewConfig(value: unknown, field: string, required = true): CreateRepoInput['previewConfig'] | undefined {
+  if (!required && typeof value === 'undefined') {
+    return undefined;
+  }
+
+  if (!isRecord(value)) {
+    throw badRequest(`Invalid ${field}.`);
+  }
+
+  const checkName = readTrimmedString(value.checkName, `${field}.checkName`, false);
+  const promptRecipe = readTrimmedString(value.promptRecipe, `${field}.promptRecipe`, false);
+  if (!checkName && !promptRecipe) {
+    return undefined;
+  }
+
+  return {
+    ...(checkName ? { checkName } : {}),
+    ...(promptRecipe ? { promptRecipe } : {})
+  };
+}
+
+function normalizeRepoPreviewFields<T extends {
+  previewAdapter?: CreateRepoInput['previewAdapter'];
+  previewConfig?: CreateRepoInput['previewConfig'];
+  previewProvider?: CreateRepoInput['previewProvider'];
+  previewCheckName?: string;
+}>(input: T): T {
+  const checkName = input.previewConfig?.checkName ?? input.previewCheckName;
+  if (input.previewConfig?.checkName && input.previewCheckName && input.previewConfig.checkName !== input.previewCheckName) {
+    throw badRequest('Invalid preview payload: previewConfig.checkName and previewCheckName must match when both are provided.');
+  }
+
+  if (input.previewProvider === 'cloudflare' && input.previewAdapter && input.previewAdapter !== 'cloudflare_checks') {
+    throw badRequest('Invalid preview payload: previewProvider "cloudflare" requires previewAdapter "cloudflare_checks".');
+  }
+
+  const previewAdapter = input.previewAdapter ?? (input.previewProvider === 'cloudflare' ? 'cloudflare_checks' : undefined);
+  const previewProvider = input.previewProvider ?? (previewAdapter === 'cloudflare_checks' ? 'cloudflare' : undefined);
+  const previewConfig = input.previewConfig?.promptRecipe || checkName
+    ? {
+        ...(checkName ? { checkName } : {}),
+        ...(input.previewConfig?.promptRecipe ? { promptRecipe: input.previewConfig.promptRecipe } : {})
+      }
+    : input.previewConfig;
+
+  return {
+    ...input,
+    previewAdapter,
+    previewConfig,
+    previewProvider,
+    previewCheckName: checkName
+  };
+}
+
 export async function readJson(request: Request) {
   try {
     return (await request.json()) as unknown;
@@ -293,7 +348,7 @@ export function parseCreateRepoInput(body: unknown): CreateRepoInput {
     throw badRequest('Invalid repo payload: slug and projectPath must match when both are provided.');
   }
 
-  return {
+  return normalizeRepoPreviewFields({
     slug: slug ?? projectPath,
     scmProvider: readEnumValue(body.scmProvider, 'scmProvider', SCM_PROVIDERS, false),
     scmBaseUrl: readTrimmedString(body.scmBaseUrl, 'scmBaseUrl', false),
@@ -303,10 +358,12 @@ export function parseCreateRepoInput(body: unknown): CreateRepoInput {
     enabled: readBoolean(body.enabled, 'enabled', false),
     previewMode: readEnumValue(body.previewMode, 'previewMode', new Set(['auto', 'skip'] as const), false),
     evidenceMode: readEnumValue(body.evidenceMode, 'evidenceMode', new Set(['auto', 'skip'] as const), false),
+    previewAdapter: readEnumValue(body.previewAdapter, 'previewAdapter', PREVIEW_ADAPTERS, false),
+    previewConfig: readPreviewConfig(body.previewConfig, 'previewConfig', false),
     previewProvider: readEnumValue(body.previewProvider, 'previewProvider', new Set(['cloudflare'] as const), false),
     previewCheckName: readTrimmedString(body.previewCheckName, 'previewCheckName', false),
     codexAuthBundleR2Key: readTrimmedString(body.codexAuthBundleR2Key, 'codexAuthBundleR2Key', false)
-  };
+  });
 }
 
 export function parseUpdateRepoInput(body: unknown): UpdateRepoInput {
@@ -329,9 +386,26 @@ export function parseUpdateRepoInput(body: unknown): UpdateRepoInput {
   if (hasOwn(body, 'enabled')) patch.enabled = readBoolean(body.enabled, 'enabled', false);
   if (hasOwn(body, 'previewMode')) patch.previewMode = readEnumValue(body.previewMode, 'previewMode', new Set(['auto', 'skip'] as const), false);
   if (hasOwn(body, 'evidenceMode')) patch.evidenceMode = readEnumValue(body.evidenceMode, 'evidenceMode', new Set(['auto', 'skip'] as const), false);
+  if (hasOwn(body, 'previewAdapter')) patch.previewAdapter = readEnumValue(body.previewAdapter, 'previewAdapter', PREVIEW_ADAPTERS, false);
+  if (hasOwn(body, 'previewConfig')) patch.previewConfig = readPreviewConfig(body.previewConfig, 'previewConfig', false);
   if (hasOwn(body, 'previewProvider')) patch.previewProvider = readEnumValue(body.previewProvider, 'previewProvider', new Set(['cloudflare'] as const), false);
   if (hasOwn(body, 'previewCheckName')) patch.previewCheckName = readTrimmedString(body.previewCheckName, 'previewCheckName', false);
   if (hasOwn(body, 'codexAuthBundleR2Key')) patch.codexAuthBundleR2Key = readTrimmedString(body.codexAuthBundleR2Key, 'codexAuthBundleR2Key', false);
+
+  if (hasOwn(body, 'previewAdapter') || hasOwn(body, 'previewConfig') || hasOwn(body, 'previewProvider') || hasOwn(body, 'previewCheckName')) {
+    const normalizedPreview = normalizeRepoPreviewFields({
+      previewAdapter: patch.previewAdapter,
+      previewConfig: patch.previewConfig,
+      previewProvider: patch.previewProvider,
+      previewCheckName: patch.previewCheckName
+    });
+
+    if (hasOwn(body, 'previewAdapter') || hasOwn(body, 'previewProvider')) patch.previewAdapter = normalizedPreview.previewAdapter;
+    if (hasOwn(body, 'previewAdapter') || hasOwn(body, 'previewProvider')) patch.previewProvider = normalizedPreview.previewProvider;
+    if (hasOwn(body, 'previewConfig') || hasOwn(body, 'previewCheckName')) patch.previewConfig = normalizedPreview.previewConfig;
+    if (hasOwn(body, 'previewConfig') || hasOwn(body, 'previewCheckName')) patch.previewCheckName = normalizedPreview.previewCheckName;
+  }
+
   return patch;
 }
 

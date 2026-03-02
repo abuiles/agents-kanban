@@ -4,7 +4,6 @@ import type { BoardIndexDO } from './durable/board-index';
 import type { Repo, RunCommand, RunCommandPhase, RunEvent, Task } from '../ui/domain/types';
 import { buildRunLog, type RunJobParams } from './shared/real-run';
 import { NonRetryableError } from 'cloudflare:workflows';
-import { inspectPreviewDiscovery } from './preview-discovery';
 import { buildWorkflowInvocationId } from './workflow-id';
 import { shouldRunEvidence, shouldRunPreview } from './shared/repo-execution-policy';
 import { getRepoHost } from '../shared/scm';
@@ -13,6 +12,7 @@ import type { ScmAdapter, ScmAdapterCredential } from './scm/adapter';
 import { getScmAdapter } from './scm/registry';
 import { getScmSourceRefFetchSpec } from './scm/source-ref';
 import { getLlmAdapter, resolveLlmAdapterKind } from './llm/registry';
+import { getPreviewAdapter } from './preview/registry';
 
 type WorkflowBinding<T> = {
   create(options?: { id?: string; params?: T; retention?: { successRetention?: string | number; errorRetention?: string | number } }): Promise<{ id: string }>;
@@ -369,7 +369,7 @@ async function waitForPreview(
   }
 
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    const discovery = await lookupPreviewUrl(repo, headSha, scmAdapter, scmCredential, repo.previewCheckName);
+    const discovery = await lookupPreviewUrl(repo, headSha, scmAdapter, scmCredential);
     await repoBoard.appendRunLogs(runId, [
       buildRunLog(runId, `Preview discovery attempt ${attempt}/${attempts}.`, 'preview', 'info', { headSha }),
       buildRunLog(
@@ -453,20 +453,20 @@ async function lookupPreviewUrl(
   repo: Repo,
   headSha: string,
   scmAdapter: ScmAdapter,
-  scmCredential: ScmAdapterCredential,
-  previewCheckName?: string
+  scmCredential: ScmAdapterCredential
 ) {
   const checks = await scmAdapter.listCommitChecks(repo, headSha, scmCredential);
-  return inspectPreviewDiscovery(
-    { ...repo, previewCheckName },
-    checks.map((check) => ({
+  const previewAdapter = getPreviewAdapter(repo);
+  return previewAdapter.resolve({
+    repo,
+    checks: checks.map((check) => ({
       name: check.name,
-      details_url: check.detailsUrl,
-      html_url: check.htmlUrl,
-      output: { summary: check.summary ?? null },
-      app: { slug: check.appSlug }
+      detailsUrl: check.detailsUrl,
+      htmlUrl: check.htmlUrl,
+      summary: check.summary,
+      appSlug: check.appSlug
     }))
-  );
+  }).compatibility;
 }
 
 function formatPreviewDiscoveryLog(discovery: Awaited<ReturnType<typeof lookupPreviewUrl>>) {

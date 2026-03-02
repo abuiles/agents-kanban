@@ -169,12 +169,51 @@ describe('repo validation', () => {
     expect(parsed.previewProvider).toBe('cloudflare');
   });
 
+  it('parses generic preview adapter fields and mirrors legacy check name', () => {
+    const parsed = parseCreateRepoInput({
+      slug: 'abuiles/minions',
+      baselineUrl: 'https://example.com',
+      previewAdapter: 'cloudflare_checks',
+      previewConfig: {
+        checkName: 'Workers Builds: minions'
+      }
+    });
+
+    expect(parsed.previewAdapter).toBe('cloudflare_checks');
+    expect(parsed.previewProvider).toBe('cloudflare');
+    expect(parsed.previewCheckName).toBe('Workers Builds: minions');
+    expect(parsed.previewConfig?.checkName).toBe('Workers Builds: minions');
+  });
+
+  it('maps legacy preview fields to the new preview config shape', () => {
+    const parsed = parseCreateRepoInput({
+      slug: 'abuiles/minions',
+      baselineUrl: 'https://example.com',
+      previewProvider: 'cloudflare',
+      previewCheckName: 'Workers Builds: minions'
+    });
+
+    expect(parsed.previewAdapter).toBe('cloudflare_checks');
+    expect(parsed.previewConfig).toEqual({ checkName: 'Workers Builds: minions' });
+  });
+
   it('rejects invalid repo execution policy values', () => {
     expect(() =>
       parseUpdateRepoInput({
         previewMode: 'sometimes'
       })
     ).toThrow('Invalid previewMode.');
+  });
+
+  it('rejects incompatible legacy and new preview adapter payloads', () => {
+    expect(() =>
+      parseCreateRepoInput({
+        slug: 'abuiles/minions',
+        baselineUrl: 'https://example.com',
+        previewProvider: 'cloudflare',
+        previewAdapter: 'prompt_recipe'
+      })
+    ).toThrow('Invalid preview payload: previewProvider "cloudflare" requires previewAdapter "cloudflare_checks".');
   });
 
   it('parses provider-neutral repo payloads and keeps slug compatibility', () => {
