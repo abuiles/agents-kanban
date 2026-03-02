@@ -1,4 +1,15 @@
-import type { AgentBoardApi, CreateRepoInput, CreateTaskInput, RequestRunChangesInput, UpdateRepoInput, UpdateTaskInput, UpsertScmCredentialInput } from '../domain/api';
+import type {
+  AgentBoardApi,
+  AuthLoginInput,
+  AuthSession,
+  AuthSignupInput,
+  CreateRepoInput,
+  CreateTaskInput,
+  RequestRunChangesInput,
+  UpdateRepoInput,
+  UpdateTaskInput,
+  UpsertScmCredentialInput
+} from '../domain/api';
 import type { AgentRun, BoardSnapshotV1, OperatorSession, Repo, RunCommand, RunEvent, RunLogEntry, ScmCredential, Task, TaskDetail, TerminalBootstrap } from '../domain/types';
 import { getTaskDetail } from '../domain/selectors';
 import { parseBoardSnapshot } from '../store/board-snapshot';
@@ -34,6 +45,7 @@ type BoardEvent =
 
 export class HttpAgentBoardApi implements AgentBoardApi {
   private snapshot: BoardSnapshotV1;
+  private authSession?: AuthSession;
   private readonly listeners = new Set<() => void>();
   private socket?: WebSocket;
   private reconnectTimer?: number;
@@ -46,8 +58,58 @@ export class HttpAgentBoardApi implements AgentBoardApi {
       this.emit();
     });
 
-    void this.refresh();
+    void this.bootstrap();
+  }
+
+  async getAuthSession() {
+    if (this.authSession) {
+      return this.authSession;
+    }
+    try {
+      this.authSession = await this.request<AuthSession>('/api/me');
+      return this.authSession;
+    } catch {
+      this.authSession = undefined;
+      return undefined;
+    }
+  }
+
+  async login(input: AuthLoginInput): Promise<AuthSession> {
+    await this.request('/api/auth/login', { method: 'POST', body: JSON.stringify(input) });
+    const session = await this.request<AuthSession>('/api/me');
+    this.authSession = session;
+    await this.refresh();
     this.connectSocket();
+    this.emit();
+    return session;
+  }
+
+  async signup(input: AuthSignupInput): Promise<AuthSession> {
+    await this.request('/api/auth/signup', { method: 'POST', body: JSON.stringify(input) });
+    const session = await this.request<AuthSession>('/api/me');
+    this.authSession = session;
+    await this.refresh();
+    this.connectSocket();
+    this.emit();
+    return session;
+  }
+
+  async logout(): Promise<void> {
+    await this.request('/api/auth/logout', { method: 'POST' });
+    this.authSession = undefined;
+    this.snapshot = this.composeSnapshot(EMPTY_SNAPSHOT);
+    this.socket?.close();
+    this.socket = undefined;
+    this.emit();
+  }
+
+  async setActiveTenant(tenantId: string): Promise<AuthSession> {
+    await this.request('/api/me/tenant-context', { method: 'POST', body: JSON.stringify({ tenantId }) });
+    const session = await this.request<AuthSession>('/api/me');
+    this.authSession = session;
+    await this.refresh();
+    this.emit();
+    return session;
   }
 
   subscribe(listener: () => void) {
@@ -227,6 +289,16 @@ export class HttpAgentBoardApi implements AgentBoardApi {
     const data = await this.request<BoardSyncResponse>('/api/board?repoId=all');
     this.snapshot = this.composeSnapshot({ ...EMPTY_SNAPSHOT, ...data });
     this.emit();
+  }
+
+  private async bootstrap() {
+    const session = await this.getAuthSession();
+    if (!session) {
+      this.emit();
+      return;
+    }
+    await this.refresh();
+    this.connectSocket();
   }
 
   private composeSnapshot(snapshot: BoardSnapshotV1): BoardSnapshotV1 {

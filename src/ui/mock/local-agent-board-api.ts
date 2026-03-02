@@ -1,5 +1,16 @@
-import type { AgentBoardApi, CreateRepoInput, CreateTaskInput, RequestRunChangesInput, UpdateRepoInput, UpdateTaskInput, UpsertScmCredentialInput } from '../domain/api';
-import type { AgentRun, Repo, RunCommand, RunEvent, RunLogEntry, ScmCredential, Task, TaskDetail, TerminalBootstrap } from '../domain/types';
+import type {
+  AgentBoardApi,
+  AuthLoginInput,
+  AuthSession,
+  AuthSignupInput,
+  CreateRepoInput,
+  CreateTaskInput,
+  RequestRunChangesInput,
+  UpdateRepoInput,
+  UpdateTaskInput,
+  UpsertScmCredentialInput
+} from '../domain/api';
+import type { AgentRun, Repo, RunCommand, RunEvent, RunLogEntry, ScmCredential, Task, TaskDetail, Tenant, TenantMember, TerminalBootstrap, User } from '../domain/types';
 import { getTaskDetail, getTasksForRepo } from '../domain/selectors';
 import { LocalBoardStore } from '../store/local-board-store';
 import { parseImportedBoard } from '../store/import-export';
@@ -18,10 +29,34 @@ function randomId(prefix: string) {
 export class LocalAgentBoardApi implements AgentBoardApi {
   private readonly simulator: RunSimulator;
   private readonly scmCredentials = new Map<string, ScmCredential & { token: string }>();
+  private authSession?: AuthSession;
 
   constructor(private readonly store: LocalBoardStore) {
     this.simulator = new RunSimulator(store);
     this.simulator.resumeAll();
+    const now = nowIso();
+    const user: User = { id: 'user_local', email: 'local@example.com', displayName: 'Local User', createdAt: now, updatedAt: now };
+    const tenant: Tenant = {
+      id: 'tenant_local',
+      slug: 'local',
+      name: 'Local Tenant',
+      status: 'active',
+      createdByUserId: user.id,
+      defaultSeatLimit: 10,
+      seatLimit: 10,
+      createdAt: now,
+      updatedAt: now
+    };
+    const membership: TenantMember = {
+      id: `${tenant.id}:${user.id}`,
+      tenantId: tenant.id,
+      userId: user.id,
+      role: 'owner',
+      seatState: 'active',
+      createdAt: now,
+      updatedAt: now
+    };
+    this.authSession = { user, tenants: [tenant], memberships: [membership], activeTenantId: tenant.id };
   }
 
   subscribe(listener: () => void) {
@@ -30,6 +65,36 @@ export class LocalAgentBoardApi implements AgentBoardApi {
 
   getSnapshot() {
     return this.store.getSnapshot();
+  }
+
+  async getAuthSession() {
+    return this.authSession;
+  }
+
+  async login(_input: AuthLoginInput): Promise<AuthSession> {
+    if (!this.authSession) {
+      throw new Error('No local auth session available.');
+    }
+    return this.authSession;
+  }
+
+  async signup(_input: AuthSignupInput): Promise<AuthSession> {
+    if (!this.authSession) {
+      throw new Error('No local auth session available.');
+    }
+    return this.authSession;
+  }
+
+  async logout(): Promise<void> {
+    this.authSession = undefined;
+  }
+
+  async setActiveTenant(tenantId: string): Promise<AuthSession> {
+    if (!this.authSession) {
+      throw new Error('No local auth session available.');
+    }
+    this.authSession = { ...this.authSession, activeTenantId: tenantId };
+    return this.authSession;
   }
 
   async createRepo(input: CreateRepoInput): Promise<Repo> {

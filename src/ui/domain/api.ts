@@ -14,7 +14,10 @@ import type {
   Task,
   TaskDetail,
   TaskStatus,
-  TerminalBootstrap
+  Tenant,
+  TenantMember,
+  TerminalBootstrap,
+  User
 } from './types';
 
 export type CreateRepoInput = {
@@ -80,9 +83,36 @@ export type RequestRunChangesInput = {
   prompt: string;
 };
 
+export type AuthSession = {
+  user: User;
+  memberships: TenantMember[];
+  tenants: Tenant[];
+  activeTenantId: string;
+};
+
+export type AuthLoginInput = {
+  email: string;
+  password: string;
+  tenantId?: string;
+};
+
+export type AuthSignupInput = {
+  email: string;
+  password: string;
+  displayName?: string;
+  tenantName: string;
+  tenantSlug: string;
+  tenantDomain?: string;
+};
+
 export interface AgentBoardApi {
   subscribe(listener: () => void): () => void;
   getSnapshot(): BoardSnapshotV1;
+  getAuthSession(): Promise<AuthSession | undefined>;
+  login(input: AuthLoginInput): Promise<AuthSession>;
+  signup(input: AuthSignupInput): Promise<AuthSession>;
+  logout(): Promise<void>;
+  setActiveTenant(tenantId: string): Promise<AuthSession>;
   createRepo(input: CreateRepoInput): Promise<Repo>;
   listRepos(): Promise<Repo[]>;
   updateRepo(repoId: string, patch: UpdateRepoInput): Promise<Repo>;
