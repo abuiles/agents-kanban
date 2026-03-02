@@ -255,4 +255,64 @@ describe('Stage 3.1 fanout integration', () => {
     expect(detailC.latestRun?.dependencyContext?.sourceMode).toBe('default_branch');
     expect(detailC.task.branchSource).toMatchObject({ kind: 'default_branch', resolvedRef: 'main' });
   });
+
+  it('allows provider-neutral GitHub review metadata to drive review fanout and merged-to-default fallback', async () => {
+    const repo = await createRepo('github-provider-neutral');
+    const repoBoard = env.REPO_BOARD.getByName(repo.repoId);
+
+    const taskA = await repoBoard.createTask(taskInput(repo.repoId, 'A', 'READY'));
+    const taskB = await repoBoard.createTask(taskInput(repo.repoId, 'B', 'INBOX'));
+    const taskC = await repoBoard.createTask(taskInput(repo.repoId, 'C', 'READY'));
+
+    await repoBoard.updateTask(taskB.taskId, {
+      dependencies: [{ upstreamTaskId: taskA.taskId, mode: 'review_ready' }],
+      automationState: { autoStartEligible: true }
+    });
+    await repoBoard.updateTask(taskC.taskId, {
+      dependencies: [{ upstreamTaskId: taskA.taskId, mode: 'review_ready' }],
+      automationState: { autoStartEligible: false }
+    });
+
+    const runA = await repoBoard.startRun(taskA.taskId);
+    await repoBoard.transitionRun(runA.runId, {
+      status: 'PR_OPEN',
+      reviewUrl: 'https://github.com/acme/github-provider-neutral/pull/401',
+      reviewNumber: 401,
+      reviewProvider: 'github',
+      reviewState: 'open',
+      headSha: sha('h')
+    });
+
+    const detailB = await repoBoard.getTask(taskB.taskId);
+    expect(detailB.task.status).toBe('ACTIVE');
+    expect(detailB.latestRun?.dependencyContext).toMatchObject({
+      sourceMode: 'dependency_review_head',
+      sourceTaskId: taskA.taskId,
+      sourceRunId: runA.runId,
+      sourceReviewNumber: 401,
+      sourceReviewProvider: 'github',
+      sourceHeadSha: sha('h')
+    });
+
+    await repoBoard.transitionRun(runA.runId, {
+      status: 'DONE',
+      reviewUrl: 'https://github.com/acme/github-provider-neutral/pull/401',
+      reviewNumber: 401,
+      reviewProvider: 'github',
+      reviewState: 'merged',
+      reviewMergedAt: '2026-03-02T02:00:00.000Z',
+      landedOnDefaultBranch: true,
+      landedOnDefaultBranchAt: '2026-03-02T02:05:00.000Z',
+      headSha: sha('h')
+    });
+    await repoBoard.updateTask(taskA.taskId, { status: 'DONE' });
+    await repoBoard.updateTask(taskC.taskId, {
+      automationState: { autoStartEligible: true }
+    });
+
+    const detailC = await repoBoard.getTask(taskC.taskId);
+    expect(detailC.task.status).toBe('ACTIVE');
+    expect(detailC.latestRun?.dependencyContext?.sourceMode).toBe('default_branch');
+    expect(detailC.task.branchSource).toMatchObject({ kind: 'default_branch', resolvedRef: 'main' });
+  });
 });
