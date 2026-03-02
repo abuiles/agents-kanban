@@ -3,7 +3,7 @@ import { buildLogsForStatus } from './log-builder';
 import { buildSimulationPlan } from './run-templates';
 import { getBaselineUrl } from '../domain/selectors';
 import { LocalBoardStore } from '../store/local-board-store';
-import { normalizeRunLlmState, normalizeTaskUiMeta } from '../../shared/llm';
+import { DEFAULT_SUPPORTS_RESUME_BY_ADAPTER, normalizeRunLlmState, normalizeTaskUiMeta } from '../../shared/llm';
 
 const terminalStatuses: RunStatus[] = ['DONE', 'FAILED'];
 
@@ -52,6 +52,7 @@ export class RunSimulator {
     const startedAt = new Date();
     const runId = `run_${task.taskId}_${startedAt.getTime()}`;
     const taskUiMeta = normalizeTaskUiMeta(task.uiMeta);
+    const llmAdapter = taskUiMeta?.llmAdapter ?? 'codex';
     const profile = taskUiMeta?.simulationProfile ?? 'happy_path';
     const run: AgentRun = normalizeRunLlmState({
       runId,
@@ -67,7 +68,8 @@ export class RunSimulator {
       errors: [],
       startedAt: startedAt.toISOString(),
       timeline: [],
-      llmAdapter: taskUiMeta?.llmAdapter ?? 'codex',
+      llmAdapter,
+      llmSupportsResume: DEFAULT_SUPPORTS_RESUME_BY_ADAPTER[llmAdapter],
       llmModel: taskUiMeta?.llmModel,
       llmReasoningEffort: taskUiMeta?.llmReasoningEffort,
       simulationProfile: profile,

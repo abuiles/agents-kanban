@@ -3,6 +3,10 @@ import type { AgentRun, CodexModel, CodexReasoningEffort, LlmAdapter, LlmReasoni
 export const DEFAULT_LLM_ADAPTER: LlmAdapter = 'codex';
 export const DEFAULT_CODEX_MODEL: CodexModel = 'gpt-5.1-codex-mini';
 export const DEFAULT_REASONING_EFFORT: CodexReasoningEffort = 'medium';
+export const DEFAULT_SUPPORTS_RESUME_BY_ADAPTER: Record<LlmAdapter, boolean> = {
+  codex: true,
+  cursor_cli: false
+};
 
 export function normalizeTaskUiMeta(uiMeta?: TaskUiMeta): TaskUiMeta | undefined {
   if (!uiMeta) {
@@ -33,12 +37,14 @@ export function normalizeOperatorSession(session?: OperatorSession): OperatorSes
   }
 
   const llmAdapter = session.llmAdapter ?? DEFAULT_LLM_ADAPTER;
+  const llmSupportsResume = session.llmSupportsResume ?? DEFAULT_SUPPORTS_RESUME_BY_ADAPTER[llmAdapter];
   const llmSessionId = session.llmSessionId ?? session.codexThreadId;
   const llmResumeCommand = session.llmResumeCommand ?? session.codexResumeCommand;
 
   return {
     ...session,
     llmAdapter,
+    llmSupportsResume,
     llmSessionId,
     llmResumeCommand,
     codexThreadId: llmAdapter === 'codex' ? (session.codexThreadId ?? llmSessionId) : session.codexThreadId,
@@ -49,6 +55,9 @@ export function normalizeOperatorSession(session?: OperatorSession): OperatorSes
 export function normalizeRunLlmState(run: AgentRun): AgentRun {
   const operatorSession = normalizeOperatorSession(run.operatorSession);
   const llmAdapter = run.llmAdapter ?? operatorSession?.llmAdapter ?? DEFAULT_LLM_ADAPTER;
+  const llmSupportsResume = run.llmSupportsResume
+    ?? operatorSession?.llmSupportsResume
+    ?? DEFAULT_SUPPORTS_RESUME_BY_ADAPTER[llmAdapter];
   const llmResumeCommand = run.llmResumeCommand
     ?? run.latestCodexResumeCommand
     ?? operatorSession?.llmResumeCommand
@@ -59,6 +68,7 @@ export function normalizeRunLlmState(run: AgentRun): AgentRun {
     ...run,
     operatorSession,
     llmAdapter,
+    llmSupportsResume,
     llmResumeCommand,
     llmSessionId,
     latestCodexResumeCommand: llmAdapter === 'codex' ? (run.latestCodexResumeCommand ?? llmResumeCommand) : run.latestCodexResumeCommand,

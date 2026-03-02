@@ -1,5 +1,5 @@
 import type { ArtifactManifest, AgentRun, Repo, RunError, RunLogEntry, RunStatus, Task } from '../../ui/domain/types';
-import { normalizeRunLlmState, normalizeTaskUiMeta } from '../../shared/llm';
+import { DEFAULT_SUPPORTS_RESUME_BY_ADAPTER, normalizeRunLlmState, normalizeTaskUiMeta } from '../../shared/llm';
 import { normalizeRunReviewMetadata } from '../../shared/scm';
 
 export type RunJobMode = 'full_run' | 'evidence_only' | 'preview_only';
@@ -36,6 +36,7 @@ export type RunTransitionPatch = {
   codexProcessId?: string;
   currentCommandId?: string;
   llmAdapter?: AgentRun['llmAdapter'];
+  llmSupportsResume?: AgentRun['llmSupportsResume'];
   llmModel?: AgentRun['llmModel'];
   llmReasoningEffort?: AgentRun['llmReasoningEffort'];
   llmResumeCommand?: AgentRun['llmResumeCommand'];
@@ -69,6 +70,7 @@ type CreateRealRunOptions = {
 export function createRealRun(task: Task, runId: string, now = new Date(), options?: CreateRealRunOptions): AgentRun {
   const nowIso = now.toISOString();
   const taskUiMeta = normalizeTaskUiMeta(task.uiMeta);
+  const llmAdapter = taskUiMeta?.llmAdapter ?? 'codex';
   return normalizeRunLlmState(normalizeRunReviewMetadata({
     runId,
     taskId: task.taskId,
@@ -97,7 +99,8 @@ export function createRealRun(task: Task, runId: string, now = new Date(), optio
     evidenceStatus: 'NOT_STARTED',
     executorType: 'sandbox',
     orchestrationMode: 'workflow',
-    llmAdapter: taskUiMeta?.llmAdapter ?? 'codex',
+    llmAdapter,
+    llmSupportsResume: DEFAULT_SUPPORTS_RESUME_BY_ADAPTER[llmAdapter],
     llmModel: taskUiMeta?.llmModel,
     llmReasoningEffort: taskUiMeta?.llmReasoningEffort,
     executionSummary: {}

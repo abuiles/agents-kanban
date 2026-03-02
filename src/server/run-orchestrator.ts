@@ -99,7 +99,13 @@ export async function executeRunJob(env: Env, params: RunJobParams, sleepFn: Sle
   }
 
   await repoBoard.appendRunLogs(params.runId, [buildRunLog(params.runId, `Starting sandbox run for ${repo.slug}.`, 'bootstrap')]);
-  await repoBoard.transitionRun(params.runId, { status: 'BOOTSTRAPPING', sandboxId: params.runId, appendTimelineNote: 'Sandbox bootstrapped.' });
+  await repoBoard.transitionRun(params.runId, {
+    status: 'BOOTSTRAPPING',
+    sandboxId: params.runId,
+    llmAdapter: llmAdapter.kind,
+    llmSupportsResume: llmAdapter.capabilities.supportsResume,
+    appendTimelineNote: 'Sandbox bootstrapped.'
+  });
 
   try {
     await emitCommandLifecycle(repoBoard, params.runId, 'bootstrap', 'mkdir -p /workspace/repo', () => sandbox.exec('mkdir -p /workspace/repo'));
@@ -979,6 +985,8 @@ async function execStreamWithLogs(
             latestResumeCommand = sessionState.resumeCommand;
             const latestRun = await repoBoard.getRun(runId);
             await repoBoard.transitionRun(runId, {
+              llmAdapter: llmAdapter.kind,
+              llmSupportsResume: llmAdapter.capabilities.supportsResume,
               llmResumeCommand: latestResumeCommand,
               llmSessionId: latestThreadId,
               latestCodexResumeCommand: latestResumeCommand
@@ -987,6 +995,7 @@ async function execStreamWithLogs(
               await repoBoard.updateOperatorSession(runId, {
                 ...latestRun.operatorSession,
                 llmAdapter: latestRun.operatorSession.llmAdapter ?? latestRun.llmAdapter ?? llmAdapter.kind,
+                llmSupportsResume: latestRun.operatorSession.llmSupportsResume ?? latestRun.llmSupportsResume ?? llmAdapter.capabilities.supportsResume,
                 llmResumeCommand: latestResumeCommand,
                 llmSessionId: latestThreadId,
                 codexResumeCommand: latestResumeCommand,
@@ -1172,6 +1181,8 @@ async function runCodexProcessWithLogs(
             latestResumeCommand = sessionState.resumeCommand;
             const latestRun = await repoBoard.getRun(runId);
             await repoBoard.transitionRun(runId, {
+              llmAdapter: llmAdapter.kind,
+              llmSupportsResume: llmAdapter.capabilities.supportsResume,
               llmResumeCommand: latestResumeCommand,
               llmSessionId: latestThreadId,
               latestCodexResumeCommand: latestResumeCommand
@@ -1180,6 +1191,7 @@ async function runCodexProcessWithLogs(
               await repoBoard.updateOperatorSession(runId, {
                 ...latestRun.operatorSession,
                 llmAdapter: latestRun.operatorSession.llmAdapter ?? latestRun.llmAdapter ?? llmAdapter.kind,
+                llmSupportsResume: latestRun.operatorSession.llmSupportsResume ?? latestRun.llmSupportsResume ?? llmAdapter.capabilities.supportsResume,
                 llmResumeCommand: latestResumeCommand,
                 llmSessionId: latestThreadId,
                 codexResumeCommand: latestResumeCommand,
