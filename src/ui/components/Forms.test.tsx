@@ -1,7 +1,11 @@
-import { render, screen } from '@testing-library/react';
+import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { RepoForm, TaskForm } from './Forms';
+
+afterEach(() => {
+  cleanup();
+});
 
 describe('RepoForm', () => {
   it('submits provider-neutral SCM repo fields', async () => {
@@ -11,7 +15,7 @@ describe('RepoForm', () => {
     render(<RepoForm onSubmit={onSubmit} />);
 
     const scmProviderField = screen.getByText('SCM provider').closest('label')?.querySelector('select');
-    const scmBaseUrlField = screen.getByText('SCM base URL').closest('label')?.querySelector('input');
+    const scmBaseUrlField = screen.getByDisplayValue('https://github.com');
     const projectPathField = screen.getByText('Project path').closest('label')?.querySelector('input');
     const baselineUrlField = screen.getByText('Baseline URL').closest('label')?.querySelector('input');
 
@@ -34,6 +38,23 @@ describe('RepoForm', () => {
       scmBaseUrl: 'https://gitlab.example.com',
       projectPath: 'group/platform/repo'
     }));
+  });
+
+  it('switches repo settings copy and defaults when GitLab is selected', async () => {
+    const user = userEvent.setup();
+    render(<RepoForm onSubmit={vi.fn()} />);
+
+    expect(screen.getAllByText('GitHub base URL')).toHaveLength(1);
+    expect(screen.getByPlaceholderText('owner/repo')).toBeInTheDocument();
+
+    const scmProviderField = screen.getByText('SCM provider').closest('label')?.querySelector('select');
+    expect(scmProviderField).not.toBeNull();
+    await user.selectOptions(scmProviderField! as unknown as Element, 'gitlab');
+
+    expect(screen.getByText('GitLab base URL')).toBeInTheDocument();
+    expect(screen.getByPlaceholderText('group/subgroup/repo')).toBeInTheDocument();
+    expect(screen.getByDisplayValue('https://gitlab.com')).toBeInTheDocument();
+    expect(screen.getByText(/self-managed GitLab origin/i)).toBeInTheDocument();
   });
 });
 

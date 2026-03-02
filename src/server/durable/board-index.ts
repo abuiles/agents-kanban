@@ -78,7 +78,15 @@ export class BoardIndexDO extends DurableObject<Env> {
   async updateRepo(repoId: string, patch: UpdateRepoInput) {
     await this.ready;
     const existing = await this.getRepo(repoId);
-    const updated = buildRepoRecord({ ...existing, ...patch, repoId: existing.repoId, createdAt: existing.createdAt, updatedAt: existing.updatedAt });
+    const updated = buildRepoRecord({
+      ...existing,
+      ...patch,
+      slug: patch.slug ?? patch.projectPath ?? existing.slug,
+      projectPath: patch.projectPath ?? patch.slug ?? existing.projectPath,
+      repoId: existing.repoId,
+      createdAt: existing.createdAt,
+      updatedAt: existing.updatedAt
+    });
     if (
       this.repos.some((repo) => repo.repoId !== repoId && buildRepoScmKey(repo) === buildRepoScmKey(updated))
     ) {

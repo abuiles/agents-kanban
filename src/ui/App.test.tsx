@@ -62,6 +62,42 @@ describe('App', () => {
     expect(await screen.findByText('Updated acme/site-marketing.')).toBeInTheDocument();
   });
 
+  it('edits repo SCM settings for a GitLab project without falling back to GitHub defaults', async () => {
+    const user = userEvent.setup();
+    const api = getLocalAgentBoardApi();
+    const gitlabRepo = await api.createRepo({
+      scmProvider: 'gitlab',
+      scmBaseUrl: 'https://gitlab.example.com',
+      projectPath: 'group/platform/demo',
+      baselineUrl: 'https://demo.example.com'
+    });
+
+    render(<App api={api} />);
+
+    const [repoFilter] = await screen.findAllByLabelText(/repo filter/i);
+    await user.selectOptions(repoFilter, gitlabRepo.repoId);
+    await waitFor(() => {
+      expect(repoFilter).toHaveValue(gitlabRepo.repoId);
+    });
+    await user.click(screen.getByRole('button', { name: 'Edit repo' }));
+
+    expect(screen.getByText('GitLab base URL')).toBeInTheDocument();
+    const projectPathInput = screen.getByPlaceholderText('group/subgroup/repo');
+    await user.clear(projectPathInput);
+    await user.type(projectPathInput, 'group/platform/renamed');
+
+    await user.click(screen.getByRole('button', { name: 'Save repo' }));
+
+    await waitFor(() => {
+      const repo = api.getSnapshot().repos.find((candidate) => candidate.repoId === gitlabRepo.repoId);
+      expect(repo?.scmProvider).toBe('gitlab');
+      expect(repo?.scmBaseUrl).toBe('https://gitlab.example.com');
+      expect(repo?.projectPath).toBe('group/platform/renamed');
+      expect(repo?.slug).toBe('group/platform/renamed');
+    });
+    expect(await screen.findByText('Updated group/platform/renamed.')).toBeInTheDocument();
+  });
+
   it('opens the task from the URL on load', async () => {
     window.history.replaceState({}, '', '/?taskId=task_kpi');
     localStorage.setItem('agentboard.ui-preferences.v1', JSON.stringify({ selectedRepoId: 'all', selectedTaskId: 'task_nav' }));

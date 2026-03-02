@@ -161,6 +161,15 @@ describe('repo validation', () => {
       })
     ).toThrow('Invalid repo patch payload: slug and projectPath must match when both are provided.');
   });
+
+  it('mirrors legacy slug-only repo patch payloads into projectPath', () => {
+    expect(parseUpdateRepoInput({
+      slug: 'acme/renamed'
+    })).toMatchObject({
+      slug: 'acme/renamed',
+      projectPath: 'acme/renamed'
+    });
+  });
 });
 
 describe('SCM credential validation', () => {

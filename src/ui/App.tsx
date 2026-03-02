@@ -276,7 +276,7 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
       ) : null}
 
       {repoToEdit ? (
-        <Modal title={`Edit ${repoToEdit.slug}`} onClose={() => setRepoToEditId(undefined)}>
+        <Modal title={`Edit ${repoToEdit.projectPath ?? repoToEdit.slug}`} onClose={() => setRepoToEditId(undefined)}>
           <RepoForm
             initialValues={{
               slug: repoToEdit.slug,
@@ -292,7 +292,7 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
             onSubmit={async (input) => {
               await api.updateRepo(repoToEdit.repoId, input);
               setRepoToEditId(undefined);
-              setNotice(`Updated ${repoToEdit.slug}.`);
+              setNotice(`Updated ${input.projectPath ?? input.slug ?? repoToEdit.projectPath ?? repoToEdit.slug}.`);
             }}
           />
         </Modal>

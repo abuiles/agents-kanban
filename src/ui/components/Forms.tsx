@@ -2,6 +2,11 @@ import { useEffect, useState } from 'react';
 import type { CreateRepoInput, CreateTaskInput } from '../domain/api';
 import type { CodexModel, CodexReasoningEffort, Repo, ScmProvider, TaskContextLink, TaskDependency, TaskStatus } from '../domain/types';
 
+const DEFAULT_SCM_BASE_URLS: Record<ScmProvider, string> = {
+  github: 'https://github.com',
+  gitlab: 'https://gitlab.com'
+};
+
 const CODEX_MODELS: Array<{ value: CodexModel; label: string }> = [
   { value: 'gpt-5.1-codex-mini', label: 'gpt-5.1-codex-mini (default)' },
   { value: 'gpt-5.3-codex', label: 'gpt-5.3-codex' },
@@ -47,16 +52,14 @@ export function RepoForm({
   initialValues?: Partial<CreateRepoInput>;
   submitLabel?: string;
 }) {
-  const initialSlug = initialValues?.slug ?? '';
   const initialScmProvider = initialValues?.scmProvider ?? 'github';
-  const initialScmBaseUrl = initialValues?.scmBaseUrl ?? 'https://github.com';
-  const initialProjectPath = initialValues?.projectPath ?? initialSlug;
+  const initialProjectPath = initialValues?.projectPath ?? initialValues?.slug ?? '';
+  const initialScmBaseUrl = initialValues?.scmBaseUrl ?? DEFAULT_SCM_BASE_URLS[initialScmProvider];
   const initialDefaultBranch = initialValues?.defaultBranch ?? 'main';
   const initialBaselineUrl = initialValues?.baselineUrl ?? '';
   const initialPreviewCheckName = initialValues?.previewCheckName ?? '';
   const initialCodexAuthBundleR2Key = initialValues?.codexAuthBundleR2Key ?? '';
 
-  const [slug, setSlug] = useState(initialSlug);
   const [scmProvider, setScmProvider] = useState<ScmProvider>(initialScmProvider);
   const [scmBaseUrl, setScmBaseUrl] = useState(initialScmBaseUrl);
   const [projectPath, setProjectPath] = useState(initialProjectPath);
@@ -66,7 +69,6 @@ export function RepoForm({
   const [codexAuthBundleR2Key, setCodexAuthBundleR2Key] = useState(initialCodexAuthBundleR2Key);
 
   useEffect(() => {
-    setSlug(initialSlug);
     setScmProvider(initialScmProvider);
     setScmBaseUrl(initialScmBaseUrl);
     setProjectPath(initialProjectPath);
@@ -74,7 +76,19 @@ export function RepoForm({
     setBaselineUrl(initialBaselineUrl);
     setPreviewCheckName(initialPreviewCheckName);
     setCodexAuthBundleR2Key(initialCodexAuthBundleR2Key);
-  }, [initialSlug, initialScmProvider, initialScmBaseUrl, initialProjectPath, initialDefaultBranch, initialBaselineUrl, initialPreviewCheckName, initialCodexAuthBundleR2Key]);
+  }, [initialScmProvider, initialScmBaseUrl, initialProjectPath, initialDefaultBranch, initialBaselineUrl, initialPreviewCheckName, initialCodexAuthBundleR2Key]);
+
+  const projectPathHint = scmProvider === 'gitlab'
+    ? 'Use the GitLab project path like group/subgroup/repo.'
+    : 'Use the GitHub repository path like owner/repo.';
+  const projectPathPlaceholder = scmProvider === 'gitlab' ? 'group/subgroup/repo' : 'owner/repo';
+  const scmBaseUrlLabel = scmProvider === 'gitlab' ? 'GitLab base URL' : 'GitHub base URL';
+  const scmBaseUrlHint = scmProvider === 'gitlab'
+    ? 'Use https://gitlab.com for hosted GitLab, or your self-managed GitLab origin.'
+    : 'Use the GitHub host origin for GitHub.com or GitHub Enterprise Server.';
+  const previewCheckHint = scmProvider === 'gitlab'
+    ? 'Optional check or pipeline name used to discover the Cloudflare preview URL.'
+    : 'Optional check name used to discover the Cloudflare preview URL.';
 
   return (
     <form
@@ -82,19 +96,18 @@ export function RepoForm({
       onSubmit={async (event) => {
         event.preventDefault();
         await onSubmit({
-          slug: projectPath || slug,
+          slug: projectPath,
           scmProvider,
           scmBaseUrl,
-          projectPath: projectPath || slug,
+          projectPath,
           defaultBranch,
           baselineUrl,
           enabled: true,
           previewCheckName: previewCheckName || undefined,
           codexAuthBundleR2Key: codexAuthBundleR2Key || undefined
         });
-        setSlug('');
         setScmProvider('github');
-        setScmBaseUrl('https://github.com');
+        setScmBaseUrl(DEFAULT_SCM_BASE_URLS.github);
         setProjectPath('');
         setDefaultBranch('main');
         setBaselineUrl('');
@@ -104,23 +117,40 @@ export function RepoForm({
     >
       <div className="grid gap-4 md:grid-cols-3">
         <FieldShell label="SCM provider">
-          <select className={inputClass()} value={scmProvider} onChange={(event) => setScmProvider(event.target.value as ScmProvider)}>
+          <select
+            className={inputClass()}
+            value={scmProvider}
+            onChange={(event) => {
+              const nextProvider = event.target.value as ScmProvider;
+              setScmProvider(nextProvider);
+              setScmBaseUrl((currentValue) => {
+                const normalizedValue = currentValue.trim();
+                if (!normalizedValue || normalizedValue === DEFAULT_SCM_BASE_URLS[scmProvider]) {
+                  return DEFAULT_SCM_BASE_URLS[nextProvider];
+                }
+                return currentValue;
+              });
+            }}
+          >
             <option value="github">GitHub</option>
             <option value="gitlab">GitLab</option>
           </select>
         </FieldShell>
-        <FieldShell label="SCM base URL" hint="Host base URL used for API and git operations.">
-          <input className={inputClass()} value={scmBaseUrl} onChange={(event) => setScmBaseUrl(event.target.value)} placeholder="https://github.com" required />
+        <FieldShell label={scmBaseUrlLabel} hint={scmBaseUrlHint}>
+          <input
+            className={inputClass()}
+            value={scmBaseUrl}
+            onChange={(event) => setScmBaseUrl(event.target.value)}
+            placeholder={DEFAULT_SCM_BASE_URLS[scmProvider]}
+            required
+          />
         </FieldShell>
-        <FieldShell label="Project path" hint="Use the provider project path like owner/name or group/subgroup/repo.">
+        <FieldShell label="Project path" hint={projectPathHint}>
           <input
             className={inputClass()}
             value={projectPath}
-            onChange={(event) => {
-              setProjectPath(event.target.value);
-              setSlug(event.target.value);
-            }}
-            placeholder="owner/name"
+            onChange={(event) => setProjectPath(event.target.value)}
+            placeholder={projectPathPlaceholder}
             required
           />
         </FieldShell>
@@ -132,7 +162,7 @@ export function RepoForm({
         <input className={inputClass()} value={baselineUrl} onChange={(event) => setBaselineUrl(event.target.value)} placeholder="https://example.com" required />
       </FieldShell>
       <div className="grid gap-4 md:grid-cols-2">
-        <FieldShell label="Preview check name" hint="Optional GitHub check name used to discover the Cloudflare preview URL.">
+        <FieldShell label="Preview check name" hint={previewCheckHint}>
           <input className={inputClass()} value={previewCheckName} onChange={(event) => setPreviewCheckName(event.target.value)} placeholder="Cloudflare Pages" />
         </FieldShell>
         <FieldShell label="Codex auth bundle key" hint="Optional R2 key for a `.codex` auth bundle tarball.">
