@@ -1,4 +1,5 @@
 import type { ArtifactManifest, AgentRun, Repo, RunError, RunLogEntry, RunStatus, Task } from '../../ui/domain/types';
+import { normalizeRunLlmState, normalizeTaskUiMeta } from '../../shared/llm';
 import { normalizeRunReviewMetadata } from '../../shared/scm';
 
 export type RunJobMode = 'full_run' | 'evidence_only' | 'preview_only';
@@ -34,6 +35,11 @@ export type RunTransitionPatch = {
   commitMessage?: string;
   codexProcessId?: string;
   currentCommandId?: string;
+  llmAdapter?: AgentRun['llmAdapter'];
+  llmModel?: AgentRun['llmModel'];
+  llmReasoningEffort?: AgentRun['llmReasoningEffort'];
+  llmResumeCommand?: AgentRun['llmResumeCommand'];
+  llmSessionId?: AgentRun['llmSessionId'];
   latestCodexResumeCommand?: string;
   operatorSession?: AgentRun['operatorSession'];
   artifactManifest?: ArtifactManifest;
@@ -62,7 +68,8 @@ type CreateRealRunOptions = {
 
 export function createRealRun(task: Task, runId: string, now = new Date(), options?: CreateRealRunOptions): AgentRun {
   const nowIso = now.toISOString();
-  return normalizeRunReviewMetadata({
+  const taskUiMeta = normalizeTaskUiMeta(task.uiMeta);
+  return normalizeRunLlmState(normalizeRunReviewMetadata({
     runId,
     taskId: task.taskId,
     repoId: task.repoId,
@@ -90,8 +97,11 @@ export function createRealRun(task: Task, runId: string, now = new Date(), optio
     evidenceStatus: 'NOT_STARTED',
     executorType: 'sandbox',
     orchestrationMode: 'workflow',
+    llmAdapter: taskUiMeta?.llmAdapter ?? 'codex',
+    llmModel: taskUiMeta?.llmModel,
+    llmReasoningEffort: taskUiMeta?.llmReasoningEffort,
     executionSummary: {}
-  });
+  }));
 }
 
 export function applyRunTransition(run: AgentRun, patch: RunTransitionPatch, nowIso: string): AgentRun {
@@ -100,7 +110,7 @@ export function applyRunTransition(run: AgentRun, patch: RunTransitionPatch, now
     ? [...run.timeline, { status: nextStatus, at: nowIso, note: patch.appendTimelineNote }]
     : run.timeline;
 
-  return normalizeRunReviewMetadata({
+  return normalizeRunLlmState(normalizeRunReviewMetadata({
     ...run,
     ...patch,
     status: nextStatus,
@@ -111,7 +121,7 @@ export function applyRunTransition(run: AgentRun, patch: RunTransitionPatch, now
     artifacts: patch.artifacts ?? run.artifacts,
     errors: run.errors,
     pendingEvents: run.pendingEvents
-  });
+  }));
 }
 
 export function appendRunError(run: AgentRun, error: RunError, nowIso: string): AgentRun {
