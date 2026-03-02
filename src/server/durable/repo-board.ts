@@ -186,7 +186,7 @@ export class RepoBoardDO extends DurableObject<Env> {
     return finalTask;
   }
 
-  async startRun(taskId: string, options?: { forceNew?: boolean; baseRunId?: string }): Promise<AgentRun> {
+  async startRun(taskId: string, options?: { forceNew?: boolean; baseRunId?: string; dependencyAutoStart?: boolean }): Promise<AgentRun> {
     await this.ready;
     const task = this.state.tasks.find((candidate) => candidate.taskId === taskId);
     if (!task) {
@@ -196,6 +196,12 @@ export class RepoBoardDO extends DurableObject<Env> {
     const existing = this.state.runs.find((run) => run.taskId === taskId && !isTerminalRunStatus(run.status));
     if (existing && !options?.forceNew) {
       return existing;
+    }
+    if (options?.dependencyAutoStart && task.runId) {
+      const existingRun = this.state.runs.find((run) => run.runId === task.runId) ?? this.state.runs.find((run) => run.taskId === taskId);
+      if (existingRun) {
+        return existingRun;
+      }
     }
 
     const repo = await this.getRepo(task.repoId);
@@ -229,6 +235,12 @@ export class RepoBoardDO extends DurableObject<Env> {
               ...candidate,
               status: 'ACTIVE',
               runId: run.runId,
+              automationState: options?.dependencyAutoStart && candidate.automationState && !candidate.automationState.autoStartedAt
+                ? {
+                    ...candidate.automationState,
+                    autoStartedAt: nowIso
+                  }
+                : candidate.automationState,
               branchSource: resolvedSource.branchSource,
               updatedAt: nowIso
             }
@@ -797,9 +809,13 @@ export class RepoBoardDO extends DurableObject<Env> {
     const nowIso = new Date().toISOString();
     const tasksById = new Map(this.state.tasks.map((task) => [task.taskId, task]));
     const latestRunsByTaskId = buildLatestRunsByTaskId(this.state.runs);
+    const runHistoryTaskIds = new Set(this.state.runs.map((run) => run.taskId));
 
     for (const task of this.state.tasks) {
       if (task.repoId !== repoId || !candidateIds.has(task.taskId) || !isRunnableDependencyAutoStartTask(task)) {
+        continue;
+      }
+      if (task.runId || runHistoryTaskIds.has(task.taskId) || task.automationState?.autoStartedAt) {
         continue;
       }
 
@@ -819,25 +835,7 @@ export class RepoBoardDO extends DurableObject<Env> {
         continue;
       }
 
-      if (task.automationState && !task.automationState.autoStartedAt) {
-        this.state = {
-          ...this.state,
-          tasks: this.state.tasks.map((candidate) =>
-            candidate.taskId === task.taskId
-              ? {
-                  ...candidate,
-                  automationState: {
-                    ...candidate.automationState!,
-                    autoStartedAt: nowIso
-                  },
-                  updatedAt: nowIso
-                }
-              : candidate
-          )
-        };
-      }
-
-      await this.startRun(task.taskId);
+      await this.startRun(task.taskId, { dependencyAutoStart: true });
     }
   }
 }
