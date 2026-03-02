@@ -18,6 +18,8 @@ import { getRunReviewNumber, getRunReviewUrl } from '../shared/scm';
 import type { ScmAdapter, ScmAdapterCredential } from './scm/adapter';
 import { getScmAdapter } from './scm/registry';
 import { getScmSourceRefFetchSpec } from './scm/source-ref';
+import type { LlmAdapter as LlmExecutorAdapter } from './llm/adapter';
+import { getLlmAdapter, resolveLlmAdapterKind } from './llm/registry';
 
 type WorkflowBinding<T> = {
   create(options?: { id?: string; params?: T; retention?: { successRetention?: string | number; errorRetention?: string | number } }): Promise<{ id: string }>;
@@ -59,6 +61,8 @@ export async function executeRunJob(env: Env, params: RunJobParams, sleepFn: Sle
   }
   const repo = await board.getRepo(params.repoId);
   const scmAdapter = getScmAdapter(repo);
+  const llmAdapterKind = resolveLlmAdapterKind(detail.task, run.llmAdapter);
+  const llmAdapter = getLlmAdapter(llmAdapterKind);
   const codexModel = detail.task.uiMeta?.codexModel ?? 'gpt-5.1-codex-mini';
   const codexReasoningEffort = detail.task.uiMeta?.codexReasoningEffort ?? 'medium';
 
@@ -89,6 +93,10 @@ export async function executeRunJob(env: Env, params: RunJobParams, sleepFn: Sle
 
   const scmCredential = await getScmCredential(env as Stage3Env, board, repo, scmAdapter);
   const sandbox = getSandbox(env.Sandbox, params.runId);
+
+  if (llmAdapter.kind !== 'codex') {
+    throw new NonRetryableError(`LLM adapter ${llmAdapter.kind} is registered but not wired into sandbox execution yet.`);
+  }
 
   await repoBoard.appendRunLogs(params.runId, [buildRunLog(params.runId, `Starting sandbox run for ${repo.slug}.`, 'bootstrap')]);
   await repoBoard.transitionRun(params.runId, { status: 'BOOTSTRAPPING', sandboxId: params.runId, appendTimelineNote: 'Sandbox bootstrapped.' });
@@ -134,6 +142,7 @@ export async function executeRunJob(env: Env, params: RunJobParams, sleepFn: Sle
       repoBoard,
       params.runId,
       'codex',
+      llmAdapter,
       `bash -lc ${shellQuote(`set -euo pipefail
 export HOME="\${HOME:-/root}"
 cd /workspace/repo
@@ -911,6 +920,7 @@ async function execStreamWithLogs(
   repoBoard: DurableObjectStub<RepoBoardDO>,
   runId: string,
   phase: NonNullable<ReturnType<typeof buildRunLog>['phase']>,
+  llmAdapter: LlmExecutorAdapter,
   command: string,
   options?: StreamOptions
 ): Promise<ExecResult> {
@@ -963,10 +973,10 @@ async function execStreamWithLogs(
         case 'stdout': {
           const chunk = event.data ?? '';
           stdoutChunks.push(chunk);
-          const resumeMatch = extractCodexResumeState(chunk, latestThreadId);
-          latestThreadId = resumeMatch.threadId ?? latestThreadId;
-          if (resumeMatch.resumeCommand && resumeMatch.resumeCommand !== latestResumeCommand) {
-            latestResumeCommand = resumeMatch.resumeCommand;
+          const sessionState = extractLlmSessionState(llmAdapter, chunk, latestThreadId);
+          latestThreadId = sessionState.sessionId ?? latestThreadId;
+          if (sessionState.resumeCommand && sessionState.resumeCommand !== latestResumeCommand) {
+            latestResumeCommand = sessionState.resumeCommand;
             const latestRun = await repoBoard.getRun(runId);
             await repoBoard.transitionRun(runId, {
               llmResumeCommand: latestResumeCommand,
@@ -976,7 +986,7 @@ async function execStreamWithLogs(
             if (latestRun.operatorSession) {
               await repoBoard.updateOperatorSession(runId, {
                 ...latestRun.operatorSession,
-                llmAdapter: latestRun.operatorSession.llmAdapter ?? latestRun.llmAdapter ?? 'codex',
+                llmAdapter: latestRun.operatorSession.llmAdapter ?? latestRun.llmAdapter ?? llmAdapter.kind,
                 llmResumeCommand: latestResumeCommand,
                 llmSessionId: latestThreadId,
                 codexResumeCommand: latestResumeCommand,
@@ -989,7 +999,7 @@ async function execStreamWithLogs(
                 await repoBoard.getRun(runId),
                 'system',
                 'codex.resume_available',
-                'Codex resume command is available for this run.',
+                `${llmAdapter.capabilities.resumeCommandLabel ?? 'Resume command'} is available for this run.`,
                 { command: latestResumeCommand }
               )
             ]);
@@ -1089,6 +1099,7 @@ async function runCodexProcessWithLogs(
   repoBoard: DurableObjectStub<RepoBoardDO>,
   runId: string,
   phase: NonNullable<ReturnType<typeof buildRunLog>['phase']>,
+  llmAdapter: LlmExecutorAdapter,
   command: string
 ): Promise<ManagedExecResult> {
   const commandId = buildRunCommandId(runId, phase);
@@ -1155,10 +1166,10 @@ async function runCodexProcessWithLogs(
         case 'stdout': {
           const chunk = typeof event.data === 'string' ? event.data : '';
           stdoutChunks.push(chunk);
-          const resumeMatch = extractCodexResumeState(chunk, latestThreadId);
-          latestThreadId = resumeMatch.threadId ?? latestThreadId;
-          if (resumeMatch.resumeCommand && resumeMatch.resumeCommand !== latestResumeCommand) {
-            latestResumeCommand = resumeMatch.resumeCommand;
+          const sessionState = extractLlmSessionState(llmAdapter, chunk, latestThreadId);
+          latestThreadId = sessionState.sessionId ?? latestThreadId;
+          if (sessionState.resumeCommand && sessionState.resumeCommand !== latestResumeCommand) {
+            latestResumeCommand = sessionState.resumeCommand;
             const latestRun = await repoBoard.getRun(runId);
             await repoBoard.transitionRun(runId, {
               llmResumeCommand: latestResumeCommand,
@@ -1168,7 +1179,7 @@ async function runCodexProcessWithLogs(
             if (latestRun.operatorSession) {
               await repoBoard.updateOperatorSession(runId, {
                 ...latestRun.operatorSession,
-                llmAdapter: latestRun.operatorSession.llmAdapter ?? latestRun.llmAdapter ?? 'codex',
+                llmAdapter: latestRun.operatorSession.llmAdapter ?? latestRun.llmAdapter ?? llmAdapter.kind,
                 llmResumeCommand: latestResumeCommand,
                 llmSessionId: latestThreadId,
                 codexResumeCommand: latestResumeCommand,
@@ -1181,7 +1192,7 @@ async function runCodexProcessWithLogs(
                 await repoBoard.getRun(runId),
                 'system',
                 'codex.resume_available',
-                'Codex resume command is available for this run.',
+                `${llmAdapter.capabilities.resumeCommandLabel ?? 'Resume command'} is available for this run.`,
                 { command: latestResumeCommand }
               )
             ]);
@@ -1424,17 +1435,12 @@ function summarizeOutput(output?: string) {
   return compact.length > 240 ? `${compact.slice(0, 237)}...` : compact;
 }
 
-function extractCodexResumeState(chunk: string, fallbackThreadId?: string) {
-  const threadMatch = chunk.match(/"thread_id":"([^"]+)"/);
-  const threadId = threadMatch?.[1] ?? fallbackThreadId;
-  const resumeMatch = chunk.match(/codex resume ([a-z0-9-]+)/i);
-  const resumeCommand = resumeMatch?.[1]
-    ? `codex resume ${resumeMatch[1]}`
-    : threadId
-      ? undefined
-      : undefined;
-
-  return { threadId, resumeCommand };
+function extractLlmSessionState(llmAdapter: LlmExecutorAdapter, chunk: string, fallbackSessionId?: string) {
+  if (!llmAdapter.capabilities.supportsResume || !llmAdapter.extractSessionState) {
+    return { sessionId: fallbackSessionId, resumeCommand: undefined };
+  }
+  const state = llmAdapter.extractSessionState(chunk, fallbackSessionId);
+  return { sessionId: state.sessionId ?? fallbackSessionId, resumeCommand: state.resumeCommand };
 }
 
 function shellQuote(value: string) {
