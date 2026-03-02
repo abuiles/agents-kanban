@@ -125,13 +125,11 @@ function parsePagination(url: URL): { limit: number; offset: number } {
   return { limit, offset };
 }
 
-function buildWhereClause(columns: UsageTableConfig['columns'], tenantId: string | undefined, window: UsageWindow) {
+function buildWhereClause(columns: UsageTableConfig['columns'], tenantId: string, window: UsageWindow) {
   const conditions: string[] = [];
   const bindings: Array<string> = [];
-  if (tenantId) {
-    conditions.push(`${quoteIdentifier(columns.tenantId)} = ?`);
-    bindings.push(tenantId);
-  }
+  conditions.push(`${quoteIdentifier(columns.tenantId)} = ?`);
+  bindings.push(tenantId);
   if (window.from) {
     conditions.push(`${quoteIdentifier(columns.at)} >= ?`);
     bindings.push(window.from);

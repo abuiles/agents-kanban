@@ -1,6 +1,6 @@
 # AgentsKanban Stage 4.5 (Tenant Metering)
 
-**Status:** ⚙️ In Progress
+**Status:** ✅ Complete
 
 ## Execution defaults
 
@@ -15,6 +15,13 @@ Execution baseline command:
 ```bash
 npm run dev
 ```
+
+## Pre-production constraints
+
+- This rollout is pre-production only.
+- Tenancy is the active path: `tenant_legacy` compatibility mode and default tenant fallbacks are removed.
+- Every tenant-scoped request must resolve an explicit active tenant context.
+- Requests without a valid active tenant are rejected rather than falling back to a synthetic tenant.
 
 ## Goal
 
@@ -514,6 +521,19 @@ Stage 4.5 is complete when:
 - operator attach and takeover are denied across tenant boundaries
 - the system can produce daily and monthly tenant usage summaries
 
+### Stage 4.5 wrap-up completion checklist
+
+- [x] `S45-00` lock and explicit deferrals finalized
+- [x] `S45-10` tenant identity and ownership model finalized for pre-production
+- [x] `S45-20` memberships and seats are enforced
+- [x] `S45-30` tenant context and access checks are active
+- [x] `S45-40` tenant-scoped board/task/run APIs and snapshots are in place
+- [x] `S45-50` tenant-aware workflow and artifact pathing is in place
+- [x] `S45-60` usage ledger production and tenant aggregation paths are complete
+- [x] `S45-70` tenant usage reporting endpoints are complete
+- [x] `S45-80` tenant-aware shell and usage surfaces are complete
+- [x] `tenant_legacy` compatibility path has been removed from API/UI/runtime
+
 ## Test cases and scenarios
 
 ### Ownership and isolation
@@ -579,7 +599,7 @@ Deliverables:
 
 - add `Tenant` model and persistence contract
 - add `tenantId` ownership to repo/task/run/event/command/operator-session/artifact projection models
-- define ownership invariants and required migration defaults for pre-tenant records
+- define ownership invariants and remove legacy migration defaults by enforcing explicit tenant creation and resolution
 - add D1 tables for `tenants`, `users`, `user_sessions`, and `tenant_memberships` (schema and seed strategy)
 
 Depends on:

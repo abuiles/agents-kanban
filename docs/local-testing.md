@@ -165,6 +165,7 @@ You can continue to use `npx wrangler dev` for Worker-only execution on the lega
    - `POST /api/auth/login` and capture session token/cookie
    - `GET /api/me` to confirm active user + tenant context
    - `POST /api/me/tenant-context` to set active tenant if multiple memberships exist
+   - Confirm the response contains no `tenant_legacy` fallback tenant and requires an explicit tenant selection.
    - `GET /api/tenants` to verify tenant visibility
 
 1. Create/get board and repo
