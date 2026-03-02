@@ -165,7 +165,10 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
       if (repoId && repoId !== 'all') {
         await assertRepoAccess(board, requestContext, repoId);
       }
-      return board.fetch(request);
+      const wsUrl = new URL(request.url);
+      wsUrl.searchParams.set('tenantId', requestContext.activeTenantId);
+      wsUrl.searchParams.set('repoId', repoId ?? 'all');
+      return board.fetch(new Request(wsUrl.toString(), request));
     }
 
     if (url.pathname === '/api/repos' && request.method === 'GET') {
@@ -218,7 +221,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
         return json((await board.getBoardSync('all', requestContext.activeTenantId)).tasks);
       }
       await assertRepoAccess(board, requestContext, repoId);
-      return json(await env.REPO_BOARD.getByName(repoId).listTasks());
+      return json(await env.REPO_BOARD.getByName(repoId).listTasks(requestContext.activeTenantId));
     }
 
     if (url.pathname === '/api/tasks' && request.method === 'POST') {
@@ -240,21 +243,21 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
       const taskId = decodeURIComponent(taskMatch[1]);
       const repoId = await resolveRepoIdForTask(board, taskId);
       await assertRepoAccess(board, requestContext, repoId);
-      return json(await env.REPO_BOARD.getByName(repoId).getTask(taskId));
+      return json(await env.REPO_BOARD.getByName(repoId).getTask(taskId, requestContext.activeTenantId));
     }
 
     if (taskMatch && request.method === 'PATCH') {
       const taskId = decodeURIComponent(taskMatch[1]);
       const repoId = await resolveRepoIdForTask(board, taskId);
       await assertRepoAccess(board, requestContext, repoId);
-      return json(await env.REPO_BOARD.getByName(repoId).updateTask(taskId, parseUpdateTaskInput(await readJson(request))));
+      return json(await env.REPO_BOARD.getByName(repoId).updateTask(taskId, parseUpdateTaskInput(await readJson(request)), requestContext.activeTenantId));
     }
 
     if (taskMatch && request.method === 'DELETE') {
       const taskId = decodeURIComponent(taskMatch[1]);
       const repoId = await resolveRepoIdForTask(board, taskId);
       await assertRepoAccess(board, requestContext, repoId);
-      return json(await env.REPO_BOARD.getByName(repoId).deleteTask(taskId));
+      return json(await env.REPO_BOARD.getByName(repoId).deleteTask(taskId, requestContext.activeTenantId));
     }
 
     const runStartMatch = url.pathname.match(/^\/api\/tasks\/([^/]+)\/run$/);
@@ -262,13 +265,13 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
       const taskId = decodeURIComponent(runStartMatch[1]);
       const repoId = await resolveRepoIdForTask(board, taskId);
       await assertRepoAccess(board, requestContext, repoId);
-      const run = await env.REPO_BOARD.getByName(repoId).startRun(taskId);
+      const run = await env.REPO_BOARD.getByName(repoId).startRun(taskId, { tenantId: requestContext.activeTenantId });
       const workflow = await scheduleRunJob(env, ctx, { repoId, taskId, runId: run.runId, mode: 'full_run' });
       await env.REPO_BOARD.getByName(repoId).transitionRun(run.runId, {
         workflowInstanceId: workflow.id,
         orchestrationMode: workflow.id.startsWith('local-alarm-') ? 'local_alarm' : 'workflow'
       });
-      return json(await env.REPO_BOARD.getByName(repoId).getRun(run.runId));
+      return json(await env.REPO_BOARD.getByName(repoId).getRun(run.runId, requestContext.activeTenantId));
     }
 
     const runMatch = url.pathname.match(/^\/api\/runs\/([^/]+)$/);
@@ -276,7 +279,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
       const runId = decodeURIComponent(runMatch[1]);
       const repoId = await resolveRepoIdForRun(board, runId);
       await assertRepoAccess(board, requestContext, repoId);
-      return json(await env.REPO_BOARD.getByName(repoId).getRun(runId));
+      return json(await env.REPO_BOARD.getByName(repoId).getRun(runId, requestContext.activeTenantId));
     }
 
     const runRetryMatch = url.pathname.match(/^\/api\/runs\/([^/]+)\/retry$/);
@@ -284,13 +287,13 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
       const runId = decodeURIComponent(runRetryMatch[1]);
       const repoId = await resolveRepoIdForRun(board, runId);
       await assertRepoAccess(board, requestContext, repoId);
-      const run = await env.REPO_BOARD.getByName(repoId).retryRun(runId);
+      const run = await env.REPO_BOARD.getByName(repoId).retryRun(runId, requestContext.activeTenantId);
       const workflow = await scheduleRunJob(env, ctx, { repoId, taskId: run.taskId, runId: run.runId, mode: 'full_run' });
       await env.REPO_BOARD.getByName(repoId).transitionRun(run.runId, {
         workflowInstanceId: workflow.id,
         orchestrationMode: workflow.id.startsWith('local-alarm-') ? 'local_alarm' : 'workflow'
       });
-      return json(await env.REPO_BOARD.getByName(repoId).getRun(run.runId));
+      return json(await env.REPO_BOARD.getByName(repoId).getRun(run.runId, requestContext.activeTenantId));
     }
 
     const runCancelMatch = url.pathname.match(/^\/api\/runs\/([^/]+)\/cancel$/);
@@ -308,7 +311,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
         message: reason,
         retryable: true,
         phase: 'codex'
-      }));
+      }, requestContext.activeTenantId));
     }
 
     const requestChangesMatch = url.pathname.match(/^\/api\/runs\/([^/]+)\/request-changes$/);
@@ -326,13 +329,13 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
       }
       const repoId = await resolveRepoIdForRun(board, runId);
       await assertRepoAccess(board, requestContext, repoId);
-      const run = await env.REPO_BOARD.getByName(repoId).requestRunChanges(runId, body.prompt.trim());
+      const run = await env.REPO_BOARD.getByName(repoId).requestRunChanges(runId, body.prompt.trim(), requestContext.activeTenantId);
       const workflow = await scheduleRunJob(env, ctx, { repoId, taskId: run.taskId, runId: run.runId, mode: 'full_run' });
       await env.REPO_BOARD.getByName(repoId).transitionRun(run.runId, {
         workflowInstanceId: workflow.id,
         orchestrationMode: workflow.id.startsWith('local-alarm-') ? 'local_alarm' : 'workflow'
       });
-      return json(await env.REPO_BOARD.getByName(repoId).getRun(run.runId));
+      return json(await env.REPO_BOARD.getByName(repoId).getRun(run.runId, requestContext.activeTenantId));
     }
 
     const evidenceRetryMatch = url.pathname.match(/^\/api\/runs\/([^/]+)\/evidence$/);
@@ -340,7 +343,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
       const runId = decodeURIComponent(evidenceRetryMatch[1]);
       const repoId = await resolveRepoIdForRun(board, runId);
       await assertRepoAccess(board, requestContext, repoId);
-      const run = await env.REPO_BOARD.getByName(repoId).retryEvidence(runId);
+      const run = await env.REPO_BOARD.getByName(repoId).retryEvidence(runId, requestContext.activeTenantId);
       const workflow = await scheduleRunJob(env, ctx, {
         repoId,
         taskId: run.taskId,
@@ -351,7 +354,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
         workflowInstanceId: workflow.id,
         orchestrationMode: workflow.id.startsWith('local-alarm-') ? 'local_alarm' : 'workflow'
       });
-      return json(await env.REPO_BOARD.getByName(repoId).getRun(run.runId));
+      return json(await env.REPO_BOARD.getByName(repoId).getRun(run.runId, requestContext.activeTenantId));
     }
 
     const previewRetryMatch = url.pathname.match(/^\/api\/runs\/([^/]+)\/preview$/);
@@ -359,13 +362,13 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
       const runId = decodeURIComponent(previewRetryMatch[1]);
       const repoId = await resolveRepoIdForRun(board, runId);
       await assertRepoAccess(board, requestContext, repoId);
-      const run = await env.REPO_BOARD.getByName(repoId).retryPreview(runId);
+      const run = await env.REPO_BOARD.getByName(repoId).retryPreview(runId, requestContext.activeTenantId);
       const workflow = await scheduleRunJob(env, ctx, { repoId, taskId: run.taskId, runId: run.runId, mode: 'preview_only' });
       await env.REPO_BOARD.getByName(repoId).transitionRun(run.runId, {
         workflowInstanceId: workflow.id,
         orchestrationMode: workflow.id.startsWith('local-alarm-') ? 'local_alarm' : 'workflow'
       });
-      return json(await env.REPO_BOARD.getByName(repoId).getRun(run.runId));
+      return json(await env.REPO_BOARD.getByName(repoId).getRun(run.runId, requestContext.activeTenantId));
     }
 
     const runLogsMatch = url.pathname.match(/^\/api\/runs\/([^/]+)\/logs$/);
@@ -374,7 +377,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
       const repoId = await resolveRepoIdForRun(board, runId);
       await assertRepoAccess(board, requestContext, repoId);
       const tail = url.searchParams.get('tail');
-      return json(await env.REPO_BOARD.getByName(repoId).getRunLogs(runId, tail ? Number(tail) : undefined));
+      return json(await env.REPO_BOARD.getByName(repoId).getRunLogs(runId, tail ? Number(tail) : undefined, requestContext.activeTenantId));
     }
 
     const runUsageMatch = url.pathname.match(/^\/api\/runs\/([^/]+)\/usage$/);
@@ -388,7 +391,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
       const runId = decodeURIComponent(runEventsMatch[1]);
       const repoId = await resolveRepoIdForRun(board, runId);
       await assertRepoAccess(board, requestContext, repoId);
-      return json(await env.REPO_BOARD.getByName(repoId).getRunEvents(runId));
+      return json(await env.REPO_BOARD.getByName(repoId).getRunEvents(runId, requestContext.activeTenantId));
     }
 
     const runCommandsMatch = url.pathname.match(/^\/api\/runs\/([^/]+)\/commands$/);
@@ -396,7 +399,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
       const runId = decodeURIComponent(runCommandsMatch[1]);
       const repoId = await resolveRepoIdForRun(board, runId);
       await assertRepoAccess(board, requestContext, repoId);
-      return json(await env.REPO_BOARD.getByName(repoId).getRunCommands(runId));
+      return json(await env.REPO_BOARD.getByName(repoId).getRunCommands(runId, requestContext.activeTenantId));
     }
 
     const runTerminalMatch = url.pathname.match(/^\/api\/runs\/([^/]+)\/terminal$/);
@@ -404,7 +407,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
       const runId = decodeURIComponent(runTerminalMatch[1]);
       const repoId = await resolveRepoIdForRun(board, runId);
       await assertRepoAccess(board, requestContext, repoId);
-      const bootstrap = await env.REPO_BOARD.getByName(repoId).getTerminalBootstrap(runId);
+      const bootstrap = await env.REPO_BOARD.getByName(repoId).getTerminalBootstrap(runId, requestContext.activeTenantId);
       if (!bootstrap.attachable) {
         return json(bootstrap, { status: 409 });
       }
@@ -416,7 +419,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
       const runId = decodeURIComponent(runTerminalSocketMatch[1]);
       const repoId = await resolveRepoIdForRun(board, runId);
       await assertRepoAccess(board, requestContext, repoId);
-      const bootstrap = await env.REPO_BOARD.getByName(repoId).getTerminalBootstrap(runId);
+      const bootstrap = await env.REPO_BOARD.getByName(repoId).getTerminalBootstrap(runId, requestContext.activeTenantId);
       if (!bootstrap.attachable) {
         return json(bootstrap, { status: 409 });
       }
@@ -424,7 +427,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
         throw badRequest('Expected WebSocket upgrade request.');
       }
 
-      const run = await env.REPO_BOARD.getByName(repoId).getRun(runId);
+      const run = await env.REPO_BOARD.getByName(repoId).getRun(runId, requestContext.activeTenantId);
       const session = {
         tenantId: run.tenantId,
         id: `${runId}:${bootstrap.sessionName}`,
@@ -456,7 +459,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
           error
         });
       }
-      await env.REPO_BOARD.getByName(repoId).updateOperatorSession(runId, session);
+      await env.REPO_BOARD.getByName(repoId).updateOperatorSession(runId, session, requestContext.activeTenantId);
       const sandboxSession = await sandbox.getSession(bootstrap.sessionName);
       return sandboxSession.terminal(request, { cols: bootstrap.cols, rows: bootstrap.rows });
     }
@@ -466,7 +469,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
       const runId = decodeURIComponent(runArtifactsMatch[1]);
       const repoId = await resolveRepoIdForRun(board, runId);
       await assertRepoAccess(board, requestContext, repoId);
-      return json(await env.REPO_BOARD.getByName(repoId).getRunArtifacts(runId));
+      return json(await env.REPO_BOARD.getByName(repoId).getRunArtifacts(runId, requestContext.activeTenantId));
     }
 
     const runTakeoverMatch = url.pathname.match(/^\/api\/runs\/([^/]+)\/takeover$/);
@@ -475,7 +478,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
       const repoId = await resolveRepoIdForRun(board, runId);
       await assertRepoAccess(board, requestContext, repoId);
       const repoBoard = env.REPO_BOARD.getByName(repoId);
-      const run = await repoBoard.getRun(runId);
+      const run = await repoBoard.getRun(runId, requestContext.activeTenantId);
       if (run.sandboxId && run.codexProcessId) {
         const sandbox = getSandbox(env.Sandbox, run.sandboxId);
         try {
@@ -492,7 +495,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
           console.warn('Failed to kill Codex process during takeover', { runId, processId: run.codexProcessId, error });
         }
       }
-      return json(await repoBoard.takeOverRun(runId));
+      return json(await repoBoard.takeOverRun(runId, { actorId: 'same-session', actorLabel: 'Operator' }, requestContext.activeTenantId));
     }
 
     if (url.pathname === '/api/debug/export' && request.method === 'GET') {

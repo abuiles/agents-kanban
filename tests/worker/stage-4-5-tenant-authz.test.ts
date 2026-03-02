@@ -208,4 +208,86 @@ describe('Stage 4.5 tenant auth context + cross-tenant authorization', () => {
     expect(runDenied.body.code).toBe('FORBIDDEN');
     expect(runDenied.body.message).toContain('Cross-tenant access denied');
   });
+
+  it('tenant-filters board/repo/task list projections for active tenant context', async () => {
+    const signup = await api<{
+      token: string;
+      activeTenantId: string;
+    }>('/api/auth/signup', {
+      method: 'POST',
+      body: JSON.stringify({
+        email: `${uniqueSlug('viewer')}@example.com`,
+        password: 'secret-pass',
+        tenantName: 'Tenant List A',
+        tenantSlug: uniqueSlug('tenant-list-a')
+      })
+    });
+    expect(signup.status).toBe(201);
+
+    const tenantARepo = await api<{ repoId: string }>('/api/repos', {
+      method: 'POST',
+      sessionToken: signup.body.token,
+      body: JSON.stringify({
+        slug: uniqueSlug('tenant-a-only-repo'),
+        baselineUrl: 'https://tenant-a-only.example.test',
+        defaultBranch: 'main'
+      })
+    });
+    expect(tenantARepo.status).toBe(201);
+
+    const tenantATask = await api<{ taskId: string }>('/api/tasks', {
+      method: 'POST',
+      sessionToken: signup.body.token,
+      body: JSON.stringify({
+        repoId: tenantARepo.body.repoId,
+        title: 'Tenant A only task',
+        taskPrompt: 'Do tenant A thing',
+        acceptanceCriteria: ['done'],
+        context: { links: [] }
+      })
+    });
+    expect(tenantATask.status).toBe(201);
+
+    const secondTenant = await api<{ tenant: { id: string } }>('/api/tenants', {
+      method: 'POST',
+      sessionToken: signup.body.token,
+      body: JSON.stringify({
+        name: 'Tenant List B',
+        slug: uniqueSlug('tenant-list-b')
+      })
+    });
+    expect(secondTenant.status).toBe(201);
+
+    const switched = await api<{ activeTenantId: string }>('/api/me/tenant-context', {
+      method: 'POST',
+      sessionToken: signup.body.token,
+      body: JSON.stringify({ tenantId: secondTenant.body.tenant.id })
+    });
+    expect(switched.status).toBe(200);
+    expect(switched.body.activeTenantId).toBe(secondTenant.body.tenant.id);
+
+    const repos = await api<Array<{ repoId: string }>>('/api/repos', {
+      sessionToken: signup.body.token
+    });
+    expect(repos.status).toBe(200);
+    expect(repos.body).toEqual([]);
+
+    const board = await api<{
+      repos: Array<{ repoId: string }>;
+      tasks: Array<{ taskId: string }>;
+      runs: Array<{ runId: string }>;
+    }>('/api/board?repoId=all', {
+      sessionToken: signup.body.token
+    });
+    expect(board.status).toBe(200);
+    expect(board.body.repos).toEqual([]);
+    expect(board.body.tasks).toEqual([]);
+    expect(board.body.runs).toEqual([]);
+
+    const tasks = await api<Array<{ taskId: string }>>('/api/tasks?repoId=all', {
+      sessionToken: signup.body.token
+    });
+    expect(tasks.status).toBe(200);
+    expect(tasks.body).toEqual([]);
+  });
 });
