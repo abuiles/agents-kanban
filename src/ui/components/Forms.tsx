@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { CreateRepoInput, CreateTaskInput } from '../domain/api';
-import type { CodexModel, CodexReasoningEffort, Repo, TaskContextLink, TaskStatus } from '../domain/types';
+import type { CodexModel, CodexReasoningEffort, Repo, TaskContextLink, TaskDependency, TaskStatus } from '../domain/types';
 
 const CODEX_MODELS: Array<{ value: CodexModel; label: string }> = [
   { value: 'gpt-5.1-codex-mini', label: 'gpt-5.1-codex-mini (default)' },
@@ -132,6 +132,33 @@ function parseLinks(value: string): TaskContextLink[] {
     .filter((link): link is TaskContextLink => Boolean(link));
 }
 
+function serializeDependencies(value: CreateTaskInput['dependencies']): string {
+  return (value ?? [])
+    .map((dependency) => `${dependency.upstreamTaskId}${dependency.primary ? '|primary' : ''}`)
+    .join('\n');
+}
+
+function parseDependencies(value: string): TaskDependency[] {
+  const dependencies: TaskDependency[] = value
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const [upstreamTaskIdRaw, primaryRaw] = line.split('|').map((segment) => segment.trim());
+      const upstreamTaskId = upstreamTaskIdRaw ?? '';
+      const primaryToken = (primaryRaw ?? '').toLowerCase();
+      const primary = primaryToken === 'primary' || primaryToken === 'true' || primaryToken === 'yes';
+      return { upstreamTaskId, mode: 'review_ready' as const, primary };
+    })
+    .filter((dependency) => Boolean(dependency.upstreamTaskId));
+
+  if (dependencies.filter((dependency) => dependency.primary).length > 1) {
+    return dependencies.map((dependency, index) => ({ ...dependency, primary: index === 0 && dependency.primary }));
+  }
+
+  return dependencies;
+}
+
 export function TaskForm({
   repos,
   onSubmit,
@@ -153,8 +180,10 @@ export function TaskForm({
   const initialCriteria = initialValues?.acceptanceCriteria?.join('\n') ?? '';
   const initialNotes = initialValues?.context?.notes ?? '';
   const initialLinks = initialValues?.context?.links?.map((link) => `${link.label}|${link.url}`).join('\n') ?? '';
+  const initialDependencies = serializeDependencies(initialValues?.dependencies);
   const initialTaskStatus = initialValues?.status ?? initialStatus;
   const initialBaselineUrlOverride = initialValues?.baselineUrlOverride ?? '';
+  const initialAutoStartEligible = initialValues?.automationState?.autoStartEligible ?? false;
   const initialCodexModel = initialValues?.codexModel ?? 'gpt-5.1-codex-mini';
   const initialCodexReasoningEffort = initialValues?.codexReasoningEffort ?? 'medium';
 
@@ -166,8 +195,10 @@ export function TaskForm({
   const [criteria, setCriteria] = useState(initialCriteria);
   const [notes, setNotes] = useState(initialNotes);
   const [links, setLinks] = useState(initialLinks);
+  const [dependencies, setDependencies] = useState(initialDependencies);
   const [status, setStatus] = useState<TaskStatus>(initialTaskStatus);
   const [baselineUrlOverride, setBaselineUrlOverride] = useState(initialBaselineUrlOverride);
+  const [autoStartEligible, setAutoStartEligible] = useState(initialAutoStartEligible);
   const [codexModel, setCodexModel] = useState<CodexModel>(initialCodexModel);
   const [codexReasoningEffort, setCodexReasoningEffort] = useState<CodexReasoningEffort>(initialCodexReasoningEffort);
 
@@ -191,15 +222,19 @@ export function TaskForm({
     setCriteria(initialCriteria);
     setNotes(initialNotes);
     setLinks(initialLinks);
+    setDependencies(initialDependencies);
     setStatus(initialTaskStatus);
     setBaselineUrlOverride(initialBaselineUrlOverride);
+    setAutoStartEligible(initialAutoStartEligible);
     setCodexModel(initialCodexModel);
     setCodexReasoningEffort(initialCodexReasoningEffort);
   }, [
+    initialAutoStartEligible,
     initialBaselineUrlOverride,
     initialCodexModel,
     initialCodexReasoningEffort,
     initialCriteria,
+    initialDependencies,
     initialDescription,
     initialLinks,
     initialNotes,
@@ -219,11 +254,15 @@ export function TaskForm({
           return;
         }
 
+        const parsedDependencies = parseDependencies(dependencies);
+
         await onSubmit({
           repoId,
           title,
           description,
           sourceRef: sourceRef || undefined,
+          dependencies: parsedDependencies.length ? parsedDependencies : undefined,
+          automationState: { autoStartEligible },
           taskPrompt,
           acceptanceCriteria: parseCriteria(criteria),
           context: { links: parseLinks(links), notes },
@@ -240,8 +279,10 @@ export function TaskForm({
         setCriteria('');
         setNotes('');
         setLinks('');
+        setDependencies('');
         setStatus(initialStatus);
         setBaselineUrlOverride('');
+        setAutoStartEligible(false);
         setCodexModel('gpt-5.1-codex-mini');
         setCodexReasoningEffort('medium');
       }}
@@ -305,6 +346,28 @@ export function TaskForm({
         </FieldShell>
         <FieldShell label="Baseline override">
           <input className={inputClass()} value={baselineUrlOverride} onChange={(event) => setBaselineUrlOverride(event.target.value)} placeholder="https://staging.example.com" />
+        </FieldShell>
+      </div>
+      <div className="grid gap-4 xl:grid-cols-2">
+        <FieldShell label="Dependencies" hint="One upstream task id per line. Optional: task_id|primary">
+          <textarea
+            className={textareaClass()}
+            value={dependencies}
+            onChange={(event) => setDependencies(event.target.value)}
+            rows={4}
+            placeholder="task_repo_123abc\ntask_repo_456def|primary"
+          />
+        </FieldShell>
+        <FieldShell label="Auto-start eligibility" hint="When enabled, this task can auto-start once dependency/source rules pass.">
+          <div className="flex h-11 items-center gap-3 rounded-xl border border-slate-700 bg-slate-900/90 px-3 text-sm text-slate-100">
+            <input
+              type="checkbox"
+              checked={autoStartEligible}
+              onChange={(event) => setAutoStartEligible(event.target.checked)}
+              className="h-4 w-4 rounded border-slate-600 bg-slate-950 text-cyan-400 focus:ring-cyan-400/30"
+            />
+            <span>{autoStartEligible ? 'Eligible' : 'Not eligible'}</span>
+          </div>
         </FieldShell>
       </div>
       <div className="grid gap-4 md:grid-cols-2">

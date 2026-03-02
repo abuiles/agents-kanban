@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { TaskForm } from './Forms';
 
 describe('TaskForm', () => {
-  it('submits the selected Codex model and reasoning effort', async () => {
+  it('submits Stage 3.1 dependency and execution settings', async () => {
     const user = userEvent.setup();
     const onSubmit = vi.fn().mockResolvedValue(undefined);
 
@@ -26,9 +26,11 @@ describe('TaskForm', () => {
     );
 
     const acceptanceCriteriaField = screen.getByText('Acceptance criteria').closest('label')?.querySelector('textarea');
+    const dependenciesField = screen.getByText('Dependencies').closest('label')?.querySelector('textarea');
     const codexModelField = screen.getByText('Codex model').closest('label')?.querySelector('select');
     const reasoningEffortField = screen.getByText('Reasoning effort').closest('label')?.querySelector('select');
     expect(acceptanceCriteriaField).not.toBeNull();
+    expect(dependenciesField).not.toBeNull();
     expect(codexModelField).not.toBeNull();
     expect(reasoningEffortField).not.toBeNull();
 
@@ -39,6 +41,8 @@ describe('TaskForm', () => {
     await user.type(sourceRefField!, 'https://github.com/abuiles/minions-demo/pull/4');
     await user.type(screen.getByLabelText('Task prompt'), 'Create a simple snake game on the homepage.');
     await user.type(acceptanceCriteriaField!, 'A playable snake game appears on index.');
+    await user.type(dependenciesField!, 'task_repo_123abc\ntask_repo_456def|primary');
+    await user.click(screen.getByRole('checkbox'));
     await user.selectOptions(codexModelField! as unknown as Element, 'gpt-5.3-codex-spark');
     await user.selectOptions(reasoningEffortField! as unknown as Element, 'high');
 
@@ -49,6 +53,13 @@ describe('TaskForm', () => {
       repoId: 'repo_demo',
       title: 'Build snake game',
       sourceRef: 'https://github.com/abuiles/minions-demo/pull/4',
+      dependencies: [
+        { upstreamTaskId: 'task_repo_123abc', mode: 'review_ready', primary: false },
+        { upstreamTaskId: 'task_repo_456def', mode: 'review_ready', primary: true }
+      ],
+      automationState: {
+        autoStartEligible: true
+      },
       taskPrompt: 'Create a simple snake game on the homepage.',
       acceptanceCriteria: ['A playable snake game appears on index.'],
       codexModel: 'gpt-5.3-codex-spark',

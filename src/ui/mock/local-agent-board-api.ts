@@ -79,6 +79,7 @@ export class LocalAgentBoardApi implements AgentBoardApi {
       description: input.description,
       sourceRef: input.sourceRef,
       dependencies: input.dependencies,
+      dependencyState: input.dependencyState,
       automationState: input.automationState,
       branchSource: input.branchSource,
       taskPrompt: input.taskPrompt,

@@ -45,6 +45,12 @@ function statusTone(status: string) {
   return 'border-slate-700 bg-slate-800/80 text-slate-200';
 }
 
+function dependencyReasonTone(state: 'missing' | 'not_ready' | 'ready') {
+  if (state === 'ready') return 'border-emerald-500/25 bg-emerald-500/10 text-emerald-100';
+  if (state === 'missing') return 'border-rose-500/25 bg-rose-500/10 text-rose-100';
+  return 'border-amber-500/25 bg-amber-500/10 text-amber-100';
+}
+
 function PanelSection({ title, children, aside }: { title: string; children: React.ReactNode; aside?: React.ReactNode }) {
   return (
     <section className="rounded-xl border border-slate-800 bg-slate-950/70 p-4">
@@ -461,6 +467,109 @@ export function DetailPanel({
               )}
             </PanelSection>
           ) : null}
+
+          <PanelSection title="Dependencies">
+            {task.dependencies?.length ? (
+              <div className="space-y-2">
+                {task.dependencies.map((dependency) => (
+                  <div key={`${dependency.upstreamTaskId}_${dependency.mode}`} className="rounded-lg border border-slate-800 bg-slate-900/70 px-3 py-2">
+                    <div className="flex flex-wrap items-center gap-2 text-[11px] uppercase tracking-[0.14em] text-slate-500">
+                      <span>{dependency.mode}</span>
+                      {dependency.primary ? (
+                        <span className="rounded-full border border-cyan-400/35 bg-cyan-500/15 px-2 py-0.5 text-cyan-50">primary</span>
+                      ) : null}
+                    </div>
+                    <code className="mt-1 block break-all text-xs text-slate-200">{dependency.upstreamTaskId}</code>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-sm text-slate-500">No upstream dependencies.</p>
+            )}
+          </PanelSection>
+
+          <PanelSection title="Dependency state">
+            {task.dependencyState ? (
+              <div className="space-y-3">
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <div className="rounded-lg border border-slate-800 bg-slate-900/70 px-3 py-2">
+                    <div className="text-[11px] uppercase tracking-[0.16em] text-slate-500">Blocked</div>
+                    <div className={`mt-1 inline-flex rounded-full border px-2 py-0.5 text-[11px] font-semibold uppercase tracking-[0.12em] ${task.dependencyState.blocked ? 'border-amber-500/35 bg-amber-500/15 text-amber-100' : 'border-emerald-500/35 bg-emerald-500/15 text-emerald-100'}`}>
+                      {task.dependencyState.blocked ? 'Yes' : 'No'}
+                    </div>
+                  </div>
+                  <div className="rounded-lg border border-slate-800 bg-slate-900/70 px-3 py-2">
+                    <div className="text-[11px] uppercase tracking-[0.16em] text-slate-500">Unblocked at</div>
+                    <div className="mt-1 text-xs text-slate-200">{formatTimestamp(task.dependencyState.unblockedAt)}</div>
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  {task.dependencyState.reasons.map((reason) => (
+                    <div key={`${reason.upstreamTaskId}_${reason.state}`} className={`rounded-lg border px-3 py-2 ${dependencyReasonTone(reason.state)}`}>
+                      <div className="text-[11px] font-semibold uppercase tracking-[0.14em]">{reason.state.replace('_', ' ')}</div>
+                      <p className="mt-1 text-sm">{reason.message}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <p className="text-sm text-slate-500">Dependency state has not been computed yet.</p>
+            )}
+          </PanelSection>
+
+          <PanelSection title="Automation">
+            <div className="grid gap-2 sm:grid-cols-3">
+              <div className="rounded-lg border border-slate-800 bg-slate-900/70 px-3 py-2">
+                <div className="text-[11px] uppercase tracking-[0.16em] text-slate-500">Auto-start</div>
+                <div className="mt-1 text-xs text-slate-200">{task.automationState?.autoStartEligible ? 'Eligible' : 'Not eligible'}</div>
+              </div>
+              <div className="rounded-lg border border-slate-800 bg-slate-900/70 px-3 py-2">
+                <div className="text-[11px] uppercase tracking-[0.16em] text-slate-500">Auto-started at</div>
+                <div className="mt-1 text-xs text-slate-200">{formatTimestamp(task.automationState?.autoStartedAt)}</div>
+              </div>
+              <div className="rounded-lg border border-slate-800 bg-slate-900/70 px-3 py-2">
+                <div className="text-[11px] uppercase tracking-[0.16em] text-slate-500">Last dependency refresh</div>
+                <div className="mt-1 text-xs text-slate-200">{formatTimestamp(task.automationState?.lastDependencyRefreshAt)}</div>
+              </div>
+            </div>
+          </PanelSection>
+
+          <PanelSection title="Resolved branch source">
+            {task.branchSource ? (
+              <div className="grid gap-2 sm:grid-cols-2">
+                <div className="rounded-lg border border-slate-800 bg-slate-900/70 px-3 py-2">
+                  <div className="text-[11px] uppercase tracking-[0.16em] text-slate-500">Kind</div>
+                  <code className="mt-1 block break-all text-xs text-slate-200">{task.branchSource.kind}</code>
+                </div>
+                <div className="rounded-lg border border-slate-800 bg-slate-900/70 px-3 py-2">
+                  <div className="text-[11px] uppercase tracking-[0.16em] text-slate-500">Resolved ref</div>
+                  <code className="mt-1 block break-all text-xs text-slate-200">{task.branchSource.resolvedRef}</code>
+                </div>
+                <div className="rounded-lg border border-slate-800 bg-slate-900/70 px-3 py-2">
+                  <div className="text-[11px] uppercase tracking-[0.16em] text-slate-500">Upstream task</div>
+                  <code className="mt-1 block break-all text-xs text-slate-200">{task.branchSource.upstreamTaskId ?? '—'}</code>
+                </div>
+                <div className="rounded-lg border border-slate-800 bg-slate-900/70 px-3 py-2">
+                  <div className="text-[11px] uppercase tracking-[0.16em] text-slate-500">Resolved at</div>
+                  <div className="mt-1 text-xs text-slate-200">{formatTimestamp(task.branchSource.resolvedAt)}</div>
+                </div>
+              </div>
+            ) : (
+              <p className="text-sm text-slate-500">Run source will resolve to explicit source ref, dependency lineage, or default branch when a run starts.</p>
+            )}
+            {latestRun?.dependencyContext ? (
+              <div className="mt-2 rounded-lg border border-slate-800 bg-slate-900/70 px-3 py-2">
+                <div className="text-[11px] uppercase tracking-[0.16em] text-slate-500">Latest run dependency context</div>
+                <div className="mt-1 grid gap-1 text-xs text-slate-200">
+                  <div>Mode: {latestRun.dependencyContext.sourceMode}</div>
+                  <div>Upstream task: {latestRun.dependencyContext.sourceTaskId ?? '—'}</div>
+                  <div>Upstream run: {latestRun.dependencyContext.sourceRunId ?? '—'}</div>
+                  <div>Upstream PR: {latestRun.dependencyContext.sourcePrNumber ?? '—'}</div>
+                  <div>Upstream head SHA: {latestRun.dependencyContext.sourceHeadSha ?? '—'}</div>
+                </div>
+              </div>
+            ) : null}
+          </PanelSection>
 
           <PanelSection title="Acceptance criteria">
             <ul className="space-y-2 text-sm leading-6 text-slate-300">

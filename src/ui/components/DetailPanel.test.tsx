@@ -24,6 +24,31 @@ function buildDetail(): TaskDetail {
       repoId: 'repo_demo',
       title: 'Fix preview retry routing',
       sourceRef: 'https://github.com/abuiles/minions-demo/pull/4',
+      dependencies: [
+        { upstreamTaskId: 'task_upstream_a', mode: 'review_ready', primary: true },
+        { upstreamTaskId: 'task_upstream_b', mode: 'review_ready' }
+      ],
+      dependencyState: {
+        blocked: true,
+        reasons: [
+          { upstreamTaskId: 'task_upstream_a', state: 'ready', message: 'Upstream task task_upstream_a is review-ready.' },
+          { upstreamTaskId: 'task_upstream_b', state: 'not_ready', message: 'Upstream task task_upstream_b is not review-ready yet.' }
+        ]
+      },
+      automationState: {
+        autoStartEligible: true,
+        autoStartedAt: '2026-03-01T00:00:00.000Z',
+        lastDependencyRefreshAt: '2026-03-01T00:05:00.000Z'
+      },
+      branchSource: {
+        kind: 'dependency_review_head',
+        upstreamTaskId: 'task_upstream_a',
+        upstreamRunId: 'run_upstream_a',
+        upstreamPrNumber: 44,
+        upstreamHeadSha: 'abc1234',
+        resolvedRef: 'refs/pull/44/head',
+        resolvedAt: '2026-03-01T00:06:00.000Z'
+      },
       taskPrompt: 'Fix the preview retry button routing.',
       acceptanceCriteria: ['Retry preview uses the preview endpoint.'],
       context: { links: [] },
@@ -39,6 +64,13 @@ function buildDetail(): TaskDetail {
         status: 'WAITING_PREVIEW',
         branchName: 'codex/fix-preview-routing',
         prUrl: 'https://github.com/abuiles/minions-demo/pull/2',
+        dependencyContext: {
+          sourceMode: 'dependency_review_head',
+          sourceTaskId: 'task_upstream_a',
+          sourceRunId: 'run_upstream_a',
+          sourcePrNumber: 44,
+          sourceHeadSha: 'abc1234'
+        },
         previewStatus: 'DISCOVERING',
         evidenceStatus: 'NOT_STARTED',
         errors: [],
@@ -55,6 +87,13 @@ function buildDetail(): TaskDetail {
       status: 'WAITING_PREVIEW',
       branchName: 'codex/fix-preview-routing',
       prUrl: 'https://github.com/abuiles/minions-demo/pull/2',
+      dependencyContext: {
+        sourceMode: 'dependency_review_head',
+        sourceTaskId: 'task_upstream_a',
+        sourceRunId: 'run_upstream_a',
+        sourcePrNumber: 44,
+        sourceHeadSha: 'abc1234'
+      },
       previewStatus: 'DISCOVERING',
       evidenceStatus: 'NOT_STARTED',
       errors: [],
@@ -157,6 +196,19 @@ describe('DetailPanel', () => {
       .filter((link) => link.getAttribute('href') === 'https://github.com/abuiles/minions-demo/pull/4');
 
     expect(sourceRefLinks.length).toBeGreaterThan(0);
+  });
+
+  it('shows dependency reasons and resolved branch source details', () => {
+    render(
+      <DetailPanel
+        {...buildProps()}
+      />
+    );
+
+    expect(screen.getByText('Upstream task task_upstream_b is not review-ready yet.')).toBeInTheDocument();
+    expect(screen.getByText('dependency_review_head')).toBeInTheDocument();
+    expect(screen.getByText('refs/pull/44/head')).toBeInTheDocument();
+    expect(screen.getByText('Mode: dependency_review_head')).toBeInTheDocument();
   });
 
   it('routes edit task clicks to the edit handler', async () => {
