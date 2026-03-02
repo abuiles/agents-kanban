@@ -185,6 +185,21 @@ describe('repo validation', () => {
     expect(parsed.previewConfig?.checkName).toBe('Workers Builds: minions');
   });
 
+  it('parses prompt recipe preview adapter payloads', () => {
+    const parsed = parseCreateRepoInput({
+      slug: 'abuiles/minions',
+      baselineUrl: 'https://example.com',
+      previewAdapter: 'prompt_recipe',
+      previewConfig: {
+        promptRecipe: 'Read CI logs and return one preview URL.'
+      }
+    });
+
+    expect(parsed.previewAdapter).toBe('prompt_recipe');
+    expect(parsed.previewProvider).toBeUndefined();
+    expect(parsed.previewConfig).toEqual({ promptRecipe: 'Read CI logs and return one preview URL.' });
+  });
+
   it('maps legacy preview fields to the new preview config shape', () => {
     const parsed = parseCreateRepoInput({
       slug: 'abuiles/minions',
@@ -214,6 +229,16 @@ describe('repo validation', () => {
         previewAdapter: 'prompt_recipe'
       })
     ).toThrow('Invalid preview payload: previewProvider "cloudflare" requires previewAdapter "cloudflare_checks".');
+  });
+
+  it('rejects prompt recipe adapters without a prompt recipe', () => {
+    expect(() =>
+      parseCreateRepoInput({
+        slug: 'abuiles/minions',
+        baselineUrl: 'https://example.com',
+        previewAdapter: 'prompt_recipe'
+      })
+    ).toThrow('Invalid preview payload: previewAdapter "prompt_recipe" requires previewConfig.promptRecipe.');
   });
 
   it('parses provider-neutral repo payloads and keeps slug compatibility', () => {
