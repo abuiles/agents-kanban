@@ -186,6 +186,26 @@ export class RepoBoardDO extends DurableObject<Env> {
     return finalTask;
   }
 
+  async deleteTask(taskId: string): Promise<{ taskId: string; deleted: true }> {
+    await this.ready;
+    const task = this.state.tasks.find((candidate) => candidate.taskId === taskId);
+    if (!task) {
+      throw notFound(`Task ${taskId} not found.`, { taskId });
+    }
+
+    this.state = {
+      ...this.state,
+      tasks: this.state.tasks.filter((candidate) => candidate.taskId !== taskId),
+      runs: this.state.runs.filter((run) => run.taskId !== taskId),
+      logs: this.state.logs.filter((log) => log.taskId !== taskId),
+      events: this.state.events.filter((event) => event.taskId !== taskId),
+      commands: this.state.commands.filter((command) => command.taskId !== taskId)
+    };
+    await this.persist();
+    await this.emit({ type: 'task.deleted', payload: { taskId } }, task.repoId);
+    return { taskId, deleted: true };
+  }
+
   async startRun(taskId: string, options?: { forceNew?: boolean; baseRunId?: string; dependencyAutoStart?: boolean }): Promise<AgentRun> {
     await this.ready;
     const task = this.state.tasks.find((candidate) => candidate.taskId === taskId);

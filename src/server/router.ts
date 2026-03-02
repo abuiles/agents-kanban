@@ -62,6 +62,12 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
       return json(await env.REPO_BOARD.getByName(repoId).updateTask(taskId, parseUpdateTaskInput(await readJson(request))));
     }
 
+    if (taskMatch && request.method === 'DELETE') {
+      const taskId = decodeURIComponent(taskMatch[1]);
+      const repoId = await resolveRepoIdForTask(board, taskId);
+      return json(await env.REPO_BOARD.getByName(repoId).deleteTask(taskId));
+    }
+
     const runStartMatch = url.pathname.match(/^\/api\/tasks\/([^/]+)\/run$/);
     if (runStartMatch && request.method === 'POST') {
       const taskId = decodeURIComponent(runStartMatch[1]);
