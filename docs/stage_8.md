@@ -1,5 +1,7 @@
 # AgentsKanban Stage 8 (Harden)
 
+**Status:** ⏳ Pending
+
 ## Goal
 
 Stage 8 adds the security, policy, and credential controls needed for broader rollout.

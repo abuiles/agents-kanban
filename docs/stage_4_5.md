@@ -1,5 +1,7 @@
 # AgentsKanban Stage 4.5 (Tenant Metering)
 
+**Status:** ⏳ Pending
+
 ## Goal
 
 Stage 4.5 adds the minimum tenant model and usage accounting needed to run AgentsKanban as a shared SaaS.

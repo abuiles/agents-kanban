@@ -1,5 +1,7 @@
 # AgentsKanban Stage 3.5 (Provider Adapters)
 
+**Status:** ✅ Implemented
+
 ## Goal
 
 Stage 3.5 makes AgentsKanban provider-adaptable in three independent seams:
