@@ -7,7 +7,7 @@
 - Run the local app from `localhost:5173`.
 - Use same-origin API calls at `http://localhost:5173/api`.
 - All implementation tasks in this plan use:
-  - `codexModel`: `gpt-5.3-codex-spark`
+  - `codexModel`: `gpt-5.3-codex`
   - `codexReasoningEffort`: `medium`
 
 Execution baseline command:
@@ -58,6 +58,31 @@ Stage 4.5 fixes that timing problem without re-scoping Stage 4.
 - provider credential ownership is explicitly deferred to a later stage
 - Stage 4.5 must work whether execution currently relies on a developer-connected account or a later tenant-owned provider credential model
 - all new entities added after this stage must carry `tenantId`
+
+## Stage 4.5 contract note (locked, non-reversible)
+
+This section is normative. Stage 4.5 implementation and follow-up tasks must conform to this contract.
+
+Contract lock:
+
+- Stage 4.5 scope is frozen to tenant core, memberships/seats, tenant-scoped access control, and usage accounting/metering.
+- Stage 4.5 must not expand to provider credential ownership decisions.
+- Stage 4.5 must not redefine Stage 4 operator observe/attach/takeover behavior.
+- any change that would violate these constraints is out of Stage 4.5 scope and must be introduced as a later-stage change.
+
+Explicit preservation of Stage 4 flows:
+
+- preserve Stage 4 observe endpoints and semantics (`/api/runs/:runId/events`, `/api/runs/:runId/commands`)
+- preserve Stage 4 attach endpoints and semantics (`/api/runs/:runId/terminal`, `/api/runs/:runId/ws`)
+- preserve Stage 4 takeover endpoint semantics (`POST /api/runs/:runId/takeover`)
+- add tenant authorization checks around these flows without changing their Stage 4 operator intent
+
+Explicit deferral of provider-owned credentials:
+
+- tenant-owned OpenAI/API-provider credentials are deferred
+- tenant-owned ChatGPT/Codex/Cursor account ownership is deferred
+- provider credential source-of-truth and per-tenant switching policy are deferred
+- current execution may continue using the existing developer-connected provider path until a later stage introduces tenant-owned provider credentials
 
 ## Organization model additions
 
@@ -521,7 +546,7 @@ Stage 4.5 is complete when:
 
 ### S45-00. Lock contract and explicit deferrals
 
-Assigned execution model: `gpt-5.3-codex-spark`, `codexReasoningEffort: medium`.
+Assigned execution model: `gpt-5.3-codex`, `codexReasoningEffort: medium`.
 
 Deliverables:
 
@@ -539,7 +564,7 @@ Unblocks:
 
 ### S45-10. Tenant core data model
 
-Assigned execution model: `gpt-5.3-codex-spark`, `codexReasoningEffort: medium`.
+Assigned execution model: `gpt-5.3-codex`, `codexReasoningEffort: medium`.
 
 Deliverables:
 
@@ -562,7 +587,7 @@ Unblocks:
 
 ### S45-20. Tenant memberships and seats
 
-Assigned execution model: `gpt-5.3-codex-spark`, `codexReasoningEffort: medium`.
+Assigned execution model: `gpt-5.3-codex`, `codexReasoningEffort: medium`.
 
 Deliverables:
 
@@ -585,7 +610,7 @@ Unblocks:
 
 ### S45-30. Tenant context resolution and access control
 
-Assigned execution model: `gpt-5.3-codex-spark`, `codexReasoningEffort: medium`.
+Assigned execution model: `gpt-5.3-codex`, `codexReasoningEffort: medium`.
 
 Deliverables:
 
@@ -608,7 +633,7 @@ Unblocks:
 
 ### S45-40. Tenant-scoped persistence, APIs, and board fanout
 
-Assigned execution model: `gpt-5.3-codex-spark`, `codexReasoningEffort: medium`.
+Assigned execution model: `gpt-5.3-codex`, `codexReasoningEffort: medium`.
 
 Deliverables:
 
@@ -630,7 +655,7 @@ Unblocks:
 
 ### S45-50. Workflow propagation and tenant-owned artifact layout
 
-Assigned execution model: `gpt-5.3-codex-spark`, `codexReasoningEffort: medium`.
+Assigned execution model: `gpt-5.3-codex`, `codexReasoningEffort: medium`.
 
 Deliverables:
 
@@ -651,7 +676,7 @@ Unblocks:
 
 ### S45-60. Usage ledger emission
 
-Assigned execution model: `gpt-5.3-codex-spark`, `codexReasoningEffort: medium`.
+Assigned execution model: `gpt-5.3-codex`, `codexReasoningEffort: medium`.
 
 Deliverables:
 
@@ -672,7 +697,7 @@ Unblocks:
 
 ### S45-70. Usage aggregation and reporting APIs
 
-Assigned execution model: `gpt-5.3-codex-spark`, `codexReasoningEffort: medium`.
+Assigned execution model: `gpt-5.3-codex`, `codexReasoningEffort: medium`.
 
 Deliverables:
 
@@ -695,7 +720,7 @@ Unblocks:
 
 ### S45-80. Tenant-aware UI shell and operator surfaces
 
-Assigned execution model: `gpt-5.3-codex-spark`, `codexReasoningEffort: medium`.
+Assigned execution model: `gpt-5.3-codex`, `codexReasoningEffort: medium`.
 
 Deliverables:
 
