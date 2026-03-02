@@ -615,7 +615,7 @@ function buildLlmPrompt(task: Task, repo: Repo, run: Awaited<ReturnType<RepoBoar
     '- Make the requested code changes in this repository.',
     '- Decide which install/build/test commands are appropriate and run them as needed.',
     run.changeRequest?.prompt
-      ? `- The outer system already prepared the existing PR branch ${run.branchName} for this change request. Update that branch in place and keep the existing PR alive.`
+      ? `- The outer system already prepared the existing review branch ${run.branchName} for this change request. Update that branch in place and keep the existing review request alive.`
       : task.sourceRef
         ? `- The outer system already prepared the run branch from this task source ref: ${task.sourceRef}. Do not fetch or checkout another starting branch yourself.`
         : undefined,
@@ -637,14 +637,14 @@ async function prepareRunBranchFromTaskSource(
 ) {
   if (run.changeRequest?.prompt && getRunReviewUrl(run)) {
     await repoBoard.appendRunLogs(runId, [
-      buildRunLog(runId, `Preparing existing PR branch ${run.branchName} for a review change request.`, 'bootstrap')
+      buildRunLog(runId, `Preparing existing review branch ${run.branchName} for a review change request.`, 'bootstrap')
     ]);
     const checkout = await sandbox.exec(
       `cd /workspace/repo && git fetch origin ${shellEscape(run.branchName)} && git checkout -B ${shellEscape(run.branchName)} FETCH_HEAD`
     );
     await appendCommandLogs(repoBoard, runId, 'bootstrap', checkout.stdout, checkout.stderr);
     if (!checkout.success) {
-      throw new Error(checkout.stderr || `Failed to prepare existing PR branch ${run.branchName}.`);
+      throw new Error(checkout.stderr || `Failed to prepare existing review branch ${run.branchName}.`);
     }
     return;
   }

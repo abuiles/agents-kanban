@@ -22,7 +22,7 @@ const laneStyles: Record<TaskStatus, { tint: string; badge: string; empty: strin
   REVIEW: {
     tint: 'from-violet-500/22 to-violet-500/0 border-violet-500/20',
     badge: 'bg-violet-500/20 text-violet-50',
-    empty: 'PRs and evidence collect here'
+    empty: 'Reviews and evidence collect here'
   },
   DONE: {
     tint: 'from-emerald-500/22 to-emerald-500/0 border-emerald-500/20',
@@ -67,7 +67,7 @@ function deriveRunSignal(run?: AgentRun) {
         : { label: 'Running', tone: 'text-cyan-300' };
     case 'PR_OPEN':
     case 'WAITING_PREVIEW':
-      return { label: 'PR open', tone: 'text-violet-300' };
+      return { label: 'Review open', tone: 'text-violet-300' };
     case 'EVIDENCE_RUNNING':
       return { label: 'Evidence', tone: 'text-amber-300' };
     case 'DONE':
@@ -127,7 +127,7 @@ function TaskCard({
       {task.description ? <p className="mt-1.5 line-clamp-2 text-xs leading-5 text-slate-400">{task.description}</p> : null}
 
       <div className="mt-2 flex items-center justify-between text-[11px] text-slate-500">
-        <span>{latestRun?.prNumber ? `PR #${latestRun.prNumber}` : 'No PR yet'}</span>
+        <span>{(latestRun?.reviewNumber ?? latestRun?.prNumber) ? `Review #${latestRun.reviewNumber ?? latestRun.prNumber}` : 'No review yet'}</span>
         <span>{formatRelativeTime(task.updatedAt)}</span>
       </div>
     </button>
@@ -224,7 +224,7 @@ export function Board({
       <div className="flex items-center justify-between border-b border-slate-800 px-4 py-2.5">
         <div>
           <h2 className="text-sm font-semibold uppercase tracking-[0.18em] text-slate-300">Board operations</h2>
-          <p className="mt-1 text-sm text-slate-500">Active starts a run. Review collects PRs and evidence.</p>
+          <p className="mt-1 text-sm text-slate-500">Active starts a run. Review collects review requests and evidence.</p>
         </div>
       </div>
       <DndContext

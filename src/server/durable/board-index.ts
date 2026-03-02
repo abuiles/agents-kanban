@@ -268,6 +268,8 @@ function buildRepoRecord(input: CreateRepoInput | Repo): Repo {
     defaultBranch: input.defaultBranch ?? 'main',
     baselineUrl: input.baselineUrl,
     enabled: input.enabled ?? true,
+    llmAdapter: input.llmAdapter,
+    llmProfileId: input.llmProfileId,
     githubAuthMode: 'githubAuthMode' in input ? input.githubAuthMode : undefined,
     previewMode: 'previewMode' in input ? input.previewMode : 'auto',
     evidenceMode: 'evidenceMode' in input ? input.evidenceMode : 'auto',

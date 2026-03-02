@@ -148,7 +148,7 @@ describe('App', () => {
     expect(await screen.findByText('Updated Refresh homepage hero copy.')).toBeInTheDocument();
   });
 
-  it('requests changes from a review task and starts a rerun on the same PR branch', async () => {
+  it('requests changes from a review task and starts a rerun on the same review branch', async () => {
     const user = userEvent.setup();
     const api = getLocalAgentBoardApi();
     const previousRun = api.getSnapshot().runs.find((run) => run.runId === 'run_nav_1');
@@ -158,7 +158,7 @@ describe('App', () => {
     await screen.findByRole('heading', { name: 'Fix settings navigation overflow' });
     await user.click(await screen.findByRole('button', { name: 'Request changes' }));
     await user.type(
-      await screen.findByPlaceholderText('Describe the changes you want on the current PR.'),
+      await screen.findByPlaceholderText('Describe the changes you want on the current review.'),
       'Tighten the spacing and update the review copy.'
     );
     await user.click(screen.getByRole('button', { name: 'Start review rerun' }));
@@ -175,7 +175,7 @@ describe('App', () => {
       expect(latestRun.prUrl).toBe(previousRun?.prUrl);
     });
 
-    expect(await screen.findByText('Started a review rerun on the existing PR branch.')).toBeInTheDocument();
+    expect(await screen.findByText('Started a review rerun on the existing review branch.')).toBeInTheDocument();
   });
 
   it('opens the terminal in a modal with the live stream panel', async () => {

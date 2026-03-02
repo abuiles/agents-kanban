@@ -353,7 +353,7 @@ export class RepoBoardDO extends DurableObject<Env> {
         status: run.previewUrl ? 'EVIDENCE_RUNNING' : 'WAITING_PREVIEW',
         previewStatus: run.previewUrl ? 'READY' : 'DISCOVERING',
         evidenceStatus: 'RUNNING',
-        appendTimelineNote: 'Retrying evidence for the existing PR.'
+        appendTimelineNote: 'Retrying evidence for the existing review.'
       },
       nowIso
     );
@@ -383,7 +383,7 @@ export class RepoBoardDO extends DurableObject<Env> {
         previewUrl: undefined,
         previewStatus: 'DISCOVERING',
         evidenceStatus: 'NOT_STARTED',
-        appendTimelineNote: 'Retrying preview discovery for the existing PR.'
+        appendTimelineNote: 'Retrying preview discovery for the existing review.'
       },
       nowIso
     );
@@ -709,7 +709,7 @@ export class RepoBoardDO extends DurableObject<Env> {
       updatedAt: now
     };
     const events: RunEvent[] = [
-      buildRunEvent(updated, 'operator', 'operator.takeover_started', 'Operator took control of the live sandbox session and stopped Codex execution.', { sessionName: nextSession.sessionName })
+      buildRunEvent(updated, 'operator', 'operator.takeover_started', 'Operator took control of the live sandbox session and stopped executor execution.', { sessionName: nextSession.sessionName })
     ];
     if (updated.latestCodexResumeCommand) {
       events.push(
