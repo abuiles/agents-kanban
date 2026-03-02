@@ -3,10 +3,12 @@ import type {
   BoardSnapshotV1,
   CodexModel,
   CodexReasoningEffort,
+  ProviderCredential,
   Repo,
   RunCommand,
   RunEvent,
   RunLogEntry,
+  ScmProvider,
   SimulationProfile,
   Task,
   TaskDetail,
@@ -15,7 +17,10 @@ import type {
 } from './types';
 
 export type CreateRepoInput = {
-  slug: string;
+  slug?: string;
+  scmProvider?: ScmProvider;
+  scmBaseUrl?: string;
+  projectPath?: string;
   defaultBranch?: string;
   baselineUrl: string;
   enabled?: boolean;
@@ -24,6 +29,14 @@ export type CreateRepoInput = {
 };
 
 export type UpdateRepoInput = Partial<CreateRepoInput>;
+
+export type UpsertProviderCredentialInput = {
+  scmProvider: ScmProvider;
+  scmBaseUrl?: string;
+  authType?: ProviderCredential['authType'];
+  secretRef: ProviderCredential['secretRef'];
+  label?: string;
+};
 
 export type CreateTaskInput = {
   repoId: string;
@@ -60,6 +73,8 @@ export interface AgentBoardApi {
   createRepo(input: CreateRepoInput): Promise<Repo>;
   listRepos(): Promise<Repo[]>;
   updateRepo(repoId: string, patch: UpdateRepoInput): Promise<Repo>;
+  listProviderCredentials(): Promise<ProviderCredential[]>;
+  upsertProviderCredential(input: UpsertProviderCredentialInput): Promise<ProviderCredential>;
   createTask(input: CreateTaskInput): Promise<Task>;
   listTasks(filter?: { repoId?: string }): Promise<Task[]>;
   getTask(taskId: string): Promise<TaskDetail>;

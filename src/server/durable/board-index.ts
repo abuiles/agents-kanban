@@ -1,22 +1,33 @@
-import type { CreateRepoInput, UpdateRepoInput } from '../../ui/domain/api';
-import type { BoardSnapshotV1, Repo } from '../../ui/domain/types';
+import type { CreateRepoInput, UpdateRepoInput, UpsertProviderCredentialInput } from '../../ui/domain/api';
+import type { BoardSnapshotV1, ProviderCredential, Repo } from '../../ui/domain/types';
 import { DurableObject } from 'cloudflare:workers';
 import { conflict, notFound } from '../http/errors';
 import { createRepoId } from '../shared/ids';
 import type { BoardEvent } from '../shared/events';
 import { stringifyBoardEvent } from '../shared/events';
 import { buildBoardSnapshot, type BoardSyncResponse } from '../shared/state';
+import {
+  buildProviderCredentialId,
+  getRepoIdentityKey,
+  normalizeProviderCredential,
+  normalizeProviderCredentials,
+  normalizeRepo,
+  normalizeRepos
+} from '../../shared/scm';
 
-const STORAGE_KEY = 'board-index-repos';
+const REPOS_STORAGE_KEY = 'board-index-repos';
+const PROVIDER_CREDENTIALS_STORAGE_KEY = 'board-index-provider-credentials';
 
 export class BoardIndexDO extends DurableObject<Env> {
   private repos: Repo[] = [];
+  private providerCredentials: ProviderCredential[] = [];
   private ready: Promise<void>;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     this.ready = this.ctx.blockConcurrencyWhile(async () => {
-      this.repos = (await this.ctx.storage.get<Repo[]>(STORAGE_KEY)) ?? [];
+      this.repos = normalizeRepos(await this.ctx.storage.get<Repo[]>(REPOS_STORAGE_KEY));
+      this.providerCredentials = normalizeProviderCredentials(await this.ctx.storage.get<ProviderCredential[]>(PROVIDER_CREDENTIALS_STORAGE_KEY));
     });
   }
 
@@ -36,6 +47,11 @@ export class BoardIndexDO extends DurableObject<Env> {
     return [...this.repos].sort((left, right) => left.slug.localeCompare(right.slug));
   }
 
+  async listProviderCredentials() {
+    await this.ready;
+    return [...this.providerCredentials].sort((left, right) => left.credentialId.localeCompare(right.credentialId));
+  }
+
   async getRepo(repoId: string) {
     await this.ready;
     const repo = this.repos.find((candidate) => candidate.repoId === repoId);
@@ -47,24 +63,24 @@ export class BoardIndexDO extends DurableObject<Env> {
 
   async createRepo(input: CreateRepoInput) {
     await this.ready;
-    if (this.repos.some((repo) => repo.slug === input.slug)) {
-      throw conflict(`Repo ${input.slug} already exists.`);
-    }
-
     const now = new Date().toISOString();
-    const repo: Repo = {
-      repoId: createRepoId(input.slug),
-      slug: input.slug,
+    const repo = normalizeRepo({
+      repoId: createRepoId(input.projectPath ?? input.slug ?? ''),
+      slug: input.slug ?? input.projectPath ?? '',
+      scmProvider: input.scmProvider,
+      scmBaseUrl: input.scmBaseUrl,
+      projectPath: input.projectPath ?? input.slug,
       defaultBranch: input.defaultBranch ?? 'main',
       baselineUrl: input.baselineUrl,
       enabled: input.enabled ?? true,
-      githubAuthMode: 'kv_pat',
-      previewProvider: 'cloudflare',
       previewCheckName: input.previewCheckName,
       codexAuthBundleR2Key: input.codexAuthBundleR2Key,
       createdAt: now,
       updatedAt: now
-    };
+    });
+    if (this.repos.some((candidate) => getRepoIdentityKey(candidate) === getRepoIdentityKey(repo))) {
+      throw conflict(`Repo ${repo.projectPath} already exists.`);
+    }
 
     this.repos = [repo, ...this.repos];
     await this.persist();
@@ -75,15 +91,55 @@ export class BoardIndexDO extends DurableObject<Env> {
   async updateRepo(repoId: string, patch: UpdateRepoInput) {
     await this.ready;
     const existing = await this.getRepo(repoId);
-    if (patch.slug && patch.slug !== existing.slug && this.repos.some((repo) => repo.slug === patch.slug)) {
-      throw conflict(`Repo ${patch.slug} already exists.`);
+    const updated = normalizeRepo({
+      ...existing,
+      ...patch,
+      slug: patch.slug ?? patch.projectPath ?? existing.slug,
+      projectPath: patch.projectPath ?? patch.slug ?? existing.projectPath,
+      updatedAt: new Date().toISOString()
+    });
+    if (
+      this.repos.some((repo) => repo.repoId !== repoId && getRepoIdentityKey(repo) === getRepoIdentityKey(updated))
+    ) {
+      throw conflict(`Repo ${updated.projectPath} already exists.`);
     }
-
-    const updated: Repo = { ...existing, ...patch, updatedAt: new Date().toISOString() };
     this.repos = this.repos.map((repo) => (repo.repoId === repoId ? updated : repo));
     await this.persist();
     await this.broadcast({ type: 'repo.updated', payload: { repo: updated } }, repoId);
     return updated;
+  }
+
+  async upsertProviderCredential(input: UpsertProviderCredentialInput) {
+    await this.ready;
+    const now = new Date().toISOString();
+    const credentialId = buildProviderCredentialId(input.scmProvider, input.scmBaseUrl ?? '');
+    const existing = this.providerCredentials.find((candidate) => candidate.credentialId === credentialId);
+    const credential = normalizeProviderCredential({
+      credentialId,
+      scmProvider: input.scmProvider,
+      scmBaseUrl: input.scmBaseUrl ?? '',
+      host: '',
+      authType: input.authType ?? 'kv_pat',
+      secretRef: input.secretRef,
+      label: input.label,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now
+    });
+
+    this.providerCredentials = [
+      credential,
+      ...this.providerCredentials.filter((candidate) => candidate.credentialId !== credential.credentialId)
+    ];
+    await this.persist();
+    await this.broadcast({ type: 'provider_credential.updated', payload: { credential } });
+    return credential;
+  }
+
+  async findProviderCredentialForRepo(repoId: string) {
+    await this.ready;
+    const repo = await this.getRepo(repoId);
+    const credentialId = buildProviderCredentialId(repo.scmProvider ?? 'github', repo.scmBaseUrl ?? '');
+    return this.providerCredentials.find((candidate) => candidate.credentialId === credentialId);
   }
 
   async getBoardSync(repoId?: string): Promise<BoardSyncResponse> {
@@ -99,6 +155,7 @@ export class BoardIndexDO extends DurableObject<Env> {
 
     return {
       repos,
+      providerCredentials: await this.listProviderCredentials(),
       tasks: tasks.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)),
       runs: runs.sort((left, right) => right.startedAt.localeCompare(left.startedAt)),
       logs: logs.sort((left, right) => left.createdAt.localeCompare(right.createdAt)),
@@ -114,7 +171,8 @@ export class BoardIndexDO extends DurableObject<Env> {
   async importBoard(snapshot: BoardSnapshotV1) {
     await this.ready;
     const previousRepoIds = new Set(this.repos.map((repo) => repo.repoId));
-    this.repos = snapshot.repos.map((repo) => ({ ...repo }));
+    this.repos = normalizeRepos(snapshot.repos);
+    this.providerCredentials = normalizeProviderCredentials(snapshot.providerCredentials);
     await this.persist();
 
     const nextRepoIds = new Set(snapshot.repos.map((repo) => repo.repoId));
@@ -192,6 +250,7 @@ export class BoardIndexDO extends DurableObject<Env> {
   }
 
   private async persist() {
-    await this.ctx.storage.put(STORAGE_KEY, this.repos);
+    await this.ctx.storage.put(REPOS_STORAGE_KEY, this.repos);
+    await this.ctx.storage.put(PROVIDER_CREDENTIALS_STORAGE_KEY, this.providerCredentials);
   }
 }

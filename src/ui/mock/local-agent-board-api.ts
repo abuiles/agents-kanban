@@ -1,9 +1,10 @@
-import type { AgentBoardApi, CreateRepoInput, CreateTaskInput, RequestRunChangesInput, UpdateRepoInput, UpdateTaskInput } from '../domain/api';
-import type { AgentRun, Repo, RunCommand, RunEvent, RunLogEntry, Task, TaskDetail, TerminalBootstrap } from '../domain/types';
+import type { AgentBoardApi, CreateRepoInput, CreateTaskInput, RequestRunChangesInput, UpdateRepoInput, UpdateTaskInput, UpsertProviderCredentialInput } from '../domain/api';
+import type { AgentRun, ProviderCredential, Repo, RunCommand, RunEvent, RunLogEntry, Task, TaskDetail, TerminalBootstrap } from '../domain/types';
 import { getTaskDetail, getTasksForRepo } from '../domain/selectors';
 import { LocalBoardStore } from '../store/local-board-store';
 import { parseImportedBoard } from '../store/import-export';
 import { RunSimulator } from './run-simulator';
+import { buildProviderCredentialId, getScmHost, normalizeRepo, normalizeScmBaseUrl } from '../../shared/scm';
 
 function nowIso() {
   return new Date().toISOString();
@@ -31,15 +32,18 @@ export class LocalAgentBoardApi implements AgentBoardApi {
 
   async createRepo(input: CreateRepoInput): Promise<Repo> {
     const timestamp = nowIso();
-    const repo: Repo = {
+    const repo = normalizeRepo({
       repoId: randomId('repo'),
-      slug: input.slug,
+      slug: input.slug ?? input.projectPath ?? '',
+      scmProvider: input.scmProvider,
+      scmBaseUrl: input.scmBaseUrl,
+      projectPath: input.projectPath ?? input.slug,
       defaultBranch: input.defaultBranch ?? 'main',
       baselineUrl: input.baselineUrl,
       enabled: input.enabled ?? true,
       createdAt: timestamp,
       updatedAt: timestamp
-    };
+    });
 
     this.store.update((snapshot) => ({ ...snapshot, repos: [repo, ...snapshot.repos] }));
     return repo;
@@ -58,7 +62,13 @@ export class LocalAgentBoardApi implements AgentBoardApi {
           return repo;
         }
 
-        updatedRepo = { ...repo, ...patch, updatedAt: nowIso() };
+        updatedRepo = normalizeRepo({
+          ...repo,
+          ...patch,
+          slug: patch.slug ?? patch.projectPath ?? repo.slug,
+          projectPath: patch.projectPath ?? patch.slug ?? repo.projectPath,
+          updatedAt: nowIso()
+        });
         return updatedRepo;
       })
     }));
@@ -68,6 +78,42 @@ export class LocalAgentBoardApi implements AgentBoardApi {
     }
 
     return updatedRepo;
+  }
+
+  async listProviderCredentials(): Promise<ProviderCredential[]> {
+    return this.store.getSnapshot().providerCredentials;
+  }
+
+  async upsertProviderCredential(input: UpsertProviderCredentialInput): Promise<ProviderCredential> {
+    const timestamp = nowIso();
+    const scmBaseUrl = normalizeScmBaseUrl(input.scmBaseUrl, input.scmProvider);
+    const credential: ProviderCredential = {
+      credentialId: buildProviderCredentialId(input.scmProvider, scmBaseUrl),
+      scmProvider: input.scmProvider,
+      scmBaseUrl,
+      host: getScmHost(scmBaseUrl),
+      authType: input.authType ?? 'kv_pat',
+      secretRef: input.secretRef,
+      label: input.label,
+      createdAt: timestamp,
+      updatedAt: timestamp
+    };
+
+    this.store.update((snapshot) => {
+      const existing = snapshot.providerCredentials.find((entry) => entry.credentialId === credential.credentialId);
+      const next = existing
+        ? { ...existing, ...credential, createdAt: existing.createdAt, updatedAt: timestamp }
+        : credential;
+      return {
+        ...snapshot,
+        providerCredentials: [
+          next,
+          ...snapshot.providerCredentials.filter((entry) => entry.credentialId !== credential.credentialId)
+        ]
+      };
+    });
+
+    return this.store.getSnapshot().providerCredentials.find((entry) => entry.credentialId === credential.credentialId)!;
   }
 
   async createTask(input: CreateTaskInput): Promise<Task> {

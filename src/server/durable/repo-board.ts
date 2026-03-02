@@ -197,9 +197,15 @@ export class RepoBoardDO extends DurableObject<Env> {
       ...this.state,
       tasks: this.state.tasks.filter((candidate) => candidate.taskId !== taskId),
       runs: this.state.runs.filter((run) => run.taskId !== taskId),
-      logs: this.state.logs.filter((log) => log.taskId !== taskId),
+      logs: this.state.logs.filter((log) => {
+        const run = this.state.runs.find((candidate) => candidate.runId === log.runId);
+        return run?.taskId !== taskId;
+      }),
       events: this.state.events.filter((event) => event.taskId !== taskId),
-      commands: this.state.commands.filter((command) => command.taskId !== taskId)
+      commands: this.state.commands.filter((command) => {
+        const run = this.state.runs.find((candidate) => candidate.runId === command.runId);
+        return run?.taskId !== taskId;
+      })
     };
     await this.persist();
     await this.emit({ type: 'task.deleted', payload: { taskId } }, task.repoId);
@@ -779,6 +785,7 @@ export class RepoBoardDO extends DurableObject<Env> {
     const repos = await Promise.all(repoIds.map((repoId) => this.getRepo(repoId)));
     return {
       repos,
+      providerCredentials: [],
       tasks,
       runs,
       logs: [...this.state.logs],

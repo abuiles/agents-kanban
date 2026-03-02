@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseCreateTaskInput, parseUpdateTaskInput } from './validation';
+import { parseCreateRepoInput, parseCreateTaskInput, parseUpdateRepoInput, parseUpdateTaskInput, parseUpsertProviderCredentialInput } from './validation';
 
 function createTaskPayload(overrides: Record<string, unknown> = {}) {
   return {
@@ -96,5 +96,71 @@ describe('task validation', () => {
         }
       })
     ).toThrow('Invalid branchSource.upstreamPrNumber.');
+  });
+});
+
+describe('repo validation', () => {
+  it('parses legacy GitHub repo payloads with slug fallback', () => {
+    const parsed = parseCreateRepoInput({
+      slug: 'abuiles/minions',
+      baselineUrl: 'https://minions.example.com'
+    });
+
+    expect(parsed.slug).toBe('abuiles/minions');
+    expect(parsed.projectPath).toBe('abuiles/minions');
+    expect(parsed.scmProvider).toBeUndefined();
+    expect(parsed.scmBaseUrl).toBeUndefined();
+  });
+
+  it('parses provider-neutral repo payloads', () => {
+    const parsed = parseCreateRepoInput({
+      scmProvider: 'gitlab',
+      scmBaseUrl: 'https://gitlab.example.com/',
+      projectPath: 'group/subgroup/project',
+      baselineUrl: 'https://preview.example.com',
+      defaultBranch: 'main'
+    });
+
+    expect(parsed.slug).toBe('group/subgroup/project');
+    expect(parsed.projectPath).toBe('group/subgroup/project');
+    expect(parsed.scmProvider).toBe('gitlab');
+    expect(parsed.scmBaseUrl).toBe('https://gitlab.example.com/');
+  });
+
+  it('mirrors slug and projectPath in repo patches', () => {
+    const parsed = parseUpdateRepoInput({
+      projectPath: 'acme/platform'
+    });
+
+    expect(parsed.projectPath).toBe('acme/platform');
+    expect(parsed.slug).toBe('acme/platform');
+  });
+});
+
+describe('provider credential validation', () => {
+  it('parses provider credential payloads', () => {
+    const parsed = parseUpsertProviderCredentialInput({
+      scmProvider: 'github',
+      scmBaseUrl: 'https://github.example.com',
+      secretRef: {
+        storage: 'kv',
+        key: 'github_pat_enterprise'
+      },
+      label: 'GitHub Enterprise'
+    });
+
+    expect(parsed.scmProvider).toBe('github');
+    expect(parsed.secretRef.storage).toBe('kv');
+    expect(parsed.secretRef.key).toBe('github_pat_enterprise');
+  });
+
+  it('rejects provider credential payloads with raw token fields instead of secret refs', () => {
+    expect(() =>
+      parseUpsertProviderCredentialInput({
+        scmProvider: 'github',
+        token: 'ghp_secret',
+        secretRef: 'github_pat'
+      })
+    ).toThrow('Invalid secretRef.');
   });
 });

@@ -2,7 +2,14 @@ import { getSandbox } from '@cloudflare/sandbox';
 import type { CreateTaskInput } from '../ui/domain/api';
 import { badRequest, notFound } from './http/errors';
 import { handleError, json } from './http/response';
-import { parseCreateRepoInput, parseCreateTaskInput, parseUpdateRepoInput, parseUpdateTaskInput, readJson } from './http/validation';
+import {
+  parseCreateRepoInput,
+  parseCreateTaskInput,
+  parseUpdateRepoInput,
+  parseUpdateTaskInput,
+  parseUpsertProviderCredentialInput,
+  readJson
+} from './http/validation';
 import { extractRepoIdFromRunId, extractRepoIdFromTaskId } from './shared/ids';
 import { parseBoardSnapshot } from '../ui/store/board-snapshot';
 import { scheduleRunJob } from './run-orchestrator';
@@ -34,6 +41,20 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
     const repoMatch = url.pathname.match(/^\/api\/repos\/([^/]+)$/);
     if (repoMatch && request.method === 'PATCH') {
       return json(await board.updateRepo(decodeURIComponent(repoMatch[1]), parseUpdateRepoInput(await readJson(request))));
+    }
+
+    if (url.pathname === '/api/scm/credentials' && request.method === 'GET') {
+      return json(await board.listProviderCredentials());
+    }
+
+    if (url.pathname === '/api/scm/credentials' && request.method === 'POST') {
+      return json(await board.upsertProviderCredential(parseUpsertProviderCredentialInput(await readJson(request))), { status: 201 });
+    }
+
+    const repoCredentialMatch = url.pathname.match(/^\/api\/repos\/([^/]+)\/scm-credential$/);
+    if (repoCredentialMatch && request.method === 'GET') {
+      const credential = await board.findProviderCredentialForRepo(decodeURIComponent(repoCredentialMatch[1]));
+      return json(credential ?? null);
     }
 
     if (url.pathname === '/api/tasks' && request.method === 'GET') {

@@ -13,6 +13,7 @@ import {
   getCodexCapacityDecision,
   type CodexRateLimitsResponse
 } from './codex-rate-limit';
+import { getRepoProjectPath } from '../shared/scm';
 
 type WorkflowBinding<T> = {
   create(options?: { id?: string; params?: T; retention?: { successRetention?: string | number; errorRetention?: string | number } }): Promise<{ id: string }>;
@@ -53,6 +54,7 @@ export async function executeRunJob(env: Env, params: RunJobParams, sleepFn: Sle
     return;
   }
   const repo = await board.getRepo(params.repoId);
+  const projectPath = getRepoProjectPath(repo);
   const codexModel = detail.task.uiMeta?.codexModel ?? 'gpt-5.1-codex-mini';
   const codexReasoningEffort = detail.task.uiMeta?.codexReasoningEffort ?? 'medium';
 
@@ -67,7 +69,7 @@ export async function executeRunJob(env: Env, params: RunJobParams, sleepFn: Sle
   const pat = await getGithubPat(env as Stage3Env);
   const sandbox = getSandbox(env.Sandbox, params.runId);
 
-  await repoBoard.appendRunLogs(params.runId, [buildRunLog(params.runId, `Starting sandbox run for ${repo.slug}.`, 'bootstrap')]);
+  await repoBoard.appendRunLogs(params.runId, [buildRunLog(params.runId, `Starting sandbox run for ${projectPath}.`, 'bootstrap')]);
   await repoBoard.transitionRun(params.runId, { status: 'BOOTSTRAPPING', sandboxId: params.runId, appendTimelineNote: 'Sandbox bootstrapped.' });
 
   try {
@@ -75,7 +77,7 @@ export async function executeRunJob(env: Env, params: RunJobParams, sleepFn: Sle
     await repoBoard.appendRunLogs(params.runId, [buildRunLog(params.runId, `GitHub PAT suffix: ${pat.slice(-4)}`, 'bootstrap')]);
     await restoreCodexAuth(env as Stage3Env, sandbox, repo, params.runId, repoBoard);
     await logCodexAuthDiagnostics(sandbox, params.runId, repoBoard);
-    await sandbox.gitCheckout(buildGithubCloneUrl(repo.slug, pat), {
+    await sandbox.gitCheckout(buildGithubCloneUrl(projectPath, pat), {
       branch: repo.defaultBranch,
       targetDir: '/workspace/repo'
     });
@@ -377,7 +379,7 @@ async function discoverPreviewAndRunEvidence(
 }
 
 async function lookupPreviewUrl(repo: Repo, headSha: string, pat: string, previewCheckName?: string) {
-  const response = await githubRequest(repo.slug, `/commits/${headSha}/check-runs`, pat);
+  const response = await githubRequest(getRepoProjectPath(repo), `/commits/${headSha}/check-runs`, pat);
   const payload = await response.json() as {
     check_runs?: Array<{
       name?: string;
@@ -414,7 +416,7 @@ function formatPreviewDiscoveryLog(discovery: Awaited<ReturnType<typeof lookupPr
 }
 
 async function createPullRequest(repo: Repo, task: Task, run: Awaited<ReturnType<RepoBoardDO['getRun']>>, pat: string) {
-  const response = await githubRequest(repo.slug, '/pulls', pat, {
+  const response = await githubRequest(getRepoProjectPath(repo), '/pulls', pat, {
     method: 'POST',
     body: JSON.stringify({
       title: task.title,
@@ -445,14 +447,14 @@ async function upsertRunComment(repo: Repo, task: Task, run: Awaited<ReturnType<
     run.artifactManifest?.video ? `Video: ${run.artifactManifest.video.key}` : undefined
   ].filter(Boolean).join('\n');
 
-  const commentsResponse = await githubRequest(repo.slug, `/issues/${run.prNumber}/comments`, pat);
+  const commentsResponse = await githubRequest(getRepoProjectPath(repo), `/issues/${run.prNumber}/comments`, pat);
   const comments = await commentsResponse.json() as Array<{ id: number; body?: string }>;
   const existing = comments.find((comment) => comment.body?.includes(marker));
   if (existing) {
-    await githubRequest(repo.slug, `/issues/comments/${existing.id}`, pat, { method: 'PATCH', body: JSON.stringify({ body }) });
+    await githubRequest(getRepoProjectPath(repo), `/issues/comments/${existing.id}`, pat, { method: 'PATCH', body: JSON.stringify({ body }) });
     return;
   }
-  await githubRequest(repo.slug, `/issues/${run.prNumber}/comments`, pat, { method: 'POST', body: JSON.stringify({ body }) });
+  await githubRequest(getRepoProjectPath(repo), `/issues/${run.prNumber}/comments`, pat, { method: 'POST', body: JSON.stringify({ body }) });
 }
 
 async function githubRequest(slug: string, path: string, pat: string, init?: RequestInit) {
@@ -1242,7 +1244,7 @@ function buildGithubCloneUrl(slug: string, pat: string) {
 
 function buildCodexPrompt(task: Task, repo: Repo, run: Awaited<ReturnType<RepoBoardDO['getRun']>>) {
   return [
-    `You are working on the Git repository for ${repo.slug}.`,
+    `You are working on the Git repository for ${getRepoProjectPath(repo)}.`,
     '',
     `Task: ${task.title}`,
     task.description ? `Description: ${task.description}` : undefined,
@@ -1338,7 +1340,7 @@ async function prepareRunBranchFromTaskSource(
     return;
   }
 
-  const normalized = normalizeTaskSourceRef(explicitSourceRef, repo.slug);
+  const normalized = normalizeTaskSourceRef(explicitSourceRef, getRepoProjectPath(repo));
   await repoBoard.appendRunLogs(runId, [
     buildRunLog(runId, `Preparing run branch ${run.branchName} from explicit source ref ${normalized.label}.`, 'bootstrap')
   ]);

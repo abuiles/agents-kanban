@@ -1,4 +1,4 @@
-import type { AgentRun, BoardSnapshotV1, Repo, RunCommand, RunEvent, RunLogEntry, Task } from '../../ui/domain/types';
+import type { AgentRun, BoardSnapshotV1, ProviderCredential, Repo, RunCommand, RunEvent, RunLogEntry, Task } from '../../ui/domain/types';
 
 export type RepoBoardState = {
   tasks: Task[];
@@ -10,6 +10,7 @@ export type RepoBoardState = {
 
 export type BoardSyncResponse = {
   repos: Repo[];
+  providerCredentials: ProviderCredential[];
   tasks: Task[];
   runs: AgentRun[];
   logs: RunLogEntry[];
@@ -29,6 +30,7 @@ export function buildBoardSnapshot(sync: BoardSyncResponse): BoardSnapshotV1 {
   return {
     version: 1,
     repos: sync.repos,
+    providerCredentials: sync.providerCredentials,
     tasks: sync.tasks,
     runs: sync.runs,
     logs: sync.logs,

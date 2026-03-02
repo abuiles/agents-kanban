@@ -1,5 +1,5 @@
-import type { AgentBoardApi, CreateRepoInput, CreateTaskInput, RequestRunChangesInput, UpdateRepoInput, UpdateTaskInput } from '../domain/api';
-import type { AgentRun, BoardSnapshotV1, OperatorSession, Repo, RunCommand, RunEvent, RunLogEntry, Task, TaskDetail, TerminalBootstrap } from '../domain/types';
+import type { AgentBoardApi, CreateRepoInput, CreateTaskInput, RequestRunChangesInput, UpdateRepoInput, UpdateTaskInput, UpsertProviderCredentialInput } from '../domain/api';
+import type { AgentRun, BoardSnapshotV1, OperatorSession, ProviderCredential, Repo, RunCommand, RunEvent, RunLogEntry, Task, TaskDetail, TerminalBootstrap } from '../domain/types';
 import { getTaskDetail } from '../domain/selectors';
 import { parseBoardSnapshot } from '../store/board-snapshot';
 import { UiPreferencesStore } from '../store/ui-preferences-store';
@@ -7,6 +7,7 @@ import { UiPreferencesStore } from '../store/ui-preferences-store';
 const EMPTY_SNAPSHOT: BoardSnapshotV1 = {
   version: 1,
   repos: [],
+  providerCredentials: [],
   tasks: [],
   runs: [],
   logs: [],
@@ -18,12 +19,14 @@ const EMPTY_SNAPSHOT: BoardSnapshotV1 = {
   }
 };
 
-type BoardSyncResponse = Pick<BoardSnapshotV1, 'repos' | 'tasks' | 'runs' | 'logs' | 'events' | 'commands'>;
+type BoardSyncResponse = Pick<BoardSnapshotV1, 'repos' | 'providerCredentials' | 'tasks' | 'runs' | 'logs' | 'events' | 'commands'>;
 
 type BoardEvent =
   | { type: 'board.snapshot'; payload: BoardSyncResponse }
   | { type: 'repo.updated'; payload: { repo: Repo } }
+  | { type: 'provider_credential.updated'; payload: { credential: ProviderCredential } }
   | { type: 'task.updated'; payload: { task: Task } }
+  | { type: 'task.deleted'; payload: { taskId: string } }
   | { type: 'run.updated'; payload: { run: AgentRun } }
   | { type: 'run.logs_appended'; payload: { runId: string; logs: RunLogEntry[] } }
   | { type: 'run.events_appended'; payload: { runId: string; events: RunEvent[] } }
@@ -72,6 +75,16 @@ export class HttpAgentBoardApi implements AgentBoardApi {
     const repo = await this.request<Repo>(`/api/repos/${encodeURIComponent(repoId)}`, { method: 'PATCH', body: JSON.stringify(patch) });
     await this.refresh();
     return repo;
+  }
+
+  async listProviderCredentials() {
+    return this.snapshot.providerCredentials;
+  }
+
+  async upsertProviderCredential(input: UpsertProviderCredentialInput) {
+    const credential = await this.request<ProviderCredential>('/api/scm/credentials', { method: 'POST', body: JSON.stringify(input) });
+    await this.refresh();
+    return credential;
   }
 
   async createTask(input: CreateTaskInput) {
@@ -259,8 +272,23 @@ export class HttpAgentBoardApi implements AgentBoardApi {
         });
         this.emit();
         return;
+      case 'provider_credential.updated':
+        this.snapshot = this.composeSnapshot({
+          ...this.snapshot,
+          providerCredentials: upsertById(this.snapshot.providerCredentials, event.payload.credential, 'credentialId')
+        });
+        this.emit();
+        return;
       case 'task.updated':
         this.mergeTask(event.payload.task);
+        return;
+      case 'task.deleted':
+        this.snapshot = this.composeSnapshot({
+          ...this.snapshot,
+          tasks: this.snapshot.tasks.filter((task) => task.taskId !== event.payload.taskId),
+          runs: this.snapshot.runs.filter((run) => run.taskId !== event.payload.taskId)
+        });
+        this.emit();
         return;
       case 'run.updated':
         this.mergeRun(event.payload.run);

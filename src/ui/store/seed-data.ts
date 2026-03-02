@@ -220,6 +220,7 @@ export function createSeedSnapshot(): BoardSnapshotV1 {
   return {
     version: 1,
     repos,
+    providerCredentials: [],
     tasks,
     runs,
     logs,

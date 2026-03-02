@@ -10,6 +10,7 @@ export function isBoardSnapshot(value: unknown): value is BoardSnapshotV1 {
   const snapshot = value as Partial<BoardSnapshotV1>;
   return snapshot.version === 1
     && Array.isArray(snapshot.repos)
+    && (typeof snapshot.providerCredentials === 'undefined' || Array.isArray(snapshot.providerCredentials))
     && Array.isArray(snapshot.tasks)
     && Array.isArray(snapshot.runs)
     && Array.isArray(snapshot.logs)
@@ -23,5 +24,8 @@ export function parseBoardSnapshot(serialized: string): BoardSnapshotV1 {
     throw new Error('Invalid AgentBoard snapshot.');
   }
 
-  return parsed;
+  return {
+    ...parsed,
+    providerCredentials: parsed.providerCredentials ?? []
+  };
 }

@@ -1,8 +1,11 @@
-import type { CreateRepoInput, CreateTaskInput, UpdateRepoInput, UpdateTaskInput } from '../../ui/domain/api';
+import type { CreateRepoInput, CreateTaskInput, UpdateRepoInput, UpdateTaskInput, UpsertProviderCredentialInput } from '../../ui/domain/api';
 import { badRequest } from './errors';
 
 const CODEX_MODELS = new Set(['gpt-5.1-codex-mini', 'gpt-5.3-codex', 'gpt-5.3-codex-spark'] as const);
 const CODEX_REASONING_EFFORTS = new Set(['low', 'medium', 'high'] as const);
+const SCM_PROVIDERS = new Set(['github', 'gitlab'] as const);
+const PROVIDER_CREDENTIAL_AUTH_TYPES = new Set(['kv_pat'] as const);
+const SECRET_REF_STORAGES = new Set(['kv'] as const);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -27,6 +30,17 @@ function readString(value: unknown, field: string, required = true): string | un
 function readTrimmedString(value: unknown, field: string, required = true): string | undefined {
   const result = readString(value, field, required);
   return typeof result === 'string' ? result.trim() : result;
+}
+
+function readNonEmptyTrimmedString(value: unknown, field: string, required = true): string | undefined {
+  const result = readTrimmedString(value, field, required);
+  if (typeof result === 'undefined') {
+    return undefined;
+  }
+  if (!result) {
+    throw badRequest(`Invalid ${field}.`);
+  }
+  return result;
 }
 
 function readBoolean(value: unknown, field: string, required = false): boolean | undefined {
@@ -64,6 +78,24 @@ function readEnumValue<T extends string>(value: unknown, field: string, allowed:
   }
 
   throw badRequest(`Invalid ${field}.`);
+}
+
+function readUrlString(value: unknown, field: string, required = true): string | undefined {
+  const result = readNonEmptyTrimmedString(value, field, required);
+  if (typeof result === 'undefined') {
+    return undefined;
+  }
+
+  try {
+    const url = new URL(result);
+    if (!url.protocol || !url.host) {
+      throw new Error('invalid');
+    }
+  } catch {
+    throw badRequest(`Invalid ${field}.`);
+  }
+
+  return result;
 }
 
 function readContext(value: unknown, required = true): CreateTaskInput['context'] | undefined {
@@ -218,10 +250,20 @@ export function parseCreateRepoInput(body: unknown): CreateRepoInput {
     throw badRequest('Invalid repo payload.');
   }
 
+  const slug = readNonEmptyTrimmedString(body.slug, 'slug', false);
+  const projectPath = readNonEmptyTrimmedString(body.projectPath, 'projectPath', false);
+  const resolvedProjectPath = projectPath ?? slug;
+  if (!resolvedProjectPath) {
+    throw badRequest('Invalid projectPath.');
+  }
+
   return {
-    slug: readTrimmedString(body.slug, 'slug')!,
+    slug: slug ?? resolvedProjectPath,
+    scmProvider: readEnumValue(body.scmProvider, 'scmProvider', SCM_PROVIDERS, false),
+    scmBaseUrl: readUrlString(body.scmBaseUrl, 'scmBaseUrl', false),
+    projectPath: resolvedProjectPath,
     defaultBranch: readTrimmedString(body.defaultBranch, 'defaultBranch', false),
-    baselineUrl: readTrimmedString(body.baselineUrl, 'baselineUrl')!,
+    baselineUrl: readUrlString(body.baselineUrl, 'baselineUrl')!,
     enabled: readBoolean(body.enabled, 'enabled', false),
     previewCheckName: readTrimmedString(body.previewCheckName, 'previewCheckName', false),
     codexAuthBundleR2Key: readTrimmedString(body.codexAuthBundleR2Key, 'codexAuthBundleR2Key', false)
@@ -234,13 +276,40 @@ export function parseUpdateRepoInput(body: unknown): UpdateRepoInput {
   }
 
   const patch: UpdateRepoInput = {};
-  if (hasOwn(body, 'slug')) patch.slug = readTrimmedString(body.slug, 'slug', false);
+  if (hasOwn(body, 'slug')) patch.slug = readNonEmptyTrimmedString(body.slug, 'slug', false);
+  if (hasOwn(body, 'scmProvider')) patch.scmProvider = readEnumValue(body.scmProvider, 'scmProvider', SCM_PROVIDERS, false);
+  if (hasOwn(body, 'scmBaseUrl')) patch.scmBaseUrl = readUrlString(body.scmBaseUrl, 'scmBaseUrl', false);
+  if (hasOwn(body, 'projectPath')) patch.projectPath = readNonEmptyTrimmedString(body.projectPath, 'projectPath', false);
   if (hasOwn(body, 'defaultBranch')) patch.defaultBranch = readTrimmedString(body.defaultBranch, 'defaultBranch', false);
-  if (hasOwn(body, 'baselineUrl')) patch.baselineUrl = readTrimmedString(body.baselineUrl, 'baselineUrl', false);
+  if (hasOwn(body, 'baselineUrl')) patch.baselineUrl = readUrlString(body.baselineUrl, 'baselineUrl', false);
   if (hasOwn(body, 'enabled')) patch.enabled = readBoolean(body.enabled, 'enabled', false);
   if (hasOwn(body, 'previewCheckName')) patch.previewCheckName = readTrimmedString(body.previewCheckName, 'previewCheckName', false);
   if (hasOwn(body, 'codexAuthBundleR2Key')) patch.codexAuthBundleR2Key = readTrimmedString(body.codexAuthBundleR2Key, 'codexAuthBundleR2Key', false);
+  if (typeof patch.projectPath !== 'undefined' && typeof patch.slug === 'undefined') patch.slug = patch.projectPath;
+  if (typeof patch.slug !== 'undefined' && typeof patch.projectPath === 'undefined') patch.projectPath = patch.slug;
   return patch;
+}
+
+export function parseUpsertProviderCredentialInput(body: unknown): UpsertProviderCredentialInput {
+  if (!isRecord(body)) {
+    throw badRequest('Invalid provider credential payload.');
+  }
+
+  const secretRefValue = body.secretRef;
+  if (!isRecord(secretRefValue)) {
+    throw badRequest('Invalid secretRef.');
+  }
+
+  return {
+    scmProvider: readEnumValue(body.scmProvider, 'scmProvider', SCM_PROVIDERS)!,
+    scmBaseUrl: readUrlString(body.scmBaseUrl, 'scmBaseUrl', false),
+    authType: readEnumValue(body.authType, 'authType', PROVIDER_CREDENTIAL_AUTH_TYPES, false),
+    secretRef: {
+      storage: readEnumValue(secretRefValue.storage, 'secretRef.storage', SECRET_REF_STORAGES)!,
+      key: readNonEmptyTrimmedString(secretRefValue.key, 'secretRef.key')!
+    },
+    label: readTrimmedString(body.label, 'label', false)
+  };
 }
 
 export function parseCreateTaskInput(body: unknown): CreateTaskInput {
