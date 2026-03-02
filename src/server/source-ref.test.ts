@@ -21,6 +21,15 @@ describe('source-ref', () => {
     ).toBe('pull/4/head');
   });
 
+  it('does not infer a fake branch from generic "source" wording', () => {
+    expect(
+      resolveTaskSourceRef({
+        title: 'S31-04 Source resolution precedence',
+        taskPrompt: 'Implement deterministic source resolution for run start.'
+      })
+    ).toBeUndefined();
+  });
+
   it('normalizes GitHub PR URLs into fetch specs', () => {
     expect(normalizeTaskSourceRef('https://github.com/abuiles/minions-demo/pull/4', 'abuiles/minions-demo')).toEqual({
       fetchSpec: 'pull/4/head',

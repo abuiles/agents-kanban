@@ -25,6 +25,12 @@ import { resolveRunSource } from '../shared/run-source-resolution';
 
 const STORAGE_KEY = 'repo-board-state';
 const LOCAL_JOBS_KEY = 'repo-board-local-jobs';
+const MAX_LOG_ENTRIES = 300;
+const MAX_EVENT_ENTRIES = 600;
+const MAX_COMMAND_ENTRIES = 500;
+const MAX_LOG_MESSAGE_CHARS = 1000;
+const MAX_EVENT_MESSAGE_CHARS = 600;
+const MAX_COMMAND_PREVIEW_CHARS = 1000;
 
 type RepoScopedEvent = BoardEvent & { repoId?: string };
 type LocalJobs = Record<string, 'full_run' | 'evidence_only' | 'preview_only'>;
@@ -179,7 +185,7 @@ export class RepoBoardDO extends DurableObject<Env> {
     return finalTask;
   }
 
-  async startRun(taskId: string): Promise<AgentRun> {
+  async startRun(taskId: string, options?: { forceNew?: boolean; baseRunId?: string }): Promise<AgentRun> {
     await this.ready;
     const task = this.state.tasks.find((candidate) => candidate.taskId === taskId);
     if (!task) {
@@ -187,7 +193,7 @@ export class RepoBoardDO extends DurableObject<Env> {
     }
 
     const existing = this.state.runs.find((run) => run.taskId === taskId && !isTerminalRunStatus(run.status));
-    if (existing) {
+    if (existing && !options?.forceNew) {
       return existing;
     }
 
@@ -209,6 +215,7 @@ export class RepoBoardDO extends DurableObject<Env> {
       createRunId(task.repoId),
       now,
       {
+        baseRunId: options?.baseRunId,
         dependencyContext: resolvedSource.dependencyContext
       }
     );
@@ -249,7 +256,7 @@ export class RepoBoardDO extends DurableObject<Env> {
   async retryRun(runId: string) {
     await this.ready;
     const run = await this.getRun(runId);
-    return this.startRun(run.taskId);
+    return this.startRun(run.taskId, { forceNew: true, baseRunId: run.runId });
   }
 
   async requestRunChanges(runId: string, prompt: string) {
@@ -407,6 +414,9 @@ export class RepoBoardDO extends DurableObject<Env> {
   async transitionRun(runId: string, patch: RunTransitionPatch): Promise<AgentRun> {
     await this.ready;
     const run = await this.getRun(runId);
+    if (isTerminalRunStatus(run.status)) {
+      return run;
+    }
     const nowIso = new Date().toISOString();
     const updated = applyRunTransition(run, patch, nowIso);
     const task = this.state.tasks.find((candidate) => candidate.taskId === updated.taskId);
@@ -712,6 +722,7 @@ export class RepoBoardDO extends DurableObject<Env> {
   }
 
   private async persist() {
+    this.state = normalizeRepoBoardState(this.state);
     await this.ctx.storage.put(STORAGE_KEY, this.state);
   }
 
@@ -891,10 +902,28 @@ function normalizeRepoBoardState(state?: Partial<RepoBoardState> | null): RepoBo
   return {
     tasks: state?.tasks ?? [],
     runs: state?.runs ?? [],
-    logs: state?.logs ?? [],
-    events: state?.events ?? [],
-    commands: state?.commands ?? []
+    logs: (state?.logs ?? [])
+      .slice(-MAX_LOG_ENTRIES)
+      .map((log) => ({ ...log, message: trimText(log.message, MAX_LOG_MESSAGE_CHARS) })),
+    events: (state?.events ?? [])
+      .slice(-MAX_EVENT_ENTRIES)
+      .map((event) => ({ ...event, message: trimText(event.message, MAX_EVENT_MESSAGE_CHARS) })),
+    commands: (state?.commands ?? [])
+      .slice(-MAX_COMMAND_ENTRIES)
+      .map((command) => ({
+        ...command,
+        stdoutPreview: trimOptionalText(command.stdoutPreview, MAX_COMMAND_PREVIEW_CHARS),
+        stderrPreview: trimOptionalText(command.stderrPreview, MAX_COMMAND_PREVIEW_CHARS)
+      }))
   };
+}
+
+function trimText(value: string, max: number) {
+  return value.length > max ? `${value.slice(0, max)}\n…[truncated]` : value;
+}
+
+function trimOptionalText(value: string | undefined, max: number) {
+  return typeof value === 'string' ? trimText(value, max) : value;
 }
 
 function cloneTaskDependencies(dependencies: Task['dependencies']) {

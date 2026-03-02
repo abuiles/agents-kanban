@@ -81,7 +81,7 @@ function inferSourceRefFromText(text: string) {
     return commitMatch[1];
   }
 
-  const branchMatch = text.match(/\bbranch(?: named| called|:)?\s+([A-Za-z0-9._/-]+)\b/i);
+  const branchMatch = text.match(/\b(?:from|use|checkout|start from)\s+branch(?: named| called|:)?\s+([A-Za-z0-9._/-]+)\b/i);
   if (branchMatch) {
     return branchMatch[1];
   }

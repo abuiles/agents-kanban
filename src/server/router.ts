@@ -95,6 +95,23 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
       return json(await env.REPO_BOARD.getByName(repoId).getRun(run.runId));
     }
 
+    const runCancelMatch = url.pathname.match(/^\/api\/runs\/([^/]+)\/cancel$/);
+    if (runCancelMatch && request.method === 'POST') {
+      const runId = decodeURIComponent(runCancelMatch[1]);
+      const repoId = await resolveRepoIdForRun(board, runId);
+      const body = await readJson(request).catch(() => ({}));
+      const reason = typeof (body as { reason?: unknown })?.reason === 'string' && (body as { reason?: string }).reason?.trim()
+        ? (body as { reason: string }).reason.trim()
+        : 'Run was cancelled by operator.';
+      return json(await env.REPO_BOARD.getByName(repoId).markRunFailed(runId, {
+        at: new Date().toISOString(),
+        code: 'CANCELLED',
+        message: reason,
+        retryable: true,
+        phase: 'codex'
+      }));
+    }
+
     const requestChangesMatch = url.pathname.match(/^\/api\/runs\/([^/]+)\/request-changes$/);
     if (requestChangesMatch && request.method === 'POST') {
       const runId = decodeURIComponent(requestChangesMatch[1]);

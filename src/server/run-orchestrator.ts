@@ -26,6 +26,7 @@ type Stage3Env = Env & {
 
 type SleepFn = (name: string, duration: number | `${number} ${string}`) => Promise<void>;
 type RunPhase = NonNullable<ReturnType<typeof buildRunLog>['phase']>;
+const CODEX_STREAM_INACTIVITY_TIMEOUT_MS = 120_000;
 
 export async function scheduleRunJob(env: Env, ctx: ExecutionContext, params: RunJobParams) {
   const stage3Env = env as Stage3Env;
@@ -48,6 +49,9 @@ export async function executeRunJob(env: Env, params: RunJobParams, sleepFn: Sle
   const board = env.BOARD_INDEX.getByName('agentboard') as DurableObjectStub<BoardIndexDO>;
   const detail = await repoBoard.getTask(params.taskId);
   const run = await repoBoard.getRun(params.runId);
+  if (run.status === 'FAILED' || run.status === 'DONE') {
+    return;
+  }
   const repo = await board.getRepo(params.repoId);
   const codexModel = detail.task.uiMeta?.codexModel ?? 'gpt-5.1-codex-mini';
   const codexReasoningEffort = detail.task.uiMeta?.codexReasoningEffort ?? 'medium';
@@ -524,12 +528,37 @@ base64 -d /workspace/codex-auth.tgz.b64 > /workspace/codex-auth.tgz
 mkdir -p "$HOME"
 tar -xzf /workspace/codex-auth.tgz -C "$HOME"
 test -d "$HOME/.codex"
-find "$HOME/.codex" -maxdepth 2 -type f | sort
+ls -1 "$HOME/.codex" | sort | head -n 40
 `)}`
   );
   await appendCommandLogs(repoBoard, runId, 'bootstrap', restoreResult.stdout, restoreResult.stderr);
   if (!restoreResult.success) {
     throw new NonRetryableError('Codex auth bundle restore failed.');
+  }
+
+  const mcpConfig = await sandbox.exec(
+    `bash -lc ${shellQuote(`set -euo pipefail
+export HOME="\${HOME:-/root}"
+CONFIG_DIR="$HOME/.codex"
+CONFIG_FILE="$CONFIG_DIR/config.toml"
+mkdir -p "$CONFIG_DIR"
+touch "$CONFIG_FILE"
+
+if ! grep -Fq "[mcp_servers.cloudflare-doc-mcp]" "$CONFIG_FILE"; then
+  printf '\n[mcp_servers.cloudflare-doc-mcp]\nurl="https://docs.mcp.cloudflare.com/mcp"\n' >> "$CONFIG_FILE"
+fi
+
+echo "Codex config file: $CONFIG_FILE"
+if grep -Fq "[mcp_servers.cloudflare-doc-mcp]" "$CONFIG_FILE"; then
+  echo "Cloudflare MCP: configured"
+else
+  echo "Cloudflare MCP: missing"
+fi
+`)}`
+  );
+  await appendCommandLogs(repoBoard, runId, 'bootstrap', mcpConfig.stdout, mcpConfig.stderr);
+  if (!mcpConfig.success || !(mcpConfig.stdout ?? '').includes('Cloudflare MCP: configured')) {
+    throw new NonRetryableError('Cloudflare MCP configuration failed in sandbox.');
   }
 }
 
@@ -564,6 +593,14 @@ if (!fs.existsSync(authPath) || !fs.statSync(authPath).isFile()) {
 
 const data = JSON.parse(fs.readFileSync(authPath, 'utf8'));
 console.log(\`Codex auth file: \${authPath}\`);
+const configPath = path.join(codexDir, 'config.toml');
+console.log(\`Codex config file: \${configPath}\`);
+if (fs.existsSync(configPath) && fs.statSync(configPath).isFile()) {
+  const config = fs.readFileSync(configPath, 'utf8');
+  console.log(\`Cloudflare MCP configured: \${config.includes('[mcp_servers.cloudflare-doc-mcp]') ? 'yes' : 'no'}\`);
+} else {
+  console.log('Cloudflare MCP configured: no');
+}
 const apiKey = typeof data.OPENAI_API_KEY === 'string' && data.OPENAI_API_KEY ? data.OPENAI_API_KEY : null;
 console.log(\`Codex OPENAI_API_KEY suffix: \${apiKey ? apiKey.slice(-4) : 'missing'}\`);
 const accessToken = data.tokens && typeof data.tokens.access_token === 'string' && data.tokens.access_token
@@ -588,6 +625,9 @@ node /workspace/codex-auth-diagnostics.mjs
   }
   if (stdout.includes('Codex auth file: missing')) {
     throw new NonRetryableError('Codex auth file is missing after restore.');
+  }
+  if (stdout.includes('Cloudflare MCP configured: no')) {
+    throw new NonRetryableError('Cloudflare MCP is not configured in sandbox codex config.');
   }
   if (stdout.includes('Codex OPENAI_API_KEY suffix: missing') && stdout.includes('Codex access_token suffix: missing')) {
     throw new NonRetryableError('Codex auth file is present but contains no usable credentials.');
@@ -1031,6 +1071,7 @@ async function runCodexProcessWithLogs(
   let appendQueue = Promise.resolve();
   let latestResumeCommand: string | undefined;
   let latestThreadId: string | undefined;
+  let lastStreamEventAt = Date.now();
 
   await repoBoard.upsertRunCommands(runId, [{
     id: commandId,
@@ -1061,9 +1102,21 @@ async function runCodexProcessWithLogs(
   const process = await sandbox.startProcess(command);
   await repoBoard.transitionRun(runId, { codexProcessId: process.id });
   const stream = await sandbox.streamProcessLogs(process.id);
+  const iterator = parseSSEStream<Record<string, unknown>>(stream)[Symbol.asyncIterator]();
 
   try {
-    for await (const event of parseSSEStream<Record<string, unknown>>(stream)) {
+    while (true) {
+      const next = await Promise.race([
+        iterator.next(),
+        new Promise<IteratorResult<Record<string, unknown>>>((_, reject) =>
+          setTimeout(() => reject(new Error('CODEX_STREAM_IDLE_TIMEOUT')), CODEX_STREAM_INACTIVITY_TIMEOUT_MS)
+        )
+      ]);
+      if (next.done) {
+        break;
+      }
+      const event = next.value;
+      lastStreamEventAt = Date.now();
       const eventType = typeof event.type === 'string' ? event.type : '';
       switch (eventType) {
         case 'stdout': {
@@ -1112,6 +1165,21 @@ async function runCodexProcessWithLogs(
           streamError = typeof event.error === 'string' ? event.error : 'Command stream failed.';
           break;
       }
+    }
+  } catch (error) {
+    if (error instanceof Error && error.message === 'CODEX_STREAM_IDLE_TIMEOUT') {
+      const idleMs = Date.now() - lastStreamEventAt;
+      streamError = `Codex stream inactivity timeout after ${Math.floor(idleMs / 1000)}s without events.`;
+      try {
+        await sandbox.killProcess(process.id);
+      } catch {
+        // best effort
+      }
+      await repoBoard.appendRunLogs(runId, [
+        buildRunLog(runId, `${streamError} Killed Codex process and failing run for retry.`, phase, 'error')
+      ]);
+    } else {
+      throw error;
     }
   } finally {
     enqueueLogs(stdoutBuffer.flush().map((message) => ({ message, level: 'info' as const })));
