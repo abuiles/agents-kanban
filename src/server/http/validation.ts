@@ -129,6 +129,7 @@ export function parseCreateTaskInput(body: unknown): CreateTaskInput {
     repoId: readString(body.repoId, 'repoId')!,
     title: readString(body.title, 'title')!,
     description: readString(body.description, 'description', false),
+    sourceRef: readTrimmedString(body.sourceRef, 'sourceRef', false),
     taskPrompt: readString(body.taskPrompt, 'taskPrompt')!,
     acceptanceCriteria: readStringArray(body.acceptanceCriteria, 'acceptanceCriteria')!,
     context: readContext(body.context)!,
@@ -149,6 +150,7 @@ export function parseUpdateTaskInput(body: unknown): UpdateTaskInput {
   if (hasOwn(body, 'repoId')) patch.repoId = readString(body.repoId, 'repoId', false);
   if (hasOwn(body, 'title')) patch.title = readString(body.title, 'title', false);
   if (hasOwn(body, 'description')) patch.description = readString(body.description, 'description', false);
+  if (hasOwn(body, 'sourceRef')) patch.sourceRef = readTrimmedString(body.sourceRef, 'sourceRef', false);
   if (hasOwn(body, 'taskPrompt')) patch.taskPrompt = readString(body.taskPrompt, 'taskPrompt', false);
   if (hasOwn(body, 'acceptanceCriteria')) patch.acceptanceCriteria = readStringArray(body.acceptanceCriteria, 'acceptanceCriteria', false);
   if (hasOwn(body, 'context')) patch.context = readContext(body.context, false);

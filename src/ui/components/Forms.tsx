@@ -129,23 +129,41 @@ function parseLinks(value: string): TaskContextLink[] {
 export function TaskForm({
   repos,
   onSubmit,
-  initialStatus = 'INBOX'
+  initialStatus = 'INBOX',
+  initialValues,
+  submitLabel = 'Create task'
 }: {
   repos: Repo[];
   onSubmit: (input: CreateTaskInput) => Promise<void> | void;
   initialStatus?: TaskStatus;
+  initialValues?: Partial<CreateTaskInput>;
+  submitLabel?: string;
 }) {
-  const [repoId, setRepoId] = useState(repos[0]?.repoId ?? '');
-  const [title, setTitle] = useState('');
-  const [description, setDescription] = useState('');
-  const [taskPrompt, setTaskPrompt] = useState('');
-  const [criteria, setCriteria] = useState('');
-  const [notes, setNotes] = useState('');
-  const [links, setLinks] = useState('');
-  const [status, setStatus] = useState<TaskStatus>(initialStatus);
-  const [baselineUrlOverride, setBaselineUrlOverride] = useState('');
-  const [codexModel, setCodexModel] = useState<CodexModel>('gpt-5.1-codex-mini');
-  const [codexReasoningEffort, setCodexReasoningEffort] = useState<CodexReasoningEffort>('medium');
+  const initialRepoId = initialValues?.repoId ?? repos[0]?.repoId ?? '';
+  const initialTitle = initialValues?.title ?? '';
+  const initialDescription = initialValues?.description ?? '';
+  const initialSourceRef = initialValues?.sourceRef ?? '';
+  const initialTaskPrompt = initialValues?.taskPrompt ?? '';
+  const initialCriteria = initialValues?.acceptanceCriteria?.join('\n') ?? '';
+  const initialNotes = initialValues?.context?.notes ?? '';
+  const initialLinks = initialValues?.context?.links?.map((link) => `${link.label}|${link.url}`).join('\n') ?? '';
+  const initialTaskStatus = initialValues?.status ?? initialStatus;
+  const initialBaselineUrlOverride = initialValues?.baselineUrlOverride ?? '';
+  const initialCodexModel = initialValues?.codexModel ?? 'gpt-5.1-codex-mini';
+  const initialCodexReasoningEffort = initialValues?.codexReasoningEffort ?? 'medium';
+
+  const [repoId, setRepoId] = useState(initialRepoId);
+  const [title, setTitle] = useState(initialTitle);
+  const [description, setDescription] = useState(initialDescription);
+  const [sourceRef, setSourceRef] = useState(initialSourceRef);
+  const [taskPrompt, setTaskPrompt] = useState(initialTaskPrompt);
+  const [criteria, setCriteria] = useState(initialCriteria);
+  const [notes, setNotes] = useState(initialNotes);
+  const [links, setLinks] = useState(initialLinks);
+  const [status, setStatus] = useState<TaskStatus>(initialTaskStatus);
+  const [baselineUrlOverride, setBaselineUrlOverride] = useState(initialBaselineUrlOverride);
+  const [codexModel, setCodexModel] = useState<CodexModel>(initialCodexModel);
+  const [codexReasoningEffort, setCodexReasoningEffort] = useState<CodexReasoningEffort>(initialCodexReasoningEffort);
 
   useEffect(() => {
     if (!repos.length) {
@@ -157,6 +175,34 @@ export function TaskForm({
       setRepoId(repos[0].repoId);
     }
   }, [repoId, repos]);
+
+  useEffect(() => {
+    setRepoId(initialRepoId);
+    setTitle(initialTitle);
+    setDescription(initialDescription);
+    setSourceRef(initialSourceRef);
+    setTaskPrompt(initialTaskPrompt);
+    setCriteria(initialCriteria);
+    setNotes(initialNotes);
+    setLinks(initialLinks);
+    setStatus(initialTaskStatus);
+    setBaselineUrlOverride(initialBaselineUrlOverride);
+    setCodexModel(initialCodexModel);
+    setCodexReasoningEffort(initialCodexReasoningEffort);
+  }, [
+    initialBaselineUrlOverride,
+    initialCodexModel,
+    initialCodexReasoningEffort,
+    initialCriteria,
+    initialDescription,
+    initialLinks,
+    initialNotes,
+    initialRepoId,
+    initialSourceRef,
+    initialTaskPrompt,
+    initialTaskStatus,
+    initialTitle
+  ]);
 
   return (
     <form
@@ -171,6 +217,7 @@ export function TaskForm({
           repoId,
           title,
           description,
+          sourceRef: sourceRef || undefined,
           taskPrompt,
           acceptanceCriteria: parseCriteria(criteria),
           context: { links: parseLinks(links), notes },
@@ -182,6 +229,7 @@ export function TaskForm({
         });
         setTitle('');
         setDescription('');
+        setSourceRef('');
         setTaskPrompt('');
         setCriteria('');
         setNotes('');
@@ -221,6 +269,15 @@ export function TaskForm({
 
       <FieldShell label="Description">
         <textarea className={textareaClass()} value={description} onChange={(event) => setDescription(event.target.value)} rows={2} />
+      </FieldShell>
+
+      <FieldShell label="Source ref" hint="Optional GitHub PR URL, branch URL, branch name, or commit SHA to start the run from.">
+        <input
+          className={inputClass()}
+          value={sourceRef}
+          onChange={(event) => setSourceRef(event.target.value)}
+          placeholder="https://github.com/owner/repo/pull/4"
+        />
       </FieldShell>
 
       <FieldShell label="Task prompt">
@@ -263,7 +320,7 @@ export function TaskForm({
           </select>
         </FieldShell>
       </div>
-      <PrimaryButton disabled={!repos.length}>Create task</PrimaryButton>
+      <PrimaryButton disabled={!repos.length}>{submitLabel}</PrimaryButton>
     </form>
   );
 }

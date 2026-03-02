@@ -47,7 +47,7 @@ export class RunSimulator {
     }
   }
 
-  createRun(task: Task): AgentRun {
+  createRun(task: Task, options?: { branchName?: string; prUrl?: string; prNumber?: number; baseRunId?: string; changeRequest?: AgentRun['changeRequest'] }): AgentRun {
     const startedAt = new Date();
     const runId = `run_${task.taskId}_${startedAt.getTime()}`;
     const profile = task.uiMeta?.simulationProfile ?? 'happy_path';
@@ -56,7 +56,11 @@ export class RunSimulator {
       taskId: task.taskId,
       repoId: task.repoId,
       status: 'QUEUED',
-      branchName: `agent/${task.taskId}/${runId}`,
+      branchName: options?.branchName ?? `agent/${task.taskId}/${runId}`,
+      baseRunId: options?.baseRunId,
+      changeRequest: options?.changeRequest,
+      prUrl: options?.prUrl,
+      prNumber: options?.prNumber,
       errors: [],
       startedAt: startedAt.toISOString(),
       timeline: [],

@@ -22,6 +22,9 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
   const [repoModalOpen, setRepoModalOpen] = useState(false);
   const [repoToEditId, setRepoToEditId] = useState<string | undefined>();
   const [taskModalOpen, setTaskModalOpen] = useState(false);
+  const [taskToEditId, setTaskToEditId] = useState<string | undefined>();
+  const [changeRequestRunId, setChangeRequestRunId] = useState<string | undefined>();
+  const [changeRequestPrompt, setChangeRequestPrompt] = useState('');
   const [notice, setNotice] = useState<string | undefined>();
   const [taskSelectionHydrated, setTaskSelectionHydrated] = useState(false);
 
@@ -33,6 +36,7 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
   const visibleTasks = getTasksForRepo(snapshot.tasks, selectedRepoId);
   const tasksByColumn = getTasksByColumn(visibleTasks);
   const detail = getTaskDetail(snapshot, selectedTaskId);
+  const taskToEdit = taskToEditId ? snapshot.tasks.find((task) => task.taskId === taskToEditId) : undefined;
   const logs: RunLogEntry[] = detail?.latestRun
     ? snapshot.logs.filter((entry) => entry.runId === detail.latestRun?.runId)
     : [];
@@ -87,7 +91,7 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
       .filter((run) => run.taskId === taskId)
       .sort((left, right) => right.startedAt.localeCompare(left.startedAt))[0];
     const hasActiveRun = latestRun && !['DONE', 'FAILED'].includes(latestRun.status);
-    if (hasActiveRun && status !== 'ACTIVE') {
+    if (task.status === 'ACTIVE' && hasActiveRun && status !== 'ACTIVE') {
       setNotice('Active runs stay pinned to Active until the current lifecycle finishes.');
       return;
     }
@@ -116,6 +120,20 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
     const run = await api.retryEvidence(runId);
     await api.setSelectedTaskId(run.taskId);
     setNotice('Retrying evidence for the current PR.');
+  }
+
+  async function requestChanges(runId: string) {
+    const prompt = changeRequestPrompt.trim();
+    if (!prompt) {
+      setNotice('Enter the requested changes before starting a review rerun.');
+      return;
+    }
+
+    const run = await api.requestRunChanges(runId, { prompt });
+    await api.setSelectedTaskId(run.taskId);
+    setChangeRequestRunId(undefined);
+    setChangeRequestPrompt('');
+    setNotice('Started a review rerun on the existing PR branch.');
   }
 
   async function toggleTaskSelection(taskId: string) {
@@ -172,6 +190,8 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
           <DetailPanel
             detail={detail}
             logs={logs}
+            onEditTask={(taskId) => setTaskToEditId(taskId)}
+            onRequestChanges={(runId) => setChangeRequestRunId(runId)}
             onRetryRun={(runId) => void retryRun(runId)}
             onRetryPreview={(runId) => void retryPreview(runId)}
             onRetryEvidence={(runId) => void retryEvidence(runId)}
@@ -225,6 +245,65 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
               setNotice('Task created.');
             }}
           />
+        </Modal>
+      ) : null}
+
+      {taskToEdit ? (
+        <Modal title={`Edit ${taskToEdit.title}`} onClose={() => setTaskToEditId(undefined)}>
+          <TaskForm
+            repos={repos}
+            initialValues={{
+              repoId: taskToEdit.repoId,
+              title: taskToEdit.title,
+              description: taskToEdit.description,
+              sourceRef: taskToEdit.sourceRef,
+              taskPrompt: taskToEdit.taskPrompt,
+              acceptanceCriteria: taskToEdit.acceptanceCriteria,
+              context: taskToEdit.context,
+              status: taskToEdit.status,
+              baselineUrlOverride: taskToEdit.baselineUrlOverride,
+              codexModel: taskToEdit.uiMeta?.codexModel,
+              codexReasoningEffort: taskToEdit.uiMeta?.codexReasoningEffort
+            }}
+            submitLabel="Save task"
+            onSubmit={async (input) => {
+              await api.updateTask(taskToEdit.taskId, input);
+              await api.setSelectedTaskId(taskToEdit.taskId);
+              setTaskToEditId(undefined);
+              setNotice(`Updated ${taskToEdit.title}.`);
+            }}
+          />
+        </Modal>
+      ) : null}
+
+      {changeRequestRunId ? (
+        <Modal title="Request changes" onClose={() => setChangeRequestRunId(undefined)}>
+          <form
+            className="space-y-4"
+            onSubmit={async (event) => {
+              event.preventDefault();
+              await requestChanges(changeRequestRunId);
+            }}
+          >
+            <label className="grid gap-2 text-sm">
+              <span className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">Change request</span>
+              <textarea
+                className="rounded-xl border border-slate-700 bg-slate-900/90 px-3 py-2.5 text-sm text-slate-100 outline-none transition focus:border-cyan-400 focus:ring-2 focus:ring-cyan-400/20"
+                value={changeRequestPrompt}
+                onChange={(event) => setChangeRequestPrompt(event.target.value)}
+                rows={6}
+                placeholder="Describe the changes you want on the current PR."
+                required
+              />
+              <span className="text-xs text-slate-500">This creates a fresh run on the existing review branch and updates the same PR.</span>
+            </label>
+            <button
+              type="submit"
+              className="inline-flex h-11 items-center justify-center rounded-xl border border-amber-400/35 bg-amber-500/15 px-4 text-sm font-medium text-amber-50 transition hover:bg-amber-500/25"
+            >
+              Start review rerun
+            </button>
+          </form>
         </Modal>
       ) : null}
     </div>

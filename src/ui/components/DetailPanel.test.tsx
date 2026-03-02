@@ -1,8 +1,12 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DetailPanel } from './DetailPanel';
 import type { TaskDetail } from '../domain/types';
+
+afterEach(() => {
+  cleanup();
+});
 
 function buildDetail(): TaskDetail {
   return {
@@ -19,6 +23,7 @@ function buildDetail(): TaskDetail {
       taskId: 'task_demo',
       repoId: 'repo_demo',
       title: 'Fix preview retry routing',
+      sourceRef: 'https://github.com/abuiles/minions-demo/pull/4',
       taskPrompt: 'Fix the preview retry button routing.',
       acceptanceCriteria: ['Retry preview uses the preview endpoint.'],
       context: { links: [] },
@@ -72,6 +77,8 @@ describe('DetailPanel', () => {
       <DetailPanel
         detail={buildDetail()}
         logs={[]}
+        onEditTask={vi.fn()}
+        onRequestChanges={vi.fn()}
         onRetryRun={onRetryRun}
         onRetryPreview={onRetryPreview}
         onRetryEvidence={onRetryEvidence}
@@ -107,6 +114,8 @@ describe('DetailPanel', () => {
             message: 'Preview discovery matched a Cloudflare preview URL.'
           }
         ]}
+        onEditTask={vi.fn()}
+        onRequestChanges={vi.fn()}
         onRetryRun={vi.fn()}
         onRetryPreview={vi.fn()}
         onRetryEvidence={vi.fn()}
@@ -124,5 +133,69 @@ describe('DetailPanel', () => {
     await waitFor(() => {
       expect(screen.getByRole('button', { name: 'Copied' })).toBeInTheDocument();
     });
+  });
+
+  it('shows the task source ref', () => {
+    render(
+      <DetailPanel
+        detail={buildDetail()}
+        logs={[]}
+        onEditTask={vi.fn()}
+        onRequestChanges={vi.fn()}
+        onRetryRun={vi.fn()}
+        onRetryPreview={vi.fn()}
+        onRetryEvidence={vi.fn()}
+      />
+    );
+
+    const sourceRefLinks = screen
+      .getAllByRole('link', { name: 'https://github.com/abuiles/minions-demo/pull/4' })
+      .filter((link) => link.getAttribute('href') === 'https://github.com/abuiles/minions-demo/pull/4');
+
+    expect(sourceRefLinks.length).toBeGreaterThan(0);
+  });
+
+  it('routes edit task clicks to the edit handler', async () => {
+    const user = userEvent.setup();
+    const onEditTask = vi.fn();
+
+    render(
+      <DetailPanel
+        detail={buildDetail()}
+        logs={[]}
+        onEditTask={onEditTask}
+        onRequestChanges={vi.fn()}
+        onRetryRun={vi.fn()}
+        onRetryPreview={vi.fn()}
+        onRetryEvidence={vi.fn()}
+      />
+    );
+
+    await user.click(screen.getAllByRole('button', { name: 'Edit task' })[0]);
+
+    expect(onEditTask).toHaveBeenCalledTimes(1);
+    expect(onEditTask).toHaveBeenCalledWith('task_demo');
+  });
+
+  it('routes request changes clicks to the review handler', async () => {
+    const user = userEvent.setup();
+    const onRequestChanges = vi.fn();
+
+    render(
+      <DetailPanel
+        detail={buildDetail()}
+        logs={[]}
+        onEditTask={vi.fn()}
+        onRequestChanges={onRequestChanges}
+        onRetryRun={vi.fn()}
+        onRetryPreview={vi.fn()}
+        onRetryEvidence={vi.fn()}
+      />
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Request changes' }));
+
+    expect(onRequestChanges).toHaveBeenCalledTimes(1);
+    expect(onRequestChanges).toHaveBeenCalledWith('run_demo');
   });
 });

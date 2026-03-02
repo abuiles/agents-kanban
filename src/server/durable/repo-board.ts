@@ -84,6 +84,7 @@ export class RepoBoardDO extends DurableObject<Env> {
       repoId: input.repoId,
       title: input.title,
       description: input.description,
+      sourceRef: input.sourceRef,
       taskPrompt: input.taskPrompt,
       acceptanceCriteria: input.acceptanceCriteria,
       context: input.context,
@@ -117,6 +118,7 @@ export class RepoBoardDO extends DurableObject<Env> {
     const updated: Task = {
       ...existing,
       ...patch,
+      sourceRef: patch.sourceRef ?? existing.sourceRef,
       context: patch.context ?? existing.context,
       acceptanceCriteria: patch.acceptanceCriteria ?? existing.acceptanceCriteria,
       uiMeta: {
@@ -178,6 +180,39 @@ export class RepoBoardDO extends DurableObject<Env> {
     await this.ready;
     const run = await this.getRun(runId);
     return this.startRun(run.taskId);
+  }
+
+  async requestRunChanges(runId: string, prompt: string) {
+    await this.ready;
+    const existingRun = await this.getRun(runId);
+    const task = this.state.tasks.find((candidate) => candidate.taskId === existingRun.taskId);
+    if (!task) {
+      throw notFound(`Task ${existingRun.taskId} not found.`, { taskId: existingRun.taskId, runId });
+    }
+
+    const now = new Date();
+    const nextRun = createRealRun(task, createRunId(task.repoId), now, {
+      branchName: existingRun.branchName,
+      prUrl: existingRun.prUrl,
+      prNumber: existingRun.prNumber,
+      baseRunId: existingRun.runId,
+      changeRequest: {
+        prompt,
+        requestedAt: now.toISOString()
+      }
+    });
+
+    this.state = {
+      ...this.state,
+      tasks: this.state.tasks.map((candidate) =>
+        candidate.taskId === task.taskId ? { ...candidate, status: 'ACTIVE', runId: nextRun.runId, updatedAt: now.toISOString() } : candidate
+      ),
+      runs: [nextRun, ...this.state.runs]
+    };
+    await this.persist();
+    await this.emit({ type: 'task.updated', payload: { task: this.state.tasks.find((candidate) => candidate.taskId === task.taskId)! } }, task.repoId);
+    await this.emit({ type: 'run.updated', payload: { run: nextRun } }, task.repoId);
+    return nextRun;
   }
 
   async retryEvidence(runId: string) {
@@ -408,6 +443,9 @@ function sleepForAlarm(_name: string, duration: number | `${number} ${string}`) 
 }
 
 function deriveTaskStatus(run: AgentRun, current: TaskStatus): TaskStatus {
+  if (current === 'DONE' && run.status !== 'QUEUED' && run.status !== 'BOOTSTRAPPING' && run.status !== 'RUNNING_CODEX' && run.status !== 'RUNNING_TESTS' && run.status !== 'PUSHING_BRANCH') {
+    return 'DONE';
+  }
   if (run.status === 'PR_OPEN' || run.status === 'WAITING_PREVIEW' || run.status === 'EVIDENCE_RUNNING' || run.status === 'DONE') {
     return 'REVIEW';
   }
@@ -429,6 +467,7 @@ function cloneRepoBoardState(state: RepoBoardState): RepoBoardState {
     tasks: state.tasks.map((task) => ({ ...task, context: { ...task.context, links: task.context.links.map((link) => ({ ...link })) }, uiMeta: task.uiMeta ? { ...task.uiMeta } : undefined })),
     runs: state.runs.map((run) => ({
       ...run,
+      changeRequest: run.changeRequest ? { ...run.changeRequest } : undefined,
       errors: run.errors.map((error) => ({ ...error })),
       timeline: run.timeline.map((entry) => ({ ...entry })),
       pendingEvents: run.pendingEvents.map((event) => ({ ...event })),

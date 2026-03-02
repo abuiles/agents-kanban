@@ -1,4 +1,4 @@
-import type { AgentBoardApi, CreateRepoInput, CreateTaskInput, UpdateRepoInput, UpdateTaskInput } from '../domain/api';
+import type { AgentBoardApi, CreateRepoInput, CreateTaskInput, RequestRunChangesInput, UpdateRepoInput, UpdateTaskInput } from '../domain/api';
 import type { AgentRun, Repo, RunLogEntry, Task, TaskDetail } from '../domain/types';
 import { getTaskDetail, getTasksForRepo } from '../domain/selectors';
 import { LocalBoardStore } from '../store/local-board-store';
@@ -77,6 +77,7 @@ export class LocalAgentBoardApi implements AgentBoardApi {
       repoId: input.repoId,
       title: input.title,
       description: input.description,
+      sourceRef: input.sourceRef,
       taskPrompt: input.taskPrompt,
       acceptanceCriteria: input.acceptanceCriteria,
       context: input.context,
@@ -125,6 +126,7 @@ export class LocalAgentBoardApi implements AgentBoardApi {
         updatedTask = {
           ...task,
           ...patch,
+          sourceRef: patch.sourceRef ?? task.sourceRef,
           context: patch.context ?? task.context,
           acceptanceCriteria: patch.acceptanceCriteria ?? task.acceptanceCriteria,
           uiMeta: {
@@ -185,6 +187,29 @@ export class LocalAgentBoardApi implements AgentBoardApi {
       status: 'ACTIVE',
       updatedAt: nowIso()
     });
+  }
+
+  async requestRunChanges(runId: string, input: RequestRunChangesInput): Promise<AgentRun> {
+    const run = await this.getRun(runId);
+    const task = this.store.getSnapshot().tasks.find((candidate) => candidate.taskId === run.taskId);
+    if (!task) {
+      throw new Error(`Task ${run.taskId} not found.`);
+    }
+
+    return this.simulator.createRun(
+      {
+        ...task,
+        status: 'ACTIVE',
+        updatedAt: nowIso()
+      },
+      {
+        branchName: run.branchName,
+        prUrl: run.prUrl,
+        prNumber: run.prNumber,
+        baseRunId: run.runId,
+        changeRequest: { prompt: input.prompt, requestedAt: nowIso() }
+      }
+    );
   }
 
   async retryPreview(runId: string): Promise<AgentRun> {

@@ -1265,6 +1265,10 @@ Stage 3 is complete when:
 
 Stage 3 should deliberately stop at the first complete real run system.
 
+The immediate follow-on is Stage 3.1, which adds dependency fanout and automatic follow-on execution for tasks in the same repo. That plan is documented in:
+
+- `docs/stage_3_1.md`
+
 The next five stages should focus on:
 
 - live operator visibility and sandbox attach

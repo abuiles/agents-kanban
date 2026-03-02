@@ -32,14 +32,26 @@ export type RunTransitionPatch = {
   appendTimelineNote?: string;
 };
 
-export function createRealRun(task: Task, runId: string, now = new Date()): AgentRun {
+type CreateRealRunOptions = {
+  branchName?: string;
+  prUrl?: string;
+  prNumber?: number;
+  baseRunId?: string;
+  changeRequest?: AgentRun['changeRequest'];
+};
+
+export function createRealRun(task: Task, runId: string, now = new Date(), options?: CreateRealRunOptions): AgentRun {
   const nowIso = now.toISOString();
   return {
     runId,
     taskId: task.taskId,
     repoId: task.repoId,
     status: 'QUEUED',
-    branchName: `agent/${task.taskId}/${runId}`,
+    branchName: options?.branchName ?? `agent/${task.taskId}/${runId}`,
+    baseRunId: options?.baseRunId,
+    changeRequest: options?.changeRequest,
+    prUrl: options?.prUrl,
+    prNumber: options?.prNumber,
     errors: [],
     startedAt: nowIso,
     timeline: [{ status: 'QUEUED', at: nowIso, note: 'Run queued for real sandbox execution.' }],

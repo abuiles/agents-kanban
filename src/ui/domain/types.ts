@@ -42,6 +42,40 @@ export type TaskContext = {
   notes?: string;
 };
 
+export type TaskDependency = {
+  upstreamTaskId: string;
+  mode: 'review_ready';
+  primary?: boolean;
+};
+
+export type TaskDependencyReason = {
+  upstreamTaskId: string;
+  state: 'missing' | 'not_ready' | 'ready';
+  message: string;
+};
+
+export type TaskDependencyState = {
+  blocked: boolean;
+  unblockedAt?: string;
+  reasons: TaskDependencyReason[];
+};
+
+export type TaskAutomationState = {
+  autoStartEligible: boolean;
+  autoStartedAt?: string;
+  lastDependencyRefreshAt?: string;
+};
+
+export type TaskBranchSource = {
+  kind: 'explicit_source_ref' | 'dependency_review_head' | 'default_branch';
+  upstreamTaskId?: string;
+  upstreamRunId?: string;
+  upstreamPrNumber?: number;
+  upstreamHeadSha?: string;
+  resolvedRef: string;
+  resolvedAt: string;
+};
+
 export type TaskUiMeta = {
   simulationProfile?: SimulationProfile;
   codexModel?: CodexModel;
@@ -53,6 +87,11 @@ export type Task = {
   repoId: string;
   title: string;
   description?: string;
+  sourceRef?: string;
+  dependencies?: TaskDependency[];
+  dependencyState?: TaskDependencyState;
+  automationState?: TaskAutomationState;
+  branchSource?: TaskBranchSource;
   taskPrompt: string;
   acceptanceCriteria: string[];
   context: TaskContext;
@@ -115,6 +154,11 @@ export type AgentRun = {
   repoId: string;
   status: RunStatus;
   branchName: string;
+  baseRunId?: string;
+  changeRequest?: {
+    prompt: string;
+    requestedAt: string;
+  };
   headSha?: string;
   prUrl?: string;
   prNumber?: number;
@@ -128,6 +172,13 @@ export type AgentRun = {
   evidenceSandboxId?: string;
   commitSha?: string;
   commitMessage?: string;
+  dependencyContext?: {
+    sourceTaskId?: string;
+    sourceRunId?: string;
+    sourcePrNumber?: number;
+    sourceHeadSha?: string;
+    sourceMode: 'explicit_source_ref' | 'dependency_review_head' | 'default_branch';
+  };
   executionSummary?: {
     codexOutcome?: 'changes' | 'no_changes' | 'failed';
     testsOutcome?: 'passed' | 'failed' | 'skipped';

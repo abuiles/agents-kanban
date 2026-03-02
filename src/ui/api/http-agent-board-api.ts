@@ -1,4 +1,4 @@
-import type { AgentBoardApi, CreateRepoInput, CreateTaskInput, UpdateRepoInput, UpdateTaskInput } from '../domain/api';
+import type { AgentBoardApi, CreateRepoInput, CreateTaskInput, RequestRunChangesInput, UpdateRepoInput, UpdateTaskInput } from '../domain/api';
 import type { AgentRun, BoardSnapshotV1, Repo, RunLogEntry, Task, TaskDetail } from '../domain/types';
 import { getTaskDetail } from '../domain/selectors';
 import { parseBoardSnapshot } from '../store/board-snapshot';
@@ -108,6 +108,15 @@ export class HttpAgentBoardApi implements AgentBoardApi {
 
   async retryRun(runId: string) {
     const run = await this.request<AgentRun>(`/api/runs/${encodeURIComponent(runId)}/retry`, { method: 'POST' });
+    await this.refresh();
+    return run;
+  }
+
+  async requestRunChanges(runId: string, input: RequestRunChangesInput) {
+    const run = await this.request<AgentRun>(`/api/runs/${encodeURIComponent(runId)}/request-changes`, {
+      method: 'POST',
+      body: JSON.stringify(input)
+    });
     await this.refresh();
     return run;
   }

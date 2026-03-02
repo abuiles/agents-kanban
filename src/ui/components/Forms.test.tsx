@@ -32,7 +32,11 @@ describe('TaskForm', () => {
     expect(codexModelField).not.toBeNull();
     expect(reasoningEffortField).not.toBeNull();
 
+    const sourceRefField = screen.getByText('Source ref').closest('label')?.querySelector('input');
+    expect(sourceRefField).not.toBeNull();
+
     await user.type(screen.getByLabelText('Title'), 'Build snake game');
+    await user.type(sourceRefField!, 'https://github.com/abuiles/minions-demo/pull/4');
     await user.type(screen.getByLabelText('Task prompt'), 'Create a simple snake game on the homepage.');
     await user.type(acceptanceCriteriaField!, 'A playable snake game appears on index.');
     await user.selectOptions(codexModelField! as unknown as Element, 'gpt-5.3-codex');
@@ -44,6 +48,7 @@ describe('TaskForm', () => {
     expect(onSubmit.mock.calls[0][0]).toMatchObject({
       repoId: 'repo_demo',
       title: 'Build snake game',
+      sourceRef: 'https://github.com/abuiles/minions-demo/pull/4',
       taskPrompt: 'Create a simple snake game on the homepage.',
       acceptanceCriteria: ['A playable snake game appears on index.'],
       codexModel: 'gpt-5.3-codex',

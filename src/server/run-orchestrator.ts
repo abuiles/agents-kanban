@@ -7,6 +7,7 @@ import { NonRetryableError } from 'cloudflare:workflows';
 import { inspectPreviewDiscovery } from './preview-discovery';
 import { LineLogBuffer } from './line-log-buffer';
 import { buildWorkflowInvocationId } from './workflow-id';
+import { normalizeTaskSourceRef, resolveTaskSourceRef } from './source-ref';
 
 type WorkflowBinding<T> = {
   create(options?: { id?: string; params?: T; retention?: { successRetention?: string | number; errorRetention?: string | number } }): Promise<{ id: string }>;
@@ -68,7 +69,8 @@ export async function executeRunJob(env: Env, params: RunJobParams, sleepFn: Sle
       branch: repo.defaultBranch,
       targetDir: '/workspace/repo'
     });
-    await sandbox.exec(`cd /workspace/repo && git config user.name 'AgentBoard' && git config user.email 'agentboard@local' && git checkout -b ${shellEscape(run.branchName)}`);
+    await sandbox.exec(`cd /workspace/repo && git config user.name 'AgentBoard' && git config user.email 'agentboard@local'`);
+    await prepareRunBranchFromTaskSource(sandbox, repoBoard, params.runId, detail.task, repo, run);
   } catch (error) {
     await failRun(repoBoard, params.runId, 'BOOTSTRAP_FAILED', 'bootstrap', error);
     throw error;
@@ -77,7 +79,7 @@ export async function executeRunJob(env: Env, params: RunJobParams, sleepFn: Sle
   await repoBoard.transitionRun(params.runId, { status: 'RUNNING_CODEX', appendTimelineNote: 'Codex executing with full sandbox permissions.' });
 
   try {
-    const prompt = buildCodexPrompt(detail.task, repo);
+    const prompt = buildCodexPrompt(detail.task, repo, run);
     await sandbox.writeFile('/workspace/task.txt', prompt);
     await sandbox.exec("bash -lc 'command -v codex >/dev/null 2>&1 || npm install -g @openai/codex'");
     await logCodexCliDiagnostics(sandbox, params.runId, repoBoard, codexModel, codexReasoningEffort);
@@ -110,6 +112,19 @@ cat /workspace/task.txt | codex exec -m ${codexModel} -c model_reasoning_effort=
   await repoBoard.transitionRun(params.runId, { status: 'PUSHING_BRANCH', appendTimelineNote: 'Preparing git diff and push.' });
 
   try {
+    const branchResult = await sandbox.exec('cd /workspace/repo && git branch --show-current');
+    await appendCommandLogs(repoBoard, params.runId, 'push', branchResult.stdout, branchResult.stderr);
+    if (!branchResult.success) {
+      throw new Error(branchResult.stderr || 'Failed to resolve the current branch.');
+    }
+
+    const currentBranch = branchResult.stdout.trim();
+    if (currentBranch !== run.branchName) {
+      await repoBoard.appendRunLogs(params.runId, [
+        buildRunLog(params.runId, `Codex changed the checked out branch to ${currentBranch}. Normalizing push to ${run.branchName} from current HEAD.`, 'push')
+      ]);
+    }
+
     const statusResult = await sandbox.exec('cd /workspace/repo && git status --short');
     await appendCommandLogs(repoBoard, params.runId, 'push', statusResult.stdout, statusResult.stderr);
     const hasWorkingTreeChanges = Boolean(statusResult.stdout.trim());
@@ -135,7 +150,7 @@ cat /workspace/task.txt | codex exec -m ${codexModel} -c model_reasoning_effort=
     if (hasWorkingTreeChanges) {
       commitMessage = `AgentBoard: ${detail.task.title}`;
       const commitResult = await sandbox.exec(
-        `cd /workspace/repo && git add -A && git commit -m ${shellQuote(commitMessage)} && git push origin ${shellEscape(run.branchName)}`
+        `cd /workspace/repo && git add -A && git commit -m ${shellQuote(commitMessage)} && git push origin HEAD:${shellEscape(run.branchName)}`
       );
       await appendCommandLogs(repoBoard, params.runId, 'push', commitResult.stdout, commitResult.stderr);
       if (!commitResult.success) {
@@ -151,7 +166,7 @@ cat /workspace/task.txt | codex exec -m ${codexModel} -c model_reasoning_effort=
       await repoBoard.appendRunLogs(params.runId, [
         buildRunLog(params.runId, 'Detected an existing local commit from Codex; pushing it without creating another commit.', 'push')
       ]);
-      const pushResult = await sandbox.exec(`cd /workspace/repo && git push origin ${shellEscape(run.branchName)}`);
+      const pushResult = await sandbox.exec(`cd /workspace/repo && git push origin HEAD:${shellEscape(run.branchName)}`);
       await appendCommandLogs(repoBoard, params.runId, 'push', pushResult.stdout, pushResult.stderr);
       if (!pushResult.success) {
         throw new Error(pushResult.stderr || 'Push failed.');
@@ -176,14 +191,22 @@ cat /workspace/task.txt | codex exec -m ${codexModel} -c model_reasoning_effort=
 
   try {
     const latestRun = await repoBoard.getRun(params.runId);
-    const pr = await createPullRequest(repo, detail.task, latestRun, pat);
-    await repoBoard.transitionRun(params.runId, {
-      status: 'PR_OPEN',
-      prNumber: pr.number,
-      prUrl: pr.url,
-      previewStatus: 'DISCOVERING',
-      appendTimelineNote: 'Pull request opened.'
-    });
+    if (latestRun.prUrl && latestRun.prNumber) {
+      await repoBoard.transitionRun(params.runId, {
+        status: 'PR_OPEN',
+        previewStatus: 'DISCOVERING',
+        appendTimelineNote: 'Existing pull request updated with requested changes.'
+      });
+    } else {
+      const pr = await createPullRequest(repo, detail.task, latestRun, pat);
+      await repoBoard.transitionRun(params.runId, {
+        status: 'PR_OPEN',
+        prNumber: pr.number,
+        prUrl: pr.url,
+        previewStatus: 'DISCOVERING',
+        appendTimelineNote: 'Pull request opened.'
+      });
+    }
   } catch (error) {
     await failRun(repoBoard, params.runId, 'PR_CREATE_FAILED', 'pr', error);
     throw error;
@@ -399,6 +422,7 @@ function buildPullRequestBody(task: Task, run: Awaited<ReturnType<RepoBoardDO['g
     `Task: ${task.title}`,
     '',
     task.description ?? '',
+    task.sourceRef ? `Source ref: ${task.sourceRef}` : undefined,
     '',
     'Acceptance criteria:',
     ...task.acceptanceCriteria.map((item) => `- ${item}`),
@@ -658,12 +682,15 @@ function buildGithubCloneUrl(slug: string, pat: string) {
   return `https://x-access-token:${pat}@github.com/${slug}.git`;
 }
 
-function buildCodexPrompt(task: Task, repo: Repo) {
+function buildCodexPrompt(task: Task, repo: Repo, run: Awaited<ReturnType<RepoBoardDO['getRun']>>) {
   return [
     `You are working on the Git repository for ${repo.slug}.`,
     '',
     `Task: ${task.title}`,
     task.description ? `Description: ${task.description}` : undefined,
+    run.changeRequest?.prompt ? '' : undefined,
+    run.changeRequest?.prompt ? 'Review change request:' : undefined,
+    run.changeRequest?.prompt ?? undefined,
     '',
     'Primary prompt:',
     task.taskPrompt,
@@ -677,10 +704,61 @@ function buildCodexPrompt(task: Task, repo: Repo) {
     'Requirements:',
     '- Make the requested code changes in this repository.',
     '- Decide which install/build/test commands are appropriate and run them as needed.',
+    run.changeRequest?.prompt
+      ? `- The outer system already prepared the existing PR branch ${run.branchName} for this change request. Update that branch in place and keep the existing PR alive.`
+      : task.sourceRef
+        ? `- The outer system already prepared the run branch from this task source ref: ${task.sourceRef}. Do not fetch or checkout another starting branch yourself.`
+        : undefined,
     '- Do not run `git commit`, `git push`, `git rebase`, or create pull requests. The outer system handles all git history and GitHub operations.',
+    '- Do not switch git branches or change git remotes. Stay on the branch the outer system prepared for you.',
     '- Leave your code changes uncommitted in the working tree after you finish.',
     '- If no changes are necessary, exit cleanly and let the outer system decide what to do.'
   ].filter(Boolean).join('\n');
+}
+
+async function prepareRunBranchFromTaskSource(
+  sandbox: ReturnType<typeof getSandbox>,
+  repoBoard: DurableObjectStub<RepoBoardDO>,
+  runId: string,
+  task: Task,
+  repo: Repo,
+  run: Awaited<ReturnType<RepoBoardDO['getRun']>>
+) {
+  if (run.changeRequest?.prompt && run.prUrl) {
+    await repoBoard.appendRunLogs(runId, [
+      buildRunLog(runId, `Preparing existing PR branch ${run.branchName} for a review change request.`, 'bootstrap')
+    ]);
+    const checkout = await sandbox.exec(
+      `cd /workspace/repo && git fetch origin ${shellEscape(run.branchName)} && git checkout -B ${shellEscape(run.branchName)} FETCH_HEAD`
+    );
+    await appendCommandLogs(repoBoard, runId, 'bootstrap', checkout.stdout, checkout.stderr);
+    if (!checkout.success) {
+      throw new Error(checkout.stderr || `Failed to prepare existing PR branch ${run.branchName}.`);
+    }
+    return;
+  }
+
+  const sourceRef = resolveTaskSourceRef(task);
+  if (!sourceRef) {
+    const checkout = await sandbox.exec(`cd /workspace/repo && git checkout -b ${shellEscape(run.branchName)}`);
+    await appendCommandLogs(repoBoard, runId, 'bootstrap', checkout.stdout, checkout.stderr);
+    if (!checkout.success) {
+      throw new Error(checkout.stderr || `Failed to create run branch ${run.branchName}.`);
+    }
+    return;
+  }
+
+  const normalized = normalizeTaskSourceRef(sourceRef, repo.slug);
+  await repoBoard.appendRunLogs(runId, [
+    buildRunLog(runId, `Preparing run branch ${run.branchName} from task source ref ${normalized.label}.`, 'bootstrap')
+  ]);
+  const checkout = await sandbox.exec(
+    `cd /workspace/repo && git fetch origin ${shellEscape(normalized.fetchSpec)} && git checkout -B ${shellEscape(run.branchName)} FETCH_HEAD`
+  );
+  await appendCommandLogs(repoBoard, runId, 'bootstrap', checkout.stdout, checkout.stderr);
+  if (!checkout.success) {
+    throw new Error(checkout.stderr || `Failed to prepare run branch ${run.branchName} from ${normalized.label}.`);
+  }
 }
 
 function shellQuote(value: string) {

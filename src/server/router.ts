@@ -95,6 +95,29 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
       return json(await env.REPO_BOARD.getByName(repoId).getRun(run.runId));
     }
 
+    const requestChangesMatch = url.pathname.match(/^\/api\/runs\/([^/]+)\/request-changes$/);
+    if (requestChangesMatch && request.method === 'POST') {
+      const runId = decodeURIComponent(requestChangesMatch[1]);
+      const body = await readJson(request);
+      if (
+        typeof body !== 'object'
+        || !body
+        || !('prompt' in body)
+        || typeof body.prompt !== 'string'
+        || !body.prompt.trim()
+      ) {
+        throw badRequest('Invalid request changes payload.');
+      }
+      const repoId = await resolveRepoIdForRun(board, runId);
+      const run = await env.REPO_BOARD.getByName(repoId).requestRunChanges(runId, body.prompt.trim());
+      const workflow = await scheduleRunJob(env, ctx, { repoId, taskId: run.taskId, runId: run.runId, mode: 'full_run' });
+      await env.REPO_BOARD.getByName(repoId).transitionRun(run.runId, {
+        workflowInstanceId: workflow.id,
+        orchestrationMode: workflow.id.startsWith('local-alarm-') ? 'local_alarm' : 'workflow'
+      });
+      return json(await env.REPO_BOARD.getByName(repoId).getRun(run.runId));
+    }
+
     const evidenceRetryMatch = url.pathname.match(/^\/api\/runs\/([^/]+)\/evidence$/);
     if (evidenceRetryMatch && request.method === 'POST') {
       const runId = decodeURIComponent(evidenceRetryMatch[1]);

@@ -97,12 +97,16 @@ function ArtifactLinks({ run }: { run?: AgentRun }) {
 export function DetailPanel({
   detail,
   logs,
+  onEditTask,
+  onRequestChanges,
   onRetryRun,
   onRetryPreview,
   onRetryEvidence
 }: {
   detail?: TaskDetail;
   logs: RunLogEntry[];
+  onEditTask: (taskId: string) => void;
+  onRequestChanges: (runId: string) => void;
   onRetryRun: (runId: string) => void;
   onRetryPreview: (runId: string) => void;
   onRetryEvidence: (runId: string) => void;
@@ -173,6 +177,13 @@ export function DetailPanel({
               {task.description ? <p className="mt-2 text-sm leading-6 text-slate-400">{task.description}</p> : null}
             </div>
           </div>
+          <button
+            type="button"
+            onClick={() => onEditTask(task.taskId)}
+            className="inline-flex h-9 shrink-0 items-center rounded-lg border border-slate-700 bg-slate-900 px-3 text-sm font-medium text-slate-200 transition hover:border-slate-500"
+          >
+            Edit task
+          </button>
         </div>
       </div>
 
@@ -181,6 +192,13 @@ export function DetailPanel({
         aside={
           latestRun ? (
             <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => onRequestChanges(latestRun.runId)}
+                className="inline-flex h-9 items-center rounded-lg border border-amber-400/35 bg-amber-500/15 px-3 text-sm font-medium text-amber-50 transition hover:bg-amber-500/25"
+              >
+                Request changes
+              </button>
               <button
                 type="button"
                 onClick={() => onRetryRun(latestRun.runId)}
@@ -311,6 +329,23 @@ export function DetailPanel({
           <PanelSection title="Prompt">
             <p className="text-sm leading-6 text-slate-300">{task.taskPrompt}</p>
           </PanelSection>
+
+          {task.sourceRef ? (
+            <PanelSection title="Source ref">
+              {task.sourceRef.startsWith('http://') || task.sourceRef.startsWith('https://') ? (
+                <a
+                  href={task.sourceRef}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="block break-all text-sm text-cyan-300 hover:text-cyan-200"
+                >
+                  {task.sourceRef}
+                </a>
+              ) : (
+                <code className="block break-all text-xs text-slate-200">{task.sourceRef}</code>
+              )}
+            </PanelSection>
+          ) : null}
 
           <PanelSection title="Acceptance criteria">
             <ul className="space-y-2 text-sm leading-6 text-slate-300">
