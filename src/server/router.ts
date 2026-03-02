@@ -239,6 +239,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
 
       const run = await env.REPO_BOARD.getByName(repoId).getRun(runId);
       const session = {
+        tenantId: run.tenantId,
         id: `${runId}:${bootstrap.sessionName}`,
         runId,
         sandboxId: bootstrap.sandboxId,

@@ -18,6 +18,7 @@ import type {
 } from './types';
 
 export type CreateRepoInput = {
+  tenantId?: string;
   slug?: string;
   scmProvider?: Repo['scmProvider'];
   scmBaseUrl?: string;

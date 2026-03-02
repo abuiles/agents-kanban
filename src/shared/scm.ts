@@ -1,5 +1,6 @@
 import type { AgentRun, Repo, ScmProvider, TaskBranchSource } from '../ui/domain/types';
 import { normalizeRepoPreviewConfig } from './preview';
+import { normalizeTenantId } from './tenant';
 
 export const SCM_PROVIDERS = new Set(['github', 'gitlab'] as const);
 
@@ -56,6 +57,7 @@ export function normalizeRepo(repo: RepoScmLike & Omit<Repo, 'slug' | 'scmProvid
 
   return normalizeRepoPreviewConfig({
     ...repo,
+    tenantId: normalizeTenantId(repo.tenantId),
     slug: projectPath,
     scmProvider,
     scmBaseUrl: normalizeScmBaseUrl(scmProvider, repo.scmBaseUrl),

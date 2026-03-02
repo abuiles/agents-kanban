@@ -54,7 +54,50 @@ export type RunEventType =
 
 export type RunCommandPhase = 'bootstrap' | 'codex' | 'tests' | 'push' | 'pr' | 'preview' | 'evidence' | 'operator';
 
+export type Tenant = {
+  id: string;
+  slug: string;
+  name: string;
+  status: 'active' | 'suspended';
+  domain?: string;
+  createdByUserId: string;
+  defaultSeatLimit: number;
+  seatLimit: number;
+  settings?: Record<string, string | number | boolean>;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type TenantMember = {
+  id: string;
+  tenantId: string;
+  userId: string;
+  role: 'owner' | 'member';
+  seatState: 'active' | 'invited' | 'revoked';
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type User = {
+  id: string;
+  email: string;
+  displayName?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type UserSession = {
+  id: string;
+  userId: string;
+  tenantId: string;
+  activeTenantId: string;
+  tokenHash: string;
+  expiresAt: string;
+  lastSeenAt: string;
+};
+
 export type Repo = {
+  tenantId?: string;
   repoId: string;
   slug: string;
   scmProvider?: ScmProvider;
@@ -148,6 +191,7 @@ export type TaskUiMeta = {
 };
 
 export type Task = {
+  tenantId?: string;
   taskId: string;
   repoId: string;
   title: string;
@@ -175,6 +219,7 @@ export type ArtifactPointer = {
 };
 
 export type RunEvent = {
+  tenantId?: string;
   id: string;
   runId: string;
   repoId: string;
@@ -187,6 +232,7 @@ export type RunEvent = {
 };
 
 export type RunCommand = {
+  tenantId?: string;
   id: string;
   runId: string;
   phase: RunCommandPhase;
@@ -201,6 +247,7 @@ export type RunCommand = {
 };
 
 export type OperatorSession = {
+  tenantId?: string;
   id: string;
   runId: string;
   sandboxId: string;
@@ -221,6 +268,7 @@ export type OperatorSession = {
 };
 
 export type TerminalBootstrap = {
+  tenantId?: string;
   runId: string;
   repoId: string;
   taskId: string;
@@ -278,6 +326,7 @@ export type ScheduledSimulationEvent = {
 };
 
 export type AgentRun = {
+  tenantId?: string;
   runId: string;
   taskId: string;
   repoId: string;

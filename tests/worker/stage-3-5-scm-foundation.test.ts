@@ -11,11 +11,61 @@ describe('Stage 3.5 SCM foundation', () => {
     });
 
     expect(repo).toMatchObject({
+      tenantId: 'tenant_legacy',
       slug: 'abuiles/minions',
       projectPath: 'abuiles/minions',
       scmProvider: 'github',
       scmBaseUrl: 'https://github.com'
     });
+  });
+
+  it('backfills tenant ownership on task/run/event/command records for legacy payloads', async () => {
+    const board = env.BOARD_INDEX.getByName('agentboard');
+    const repo = await board.createRepo({
+      slug: 'acme/tenant-migration',
+      baselineUrl: 'https://tenant-migration.example.com'
+    });
+    const repoBoard = env.REPO_BOARD.getByName(repo.repoId);
+    const task = await repoBoard.createTask({
+      repoId: repo.repoId,
+      title: 'Tenant migration',
+      taskPrompt: 'Backfill tenant ownership.',
+      acceptanceCriteria: ['ownership defaults are applied'],
+      context: { links: [] },
+      status: 'READY'
+    });
+    const run = await repoBoard.startRun(task.taskId);
+    await repoBoard.appendRunEvents(run.runId, [{
+      id: `${run.runId}_tenant_event`,
+      runId: run.runId,
+      repoId: run.repoId,
+      taskId: run.taskId,
+      at: new Date().toISOString(),
+      actorType: 'system',
+      eventType: 'run.status_changed',
+      message: 'Tenant migration event.'
+    }]);
+    await repoBoard.upsertRunCommands(run.runId, [{
+      id: `${run.runId}_tenant_command`,
+      runId: run.runId,
+      phase: 'codex',
+      startedAt: new Date().toISOString(),
+      command: 'echo tenant',
+      status: 'running',
+      source: 'system'
+    }]);
+
+    const [storedRun, events, commands] = await Promise.all([
+      repoBoard.getRun(run.runId),
+      repoBoard.getRunEvents(run.runId),
+      repoBoard.getRunCommands(run.runId)
+    ]);
+
+    expect(repo.tenantId).toBe('tenant_legacy');
+    expect(task.tenantId).toBe('tenant_legacy');
+    expect(storedRun.tenantId).toBe('tenant_legacy');
+    expect(events.every((event) => event.tenantId === 'tenant_legacy')).toBe(true);
+    expect(commands.every((command) => command.tenantId === 'tenant_legacy')).toBe(true);
   });
 
   it('stores provider credentials by provider and host without attaching tokens to repos', async () => {

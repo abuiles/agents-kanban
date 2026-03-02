@@ -72,6 +72,7 @@ export function createRealRun(task: Task, runId: string, now = new Date(), optio
   const taskUiMeta = normalizeTaskUiMeta(task.uiMeta);
   const llmAdapter = taskUiMeta?.llmAdapter ?? 'codex';
   return normalizeRunLlmState(normalizeRunReviewMetadata({
+    tenantId: task.tenantId,
     runId,
     taskId: task.taskId,
     repoId: task.repoId,
