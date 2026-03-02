@@ -1228,8 +1228,40 @@ async function prepareRunBranchFromTaskSource(
     return;
   }
 
-  const sourceRef = resolveTaskSourceRef(task);
-  if (!sourceRef) {
+  if (task.branchSource?.kind === 'dependency_review_head') {
+    await repoBoard.appendRunLogs(runId, [
+      buildRunLog(
+        runId,
+        `Preparing run branch ${run.branchName} from upstream review head ${task.branchSource.upstreamHeadSha?.slice(0, 12) ?? task.branchSource.resolvedRef}.`,
+        'bootstrap'
+      )
+    ]);
+    const checkout = await sandbox.exec(
+      `cd /workspace/repo && git fetch origin ${shellEscape(task.branchSource.resolvedRef)} && git checkout -B ${shellEscape(run.branchName)} FETCH_HEAD`
+    );
+    await appendCommandLogs(repoBoard, runId, 'bootstrap', checkout.stdout, checkout.stderr);
+    if (!checkout.success) {
+      throw new Error(checkout.stderr || `Failed to prepare run branch ${run.branchName} from upstream review head.`);
+    }
+    return;
+  }
+
+  if (task.branchSource?.kind === 'default_branch') {
+    await repoBoard.appendRunLogs(runId, [
+      buildRunLog(runId, `Preparing run branch ${run.branchName} from default branch ${repo.defaultBranch}.`, 'bootstrap')
+    ]);
+    const checkout = await sandbox.exec(
+      `cd /workspace/repo && git fetch origin ${shellEscape(repo.defaultBranch)} && git checkout -B ${shellEscape(run.branchName)} FETCH_HEAD`
+    );
+    await appendCommandLogs(repoBoard, runId, 'bootstrap', checkout.stdout, checkout.stderr);
+    if (!checkout.success) {
+      throw new Error(checkout.stderr || `Failed to prepare run branch ${run.branchName} from default branch ${repo.defaultBranch}.`);
+    }
+    return;
+  }
+
+  const explicitSourceRef = task.branchSource?.kind === 'explicit_source_ref' ? task.branchSource.resolvedRef : resolveTaskSourceRef(task);
+  if (!explicitSourceRef) {
     const checkout = await sandbox.exec(`cd /workspace/repo && git checkout -b ${shellEscape(run.branchName)}`);
     await appendCommandLogs(repoBoard, runId, 'bootstrap', checkout.stdout, checkout.stderr);
     if (!checkout.success) {
@@ -1238,9 +1270,9 @@ async function prepareRunBranchFromTaskSource(
     return;
   }
 
-  const normalized = normalizeTaskSourceRef(sourceRef, repo.slug);
+  const normalized = normalizeTaskSourceRef(explicitSourceRef, repo.slug);
   await repoBoard.appendRunLogs(runId, [
-    buildRunLog(runId, `Preparing run branch ${run.branchName} from task source ref ${normalized.label}.`, 'bootstrap')
+    buildRunLog(runId, `Preparing run branch ${run.branchName} from explicit source ref ${normalized.label}.`, 'bootstrap')
   ]);
   const checkout = await sandbox.exec(
     `cd /workspace/repo && git fetch origin ${shellEscape(normalized.fetchSpec)} && git checkout -B ${shellEscape(run.branchName)} FETCH_HEAD`

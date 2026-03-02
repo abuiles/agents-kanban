@@ -21,6 +21,7 @@ import { EMPTY_REPO_BOARD_STATE, type RepoBoardState } from '../shared/state';
 import { applyRunTransition, appendRunError, buildArtifactManifest, createRealRun, type RunTransitionPatch } from '../shared/real-run';
 import { executeRunJob } from '../run-orchestrator';
 import { refreshDependencyStates } from '../shared/dependency-state';
+import { resolveRunSource } from '../shared/run-source-resolution';
 
 const STORAGE_KEY = 'repo-board-state';
 const LOCAL_JOBS_KEY = 'repo-board-local-jobs';
@@ -190,17 +191,44 @@ export class RepoBoardDO extends DurableObject<Env> {
       return existing;
     }
 
+    const repo = await this.getRepo(task.repoId);
     const now = new Date();
-    const run = createRealRun(task, createRunId(task.repoId), now);
+    const nowIso = now.toISOString();
+    const resolvedSource = resolveRunSource({
+      task,
+      tasks: this.state.tasks,
+      runs: this.state.runs,
+      defaultBranch: repo.defaultBranch,
+      resolvedAt: nowIso
+    });
+    const run = createRealRun(
+      {
+        ...task,
+        branchSource: resolvedSource.branchSource
+      },
+      createRunId(task.repoId),
+      now,
+      {
+        dependencyContext: resolvedSource.dependencyContext
+      }
+    );
 
     this.state = {
       ...this.state,
       tasks: this.state.tasks.map((candidate) =>
-        candidate.taskId === taskId ? { ...candidate, status: 'ACTIVE', runId: run.runId, updatedAt: now.toISOString() } : candidate
+        candidate.taskId === taskId
+          ? {
+              ...candidate,
+              status: 'ACTIVE',
+              runId: run.runId,
+              branchSource: resolvedSource.branchSource,
+              updatedAt: nowIso
+            }
+          : candidate
       ),
       runs: [run, ...this.state.runs]
     };
-    const refreshedTasks = this.refreshDependencyStatesForRepo(now.toISOString());
+    const refreshedTasks = this.refreshDependencyStatesForRepo(nowIso);
     await this.persist();
     await this.emit({ type: 'task.updated', payload: { task: this.state.tasks.find((candidate) => candidate.taskId === taskId)! } }, task.repoId);
     await this.emit({ type: 'run.updated', payload: { run } }, task.repoId);
@@ -238,6 +266,7 @@ export class RepoBoardDO extends DurableObject<Env> {
       prUrl: existingRun.prUrl,
       prNumber: existingRun.prNumber,
       baseRunId: existingRun.runId,
+      dependencyContext: existingRun.dependencyContext,
       changeRequest: {
         prompt,
         requestedAt: now.toISOString()
@@ -831,6 +860,7 @@ function cloneRepoBoardState(state: RepoBoardState): RepoBoardState {
       ...run,
       codexProcessId: run.codexProcessId,
       changeRequest: run.changeRequest ? { ...run.changeRequest } : undefined,
+      dependencyContext: run.dependencyContext ? { ...run.dependencyContext } : undefined,
       operatorSession: run.operatorSession ? { ...run.operatorSession } : undefined,
       errors: run.errors.map((error) => ({ ...error })),
       timeline: run.timeline.map((entry) => ({ ...entry })),

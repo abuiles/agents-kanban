@@ -42,6 +42,7 @@ type CreateRealRunOptions = {
   prNumber?: number;
   baseRunId?: string;
   changeRequest?: AgentRun['changeRequest'];
+  dependencyContext?: AgentRun['dependencyContext'];
 };
 
 export function createRealRun(task: Task, runId: string, now = new Date(), options?: CreateRealRunOptions): AgentRun {
@@ -56,6 +57,7 @@ export function createRealRun(task: Task, runId: string, now = new Date(), optio
     changeRequest: options?.changeRequest,
     prUrl: options?.prUrl,
     prNumber: options?.prNumber,
+    dependencyContext: options?.dependencyContext,
     errors: [],
     startedAt: nowIso,
     timeline: [{ status: 'QUEUED', at: nowIso, note: 'Run queued for real sandbox execution.' }],
