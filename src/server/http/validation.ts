@@ -532,6 +532,27 @@ export type UpdateTenantMemberInput = {
   seatState?: 'active' | 'invited' | 'revoked';
 };
 
+export type AuthSignupInput = {
+  email: string;
+  password: string;
+  displayName?: string;
+  tenantName: string;
+  tenantSlug: string;
+  tenantDomain?: string;
+  seatLimit?: number;
+  defaultSeatLimit?: number;
+};
+
+export type AuthLoginInput = {
+  email: string;
+  password: string;
+  tenantId?: string;
+};
+
+export type SetActiveTenantInput = {
+  tenantId: string;
+};
+
 export function parseCreateTenantInput(body: unknown): CreateTenantInput {
   if (!isRecord(body)) {
     throw badRequest('Invalid tenant payload.');
@@ -571,4 +592,60 @@ export function parseUpdateTenantMemberInput(body: unknown): UpdateTenantMemberI
     patch.seatState = readEnumValue(body.seatState, 'seatState', TENANT_SEAT_STATES, false);
   }
   return patch;
+}
+
+export function parseAuthSignupInput(body: unknown): AuthSignupInput {
+  if (!isRecord(body)) {
+    throw badRequest('Invalid signup payload.');
+  }
+
+  const tenantInput = isRecord(body.tenant) ? body.tenant : undefined;
+  const tenantName = readTrimmedString(tenantInput?.name ?? body.tenantName, 'tenantName')!;
+  const tenantSlug = readTrimmedString(tenantInput?.slug ?? body.tenantSlug, 'tenantSlug')!;
+  const tenantDomain = readTrimmedString(tenantInput?.domain ?? body.tenantDomain, 'tenantDomain', false);
+  const seatLimit = readPositiveInteger(tenantInput?.seatLimit ?? body.seatLimit, 'seatLimit', false);
+  const defaultSeatLimit = readPositiveInteger(tenantInput?.defaultSeatLimit ?? body.defaultSeatLimit, 'defaultSeatLimit', false);
+
+  const password = readTrimmedString(body.password, 'password')!;
+  if (!password) {
+    throw badRequest('Invalid password.');
+  }
+
+  return {
+    email: readTrimmedString(body.email, 'email')!,
+    password,
+    displayName: readTrimmedString(body.displayName, 'displayName', false),
+    tenantName,
+    tenantSlug,
+    tenantDomain,
+    seatLimit,
+    defaultSeatLimit
+  };
+}
+
+export function parseAuthLoginInput(body: unknown): AuthLoginInput {
+  if (!isRecord(body)) {
+    throw badRequest('Invalid login payload.');
+  }
+
+  const password = readTrimmedString(body.password, 'password')!;
+  if (!password) {
+    throw badRequest('Invalid password.');
+  }
+
+  return {
+    email: readTrimmedString(body.email, 'email')!,
+    password,
+    tenantId: readTrimmedString(body.tenantId, 'tenantId', false)
+  };
+}
+
+export function parseSetActiveTenantInput(body: unknown): SetActiveTenantInput {
+  if (!isRecord(body)) {
+    throw badRequest('Invalid tenant context payload.');
+  }
+
+  return {
+    tenantId: readTrimmedString(body.tenantId, 'tenantId')!
+  };
 }
