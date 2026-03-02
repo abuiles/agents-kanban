@@ -32,12 +32,34 @@ function PrimaryButton({ children, disabled }: { children: React.ReactNode; disa
   );
 }
 
-export function RepoForm({ onSubmit }: { onSubmit: (input: CreateRepoInput) => Promise<void> | void }) {
-  const [slug, setSlug] = useState('');
-  const [defaultBranch, setDefaultBranch] = useState('main');
-  const [baselineUrl, setBaselineUrl] = useState('');
-  const [previewCheckName, setPreviewCheckName] = useState('');
-  const [codexAuthBundleR2Key, setCodexAuthBundleR2Key] = useState('');
+export function RepoForm({
+  onSubmit,
+  initialValues,
+  submitLabel = 'Add repo'
+}: {
+  onSubmit: (input: CreateRepoInput) => Promise<void> | void;
+  initialValues?: Partial<CreateRepoInput>;
+  submitLabel?: string;
+}) {
+  const initialSlug = initialValues?.slug ?? '';
+  const initialDefaultBranch = initialValues?.defaultBranch ?? 'main';
+  const initialBaselineUrl = initialValues?.baselineUrl ?? '';
+  const initialPreviewCheckName = initialValues?.previewCheckName ?? '';
+  const initialCodexAuthBundleR2Key = initialValues?.codexAuthBundleR2Key ?? '';
+
+  const [slug, setSlug] = useState(initialSlug);
+  const [defaultBranch, setDefaultBranch] = useState(initialDefaultBranch);
+  const [baselineUrl, setBaselineUrl] = useState(initialBaselineUrl);
+  const [previewCheckName, setPreviewCheckName] = useState(initialPreviewCheckName);
+  const [codexAuthBundleR2Key, setCodexAuthBundleR2Key] = useState(initialCodexAuthBundleR2Key);
+
+  useEffect(() => {
+    setSlug(initialSlug);
+    setDefaultBranch(initialDefaultBranch);
+    setBaselineUrl(initialBaselineUrl);
+    setPreviewCheckName(initialPreviewCheckName);
+    setCodexAuthBundleR2Key(initialCodexAuthBundleR2Key);
+  }, [initialSlug, initialDefaultBranch, initialBaselineUrl, initialPreviewCheckName, initialCodexAuthBundleR2Key]);
 
   return (
     <form
@@ -78,7 +100,7 @@ export function RepoForm({ onSubmit }: { onSubmit: (input: CreateRepoInput) => P
           <input className={inputClass()} value={codexAuthBundleR2Key} onChange={(event) => setCodexAuthBundleR2Key(event.target.value)} placeholder="auth/codex.tgz" />
         </FieldShell>
       </div>
-      <PrimaryButton>Add repo</PrimaryButton>
+      <PrimaryButton>{submitLabel}</PrimaryButton>
     </form>
   );
 }

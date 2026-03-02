@@ -221,6 +221,39 @@ And keep existing bindings for:
 
 `wrangler types` must be regenerated after binding changes.
 
+## Required setup commands
+
+Stage 3 needs three external resources configured before a real run will work:
+
+1. KV namespace for the GitHub PAT
+2. R2 bucket for run artifacts and Codex auth bundle material
+3. Workflow binding for the run orchestrator
+
+The current project uses:
+
+- KV binding: `SECRETS_KV`
+- R2 binding: `RUN_ARTIFACTS`
+- Workflow binding: `RUN_WORKFLOW`
+
+Set the GitHub PAT in KV:
+
+```bash
+npx wrangler kv key put github_pat "$GITHUB_PAT" --binding SECRETS_KV --remote
+```
+
+Upload a `.codex` auth bundle to the R2 bucket:
+
+```bash
+tar -czf codex-auth.tgz -C "$HOME" .codex && \
+  npx wrangler r2 object put my-sandbox-run-artifacts/auth/codex-auth.tgz --file ./codex-auth.tgz --remote
+```
+
+Then set `codexAuthBundleR2Key` on a repo to:
+
+```text
+auth/codex-auth.tgz
+```
+
 ## Public API surface
 
 ## Existing endpoints remain

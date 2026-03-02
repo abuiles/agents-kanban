@@ -42,6 +42,7 @@ export interface AgentBoardApi {
   startRun(taskId: string): Promise<AgentRun>;
   getRun(runId: string): Promise<AgentRun>;
   retryRun(runId: string): Promise<AgentRun>;
+  retryPreview(runId: string): Promise<AgentRun>;
   retryEvidence(runId: string): Promise<AgentRun>;
   getRunLogs(runId: string, options?: { tail?: number }): Promise<RunLogEntry[]>;
   exportState(): string;

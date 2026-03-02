@@ -68,7 +68,10 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
       const repoId = await resolveRepoIdForTask(board, taskId);
       const run = await env.REPO_BOARD.getByName(repoId).startRun(taskId);
       const workflow = await scheduleRunJob(env, ctx, { repoId, taskId, runId: run.runId, mode: 'full_run' });
-      await env.REPO_BOARD.getByName(repoId).transitionRun(run.runId, { workflowInstanceId: workflow.id });
+      await env.REPO_BOARD.getByName(repoId).transitionRun(run.runId, {
+        workflowInstanceId: workflow.id,
+        orchestrationMode: workflow.id.startsWith('local-alarm-') ? 'local_alarm' : 'workflow'
+      });
       return json(await env.REPO_BOARD.getByName(repoId).getRun(run.runId));
     }
 
@@ -85,7 +88,10 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
       const repoId = await resolveRepoIdForRun(board, runId);
       const run = await env.REPO_BOARD.getByName(repoId).retryRun(runId);
       const workflow = await scheduleRunJob(env, ctx, { repoId, taskId: run.taskId, runId: run.runId, mode: 'full_run' });
-      await env.REPO_BOARD.getByName(repoId).transitionRun(run.runId, { workflowInstanceId: workflow.id });
+      await env.REPO_BOARD.getByName(repoId).transitionRun(run.runId, {
+        workflowInstanceId: workflow.id,
+        orchestrationMode: workflow.id.startsWith('local-alarm-') ? 'local_alarm' : 'workflow'
+      });
       return json(await env.REPO_BOARD.getByName(repoId).getRun(run.runId));
     }
 
@@ -94,8 +100,29 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
       const runId = decodeURIComponent(evidenceRetryMatch[1]);
       const repoId = await resolveRepoIdForRun(board, runId);
       const run = await env.REPO_BOARD.getByName(repoId).retryEvidence(runId);
-      const workflow = await scheduleRunJob(env, ctx, { repoId, taskId: run.taskId, runId: run.runId, mode: 'evidence_only' });
-      await env.REPO_BOARD.getByName(repoId).transitionRun(run.runId, { workflowInstanceId: workflow.id });
+      const workflow = await scheduleRunJob(env, ctx, {
+        repoId,
+        taskId: run.taskId,
+        runId: run.runId,
+        mode: run.previewUrl ? 'evidence_only' : 'preview_only'
+      });
+      await env.REPO_BOARD.getByName(repoId).transitionRun(run.runId, {
+        workflowInstanceId: workflow.id,
+        orchestrationMode: workflow.id.startsWith('local-alarm-') ? 'local_alarm' : 'workflow'
+      });
+      return json(await env.REPO_BOARD.getByName(repoId).getRun(run.runId));
+    }
+
+    const previewRetryMatch = url.pathname.match(/^\/api\/runs\/([^/]+)\/preview$/);
+    if (previewRetryMatch && request.method === 'POST') {
+      const runId = decodeURIComponent(previewRetryMatch[1]);
+      const repoId = await resolveRepoIdForRun(board, runId);
+      const run = await env.REPO_BOARD.getByName(repoId).retryPreview(runId);
+      const workflow = await scheduleRunJob(env, ctx, { repoId, taskId: run.taskId, runId: run.runId, mode: 'preview_only' });
+      await env.REPO_BOARD.getByName(repoId).transitionRun(run.runId, {
+        workflowInstanceId: workflow.id,
+        orchestrationMode: workflow.id.startsWith('local-alarm-') ? 'local_alarm' : 'workflow'
+      });
       return json(await env.REPO_BOARD.getByName(repoId).getRun(run.runId));
     }
 

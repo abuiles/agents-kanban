@@ -7,7 +7,9 @@
   "name": "my-sandbox",
   "main": "src/index.ts",
   "compatibility_date": "2026-03-01",
-  "compatibility_flags": ["nodejs_compat"],
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
   "observability": {
     "enabled": true
   },
@@ -22,26 +24,38 @@
   "durable_objects": {
     "bindings": [
       {
-        "class_name": "Sandbox",
-        "name": "Sandbox"
+	"class_name": "Sandbox",
+	"name": "Sandbox"
       },
       {
-        "class_name": "BoardIndexDO",
-        "name": "BOARD_INDEX"
+	"class_name": "BoardIndexDO",
+	"name": "BOARD_INDEX"
       },
       {
-        "class_name": "RepoBoardDO",
-        "name": "REPO_BOARD"
+	"class_name": "RepoBoardDO",
+	"name": "REPO_BOARD"
       }
     ]
   },
+  "workflows": [
+    {
+      "binding": "RUN_WORKFLOW",
+      "name": "my-sandbox-run-workflow",
+      "class_name": "RunWorkflow"
+    }
+  ],
   "migrations": [
     {
-      "new_sqlite_classes": ["Sandbox"],
+      "new_sqlite_classes": [
+	"Sandbox"
+      ],
       "tag": "v1"
     },
     {
-      "new_sqlite_classes": ["BoardIndexDO", "RepoBoardDO"],
+      "new_sqlite_classes": [
+	"BoardIndexDO",
+	"RepoBoardDO"
+      ],
       "tag": "v2"
     }
   ],
@@ -49,6 +63,20 @@
     "binding": "ASSETS",
     "directory": "./dist",
     "not_found_handling": "single-page-application",
-    "run_worker_first": ["/api/*"]
-  }
+    "run_worker_first": [
+      "/api/*"
+    ]
+  },
+  "kv_namespaces": [
+    {
+      "binding": "SECRETS_KV",
+      "id": "e3b9755b07044cb287960ba6ebba5ac6"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "bucket_name": "my-sandbox-run-artifacts",
+      "binding": "RUN_ARTIFACTS"
+    }
+  ]
 }

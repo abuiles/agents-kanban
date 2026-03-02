@@ -181,6 +181,10 @@ export class LocalAgentBoardApi implements AgentBoardApi {
     });
   }
 
+  async retryPreview(runId: string): Promise<AgentRun> {
+    return this.simulator.retryPreview(runId);
+  }
+
   async retryEvidence(runId: string): Promise<AgentRun> {
     return this.simulator.retryEvidence(runId);
   }

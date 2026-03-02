@@ -112,6 +112,12 @@ export class HttpAgentBoardApi implements AgentBoardApi {
     return run;
   }
 
+  async retryPreview(runId: string) {
+    const run = await this.request<AgentRun>(`/api/runs/${encodeURIComponent(runId)}/preview`, { method: 'POST' });
+    await this.refresh();
+    return run;
+  }
+
   async retryEvidence(runId: string) {
     const run = await this.request<AgentRun>(`/api/runs/${encodeURIComponent(runId)}/evidence`, { method: 'POST' });
     await this.refresh();

@@ -119,6 +119,7 @@ export type AgentRun = {
   evidenceStatus?: 'NOT_STARTED' | 'RUNNING' | 'READY' | 'FAILED';
   executorType?: 'mock' | 'sandbox';
   workflowInstanceId?: string;
+  orchestrationMode?: 'workflow' | 'local_alarm';
   sandboxId?: string;
   evidenceSandboxId?: string;
   commitSha?: string;

@@ -1,9 +1,12 @@
-import { getSandbox } from '@cloudflare/sandbox';
+import { getSandbox, parseSSEStream, type ExecEvent, type ExecResult, type StreamOptions } from '@cloudflare/sandbox';
 import type { RepoBoardDO } from './durable/repo-board';
 import type { BoardIndexDO } from './durable/board-index';
 import type { Repo, Task } from '../ui/domain/types';
 import { buildRunLog, type RunJobParams } from './shared/real-run';
 import { NonRetryableError } from 'cloudflare:workflows';
+import { inspectPreviewDiscovery } from './preview-discovery';
+import { LineLogBuffer } from './line-log-buffer';
+import { buildWorkflowInvocationId } from './workflow-id';
 
 type WorkflowBinding<T> = {
   create(options?: { id?: string; params?: T; retention?: { successRetention?: string | number; errorRetention?: string | number } }): Promise<{ id: string }>;
@@ -20,15 +23,17 @@ type SleepFn = (name: string, duration: number | `${number} ${string}`) => Promi
 export async function scheduleRunJob(env: Env, ctx: ExecutionContext, params: RunJobParams) {
   const stage3Env = env as Stage3Env;
   if (stage3Env.RUN_WORKFLOW?.create) {
+    const workflowId = buildWorkflowInvocationId(params);
     return stage3Env.RUN_WORKFLOW.create({
-      id: `${params.mode}:${params.runId}`,
+      id: workflowId,
       params,
       retention: { successRetention: '7 days', errorRetention: '14 days' }
     });
   }
 
-  ctx.waitUntil(executeRunJob(env, params, async (_name, duration) => sleep(duration)));
-  return { id: `inline:${params.runId}` };
+  const repoBoard = env.REPO_BOARD.getByName(params.repoId) as DurableObjectStub<RepoBoardDO>;
+  await repoBoard.scheduleLocalRun(params.runId, params.mode);
+  return { id: `local-alarm-${params.runId}` };
 }
 
 export async function executeRunJob(env: Env, params: RunJobParams, sleepFn: SleepFn) {
@@ -42,6 +47,10 @@ export async function executeRunJob(env: Env, params: RunJobParams, sleepFn: Sle
     return runEvidence(env as Stage3Env, repoBoard, detail.task, repo, params.runId, sleepFn);
   }
 
+  if (params.mode === 'preview_only') {
+    return discoverPreviewAndRunEvidence(env as Stage3Env, repoBoard, detail.task, repo, params.runId, sleepFn, await getGithubPat(env as Stage3Env));
+  }
+
   const pat = await getGithubPat(env as Stage3Env);
   const sandbox = getSandbox(env.Sandbox, params.runId);
 
@@ -50,7 +59,9 @@ export async function executeRunJob(env: Env, params: RunJobParams, sleepFn: Sle
 
   try {
     await sandbox.exec('mkdir -p /workspace/repo');
+    await repoBoard.appendRunLogs(params.runId, [buildRunLog(params.runId, `GitHub PAT suffix: ${pat.slice(-4)}`, 'bootstrap')]);
     await restoreCodexAuth(env as Stage3Env, sandbox, repo, params.runId, repoBoard);
+    await logCodexAuthDiagnostics(sandbox, params.runId, repoBoard);
     await sandbox.gitCheckout(buildGithubCloneUrl(repo.slug, pat), {
       branch: repo.defaultBranch,
       targetDir: '/workspace/repo'
@@ -67,8 +78,18 @@ export async function executeRunJob(env: Env, params: RunJobParams, sleepFn: Sle
     const prompt = buildCodexPrompt(detail.task, repo);
     await sandbox.writeFile('/workspace/task.txt', prompt);
     await sandbox.exec("bash -lc 'command -v codex >/dev/null 2>&1 || npm install -g @openai/codex'");
-    const codexResult = await sandbox.exec("cd /workspace/repo && cat /workspace/task.txt | codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check -C /workspace/repo --json -");
-    await appendCommandLogs(repoBoard, params.runId, 'codex', codexResult.stdout, codexResult.stderr);
+    await logCodexCliDiagnostics(sandbox, params.runId, repoBoard);
+    const codexResult = await execStreamWithLogs(
+      sandbox,
+      repoBoard,
+      params.runId,
+      'codex',
+      `bash -lc ${shellQuote(`set -euo pipefail
+export HOME="\${HOME:-/root}"
+cd /workspace/repo
+cat /workspace/task.txt | codex exec -m gpt-5.1-codex-mini --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check -C /workspace/repo --json -
+`)}`
+    );
     if (!codexResult.success) {
       throw new NonRetryableError(codexResult.stderr || 'Codex execution failed.');
     }
@@ -123,15 +144,7 @@ export async function executeRunJob(env: Env, params: RunJobParams, sleepFn: Sle
     throw error;
   }
 
-  await repoBoard.transitionRun(params.runId, { status: 'WAITING_PREVIEW', previewStatus: 'DISCOVERING', appendTimelineNote: 'Polling GitHub checks for preview URL.' });
-  const previewUrl = await waitForPreview(env as Stage3Env, repoBoard, repo, params.runId, sleepFn, pat);
-  if (!previewUrl) {
-    await failRun(repoBoard, params.runId, 'PREVIEW_TIMEOUT', 'preview', 'Preview URL did not appear before timeout.', false);
-    return;
-  }
-
-  await repoBoard.transitionRun(params.runId, { previewUrl, previewStatus: 'READY', status: 'EVIDENCE_RUNNING', evidenceStatus: 'RUNNING', appendTimelineNote: 'Running Playwright evidence.' });
-  await runEvidence(env as Stage3Env, repoBoard, detail.task, repo, params.runId, sleepFn);
+  await discoverPreviewAndRunEvidence(env as Stage3Env, repoBoard, detail.task, repo, params.runId, sleepFn, pat);
 }
 
 async function runEvidence(env: Stage3Env, repoBoard: DurableObjectStub<RepoBoardDO>, task: Task, repo: Repo, runId: string, _sleepFn: SleepFn) {
@@ -174,10 +187,25 @@ async function waitForPreview(env: Stage3Env, repoBoard: DurableObjectStub<RepoB
   }
 
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    const previewUrl = await lookupPreviewUrl(repo, headSha, pat, repo.previewCheckName);
-    await repoBoard.appendRunLogs(runId, [buildRunLog(runId, `Preview discovery attempt ${attempt}/${attempts}.`, 'preview', 'info', { headSha })]);
-    if (previewUrl) {
-      return previewUrl;
+    const discovery = await lookupPreviewUrl(repo, headSha, pat, repo.previewCheckName);
+    await repoBoard.appendRunLogs(runId, [
+      buildRunLog(runId, `Preview discovery attempt ${attempt}/${attempts}.`, 'preview', 'info', { headSha }),
+      buildRunLog(
+        runId,
+        formatPreviewDiscoveryLog(discovery),
+        'preview',
+        discovery.previewUrl ? 'info' : 'error',
+        {
+          headSha,
+          matchedCheck: discovery.matchedCheck ?? 'none',
+          adapter: discovery.adapter ?? 'none',
+          source: discovery.source ?? 'none',
+          checkCount: discovery.checks.length
+        }
+      )
+    ]);
+    if (discovery.previewUrl) {
+      return discovery.previewUrl;
     }
     await sleepFn(`preview-${attempt}`, 10_000);
   }
@@ -185,15 +213,71 @@ async function waitForPreview(env: Stage3Env, repoBoard: DurableObjectStub<RepoB
   return undefined;
 }
 
+async function discoverPreviewAndRunEvidence(
+  env: Stage3Env,
+  repoBoard: DurableObjectStub<RepoBoardDO>,
+  task: Task,
+  repo: Repo,
+  runId: string,
+  sleepFn: SleepFn,
+  pat: string
+) {
+  await repoBoard.transitionRun(runId, {
+    status: 'WAITING_PREVIEW',
+    previewStatus: 'DISCOVERING',
+    appendTimelineNote: 'Polling GitHub checks for preview URL.'
+  });
+  const previewUrl = await waitForPreview(env, repoBoard, repo, runId, sleepFn, pat);
+  if (!previewUrl) {
+    await failRun(repoBoard, runId, 'PREVIEW_TIMEOUT', 'preview', 'Preview URL did not appear before timeout.', false);
+    return;
+  }
+
+  await repoBoard.transitionRun(runId, {
+    previewUrl,
+    previewStatus: 'READY',
+    status: 'EVIDENCE_RUNNING',
+    evidenceStatus: 'RUNNING',
+    appendTimelineNote: 'Running Playwright evidence.'
+  });
+  await runEvidence(env, repoBoard, task, repo, runId, sleepFn);
+}
+
 async function lookupPreviewUrl(repo: Repo, headSha: string, pat: string, previewCheckName?: string) {
   const response = await githubRequest(repo.slug, `/commits/${headSha}/check-runs`, pat);
-  const payload = await response.json() as { check_runs?: Array<{ name?: string; details_url?: string; html_url?: string }> };
-  const candidates = payload.check_runs ?? [];
-  const matched = candidates.find((item) => {
-    if (previewCheckName && item.name === previewCheckName) return true;
-    return Boolean(item.details_url?.includes('pages.dev') || item.html_url?.includes('pages.dev'));
-  });
-  return matched?.details_url ?? matched?.html_url;
+  const payload = await response.json() as {
+    check_runs?: Array<{
+      name?: string;
+      details_url?: string;
+      html_url?: string;
+      output?: { summary?: string | null };
+      app?: { slug?: string };
+    }>;
+  };
+  return inspectPreviewDiscovery({ ...repo, previewCheckName }, payload.check_runs ?? []);
+}
+
+function formatPreviewDiscoveryLog(discovery: Awaited<ReturnType<typeof lookupPreviewUrl>>) {
+  const checks = discovery.checks.length
+    ? discovery.checks
+        .map((check) => {
+          const parts = [
+            check.name ?? '(unnamed check)',
+            check.appSlug ? `app=${check.appSlug}` : undefined,
+            `score=${check.score}`,
+            check.matchedAdapter ? `adapter=${check.matchedAdapter}` : undefined,
+            check.extracted ? 'preview=found' : 'preview=missing'
+          ].filter(Boolean);
+          return parts.join(' ');
+        })
+        .join(' | ')
+    : 'no check runs returned';
+
+  if (discovery.previewUrl) {
+    return `Preview discovery matched ${discovery.matchedCheck ?? 'unknown check'} via ${discovery.adapter ?? 'unknown adapter'} from ${discovery.source ?? 'unknown source'}: ${discovery.previewUrl} | checks: ${checks}`;
+  }
+
+  return `Preview discovery found no usable preview URL. checks: ${checks}`;
 }
 
 async function createPullRequest(repo: Repo, task: Task, run: Awaited<ReturnType<RepoBoardDO['getRun']>>, pat: string) {
@@ -275,19 +359,123 @@ async function getGithubPat(env: Stage3Env) {
   return pat;
 }
 
+function bytesToBase64(buffer: ArrayBuffer) {
+  let binary = '';
+  const bytes = new Uint8Array(buffer);
+  const chunkSize = 0x8000;
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    const chunk = bytes.subarray(index, index + chunkSize);
+    binary += String.fromCharCode(...chunk);
+  }
+  return btoa(binary);
+}
+
 async function restoreCodexAuth(env: Stage3Env, sandbox: ReturnType<typeof getSandbox>, repo: Repo, runId: string, repoBoard: DurableObjectStub<RepoBoardDO>) {
   if (!repo.codexAuthBundleR2Key || !env.RUN_ARTIFACTS) {
-    return;
+    const reason = !repo.codexAuthBundleR2Key
+      ? 'No Codex auth bundle configured for this repo.'
+      : 'RUN_ARTIFACTS binding is not configured.';
+    await repoBoard.appendRunLogs(runId, [buildRunLog(runId, reason, 'bootstrap', 'error')]);
+    throw new NonRetryableError(reason);
   }
 
   const object = await env.RUN_ARTIFACTS.get(repo.codexAuthBundleR2Key);
   if (!object) {
     await repoBoard.appendRunLogs(runId, [buildRunLog(runId, `Codex auth bundle ${repo.codexAuthBundleR2Key} was not found in R2.`, 'bootstrap', 'error')]);
-    return;
+    throw new NonRetryableError(`Codex auth bundle ${repo.codexAuthBundleR2Key} was not found in R2.`);
   }
 
-  await sandbox.writeFile('/workspace/codex-auth.tgz', await object.text());
-  await sandbox.exec("mkdir -p ~/.codex && tar -xzf /workspace/codex-auth.tgz -C ~/ || true");
+  const archiveBase64 = bytesToBase64(await object.arrayBuffer());
+  await sandbox.writeFile('/workspace/codex-auth.tgz.b64', archiveBase64);
+  const restoreResult = await sandbox.exec(
+    `bash -lc ${shellQuote(`set -euo pipefail
+export HOME="\${HOME:-/root}"
+base64 -d /workspace/codex-auth.tgz.b64 > /workspace/codex-auth.tgz
+mkdir -p "$HOME"
+tar -xzf /workspace/codex-auth.tgz -C "$HOME"
+test -d "$HOME/.codex"
+find "$HOME/.codex" -maxdepth 2 -type f | sort
+`)}`
+  );
+  await appendCommandLogs(repoBoard, runId, 'bootstrap', restoreResult.stdout, restoreResult.stderr);
+  if (!restoreResult.success) {
+    throw new NonRetryableError('Codex auth bundle restore failed.');
+  }
+}
+
+async function logCodexAuthDiagnostics(sandbox: ReturnType<typeof getSandbox>, runId: string, repoBoard: DurableObjectStub<RepoBoardDO>) {
+  await sandbox.writeFile(
+    '/workspace/codex-auth-diagnostics.mjs',
+    `import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+const home = os.homedir();
+console.log(\`HOME=\${home}\`);
+const codexDir = path.join(home, '.codex');
+if (!fs.existsSync(codexDir) || !fs.statSync(codexDir).isDirectory()) {
+  console.log('Codex dir: missing');
+  process.exit(0);
+}
+
+console.log('Codex dir: present');
+for (const entry of fs.readdirSync(codexDir).sort()) {
+  const fullPath = path.join(codexDir, entry);
+  if (fs.statSync(fullPath).isFile()) {
+    console.log(fullPath);
+  }
+}
+
+const authPath = path.join(codexDir, 'auth.json');
+if (!fs.existsSync(authPath) || !fs.statSync(authPath).isFile()) {
+  console.log('Codex auth file: missing');
+  process.exit(0);
+}
+
+const data = JSON.parse(fs.readFileSync(authPath, 'utf8'));
+console.log(\`Codex auth file: \${authPath}\`);
+const apiKey = typeof data.OPENAI_API_KEY === 'string' && data.OPENAI_API_KEY ? data.OPENAI_API_KEY : null;
+console.log(\`Codex OPENAI_API_KEY suffix: \${apiKey ? apiKey.slice(-4) : 'missing'}\`);
+const accessToken = data.tokens && typeof data.tokens.access_token === 'string' && data.tokens.access_token
+  ? data.tokens.access_token
+  : null;
+console.log(\`Codex access_token suffix: \${accessToken ? accessToken.slice(-4) : 'missing'}\`);
+`
+  );
+  const diagnostics = await sandbox.exec(
+    `bash -lc ${shellQuote(`set -euo pipefail
+export HOME="\${HOME:-/root}"
+node /workspace/codex-auth-diagnostics.mjs
+`)}`
+  );
+  await appendCommandLogs(repoBoard, runId, 'bootstrap', diagnostics.stdout, diagnostics.stderr);
+  if (!diagnostics.success) {
+    throw new NonRetryableError('Codex auth diagnostics failed.');
+  }
+  const stdout = diagnostics.stdout ?? '';
+  if (stdout.includes('Codex dir: missing')) {
+    throw new NonRetryableError('Codex auth directory is missing after restore.');
+  }
+  if (stdout.includes('Codex auth file: missing')) {
+    throw new NonRetryableError('Codex auth file is missing after restore.');
+  }
+  if (stdout.includes('Codex OPENAI_API_KEY suffix: missing') && stdout.includes('Codex access_token suffix: missing')) {
+    throw new NonRetryableError('Codex auth file is present but contains no usable credentials.');
+  }
+}
+
+async function logCodexCliDiagnostics(sandbox: ReturnType<typeof getSandbox>, runId: string, repoBoard: DurableObjectStub<RepoBoardDO>) {
+  const diagnostics = await sandbox.exec(
+    `bash -lc ${shellQuote(`set -euo pipefail
+command -v codex
+codex --version
+printf 'Codex model: gpt-5.1-codex-mini\\n'
+`)}`
+  );
+  await appendCommandLogs(repoBoard, runId, 'codex', diagnostics.stdout, diagnostics.stderr);
+  if (!diagnostics.success) {
+    throw new NonRetryableError('Codex CLI is not available in the sandbox.');
+  }
 }
 
 async function persistArtifactManifest(env: Stage3Env, runId: string, manifest: Awaited<ReturnType<RepoBoardDO['getRunArtifacts']>>) {
@@ -316,6 +504,91 @@ async function appendCommandLogs(repoBoard: DurableObjectStub<RepoBoardDO>, runI
   if (stdout?.trim()) logs.push(buildRunLog(runId, stdout.trim(), phase));
   if (stderr?.trim()) logs.push(buildRunLog(runId, stderr.trim(), phase, 'error'));
   if (logs.length) await repoBoard.appendRunLogs(runId, logs);
+}
+
+async function execStreamWithLogs(
+  sandbox: ReturnType<typeof getSandbox>,
+  repoBoard: DurableObjectStub<RepoBoardDO>,
+  runId: string,
+  phase: NonNullable<ReturnType<typeof buildRunLog>['phase']>,
+  command: string,
+  options?: StreamOptions
+): Promise<ExecResult> {
+  const stdoutBuffer = new LineLogBuffer();
+  const stderrBuffer = new LineLogBuffer();
+  const stdoutChunks: string[] = [];
+  const stderrChunks: string[] = [];
+  const startedAt = new Date().toISOString();
+  let completedAt = Date.now();
+  let exitCode = 1;
+  let streamError: string | undefined;
+  let eventResult: ExecResult | undefined;
+  let appendQueue = Promise.resolve();
+
+  const enqueueLogs = (logs: Array<{ message: string; level: 'info' | 'error' }>) => {
+    if (!logs.length) {
+      return;
+    }
+
+    appendQueue = appendQueue.then(() =>
+      repoBoard.appendRunLogs(
+        runId,
+        logs.map((log) => buildRunLog(runId, log.message, phase, log.level))
+      )
+    );
+  };
+
+  const stream = await sandbox.execStream(command, options);
+
+  try {
+    for await (const event of parseSSEStream<ExecEvent>(stream)) {
+      switch (event.type) {
+        case 'stdout': {
+          const chunk = event.data ?? '';
+          stdoutChunks.push(chunk);
+          enqueueLogs(stdoutBuffer.push(chunk).map((message) => ({ message, level: 'info' as const })));
+          break;
+        }
+        case 'stderr': {
+          const chunk = event.data ?? '';
+          stderrChunks.push(chunk);
+          enqueueLogs(stderrBuffer.push(chunk).map((message) => ({ message, level: 'error' as const })));
+          break;
+        }
+        case 'complete':
+          completedAt = Date.now();
+          exitCode = event.exitCode ?? exitCode;
+          eventResult = event.result;
+          break;
+        case 'error':
+          completedAt = Date.now();
+          streamError = event.error ?? 'Command stream failed.';
+          break;
+        case 'start':
+          break;
+      }
+    }
+  } finally {
+    enqueueLogs(stdoutBuffer.flush().map((message) => ({ message, level: 'info' as const })));
+    enqueueLogs(stderrBuffer.flush().map((message) => ({ message, level: 'error' as const })));
+    await appendQueue;
+  }
+
+  if (eventResult) {
+    return eventResult;
+  }
+
+  const stdout = stdoutChunks.join('');
+  const stderr = [stderrChunks.join(''), streamError].filter(Boolean).join(stderrChunks.length ? '\n' : '');
+  return {
+    success: !streamError && exitCode === 0,
+    exitCode,
+    stdout,
+    stderr,
+    command,
+    duration: Math.max(0, completedAt - Date.parse(startedAt)),
+    timestamp: startedAt
+  };
 }
 
 function buildGithubCloneUrl(slug: string, pat: string) {

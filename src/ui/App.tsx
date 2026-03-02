@@ -1,5 +1,5 @@
 import type { ChangeEvent } from 'react';
-import { useMemo, useState, useSyncExternalStore } from 'react';
+import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { Board } from './components/Board';
 import { ControlSurfaceHeader, SummaryRow } from './components/ControlSurface';
 import { DetailPanel } from './components/DetailPanel';
@@ -10,6 +10,7 @@ import type { RunLogEntry, TaskStatus } from './domain/types';
 import type { AgentBoardApi } from './domain/api';
 import { getAgentBoardApi } from './api';
 import { downloadJson } from './store/import-export';
+import { getSelectedTaskIdFromUrl, setSelectedTaskIdInUrl } from './url-state';
 
 export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
   const api = useMemo(() => providedApi ?? getAgentBoardApi(), [providedApi]);
@@ -19,18 +20,62 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
     () => api.getSnapshot()
   );
   const [repoModalOpen, setRepoModalOpen] = useState(false);
+  const [repoToEditId, setRepoToEditId] = useState<string | undefined>();
   const [taskModalOpen, setTaskModalOpen] = useState(false);
   const [notice, setNotice] = useState<string | undefined>();
+  const [taskSelectionHydrated, setTaskSelectionHydrated] = useState(false);
 
   const selectedRepoId = snapshot.ui.selectedRepoId;
   const selectedTaskId = snapshot.ui.selectedTaskId;
   const repos = snapshot.repos;
+  const selectedRepo = selectedRepoId === 'all' ? undefined : repos.find((repo) => repo.repoId === selectedRepoId);
+  const repoToEdit = repoToEditId ? repos.find((repo) => repo.repoId === repoToEditId) : undefined;
   const visibleTasks = getTasksForRepo(snapshot.tasks, selectedRepoId);
   const tasksByColumn = getTasksByColumn(visibleTasks);
   const detail = getTaskDetail(snapshot, selectedTaskId);
   const logs: RunLogEntry[] = detail?.latestRun
     ? snapshot.logs.filter((entry) => entry.runId === detail.latestRun?.runId)
     : [];
+
+  useEffect(() => {
+    if (taskSelectionHydrated) {
+      return;
+    }
+
+    const taskIdFromUrl = getSelectedTaskIdFromUrl();
+    if (!taskIdFromUrl) {
+      setTaskSelectionHydrated(true);
+      return;
+    }
+
+    if (!snapshot.tasks.length) {
+      return;
+    }
+
+    setTaskSelectionHydrated(true);
+    const taskExists = snapshot.tasks.some((task) => task.taskId === taskIdFromUrl);
+    if (taskExists && taskIdFromUrl !== selectedTaskId) {
+      void api.setSelectedTaskId(taskIdFromUrl);
+      return;
+    }
+
+    if (!taskExists) {
+      setSelectedTaskIdInUrl(undefined);
+    }
+  }, [api, selectedTaskId, snapshot.tasks, taskSelectionHydrated]);
+
+  useEffect(() => {
+    if (!taskSelectionHydrated) {
+      return;
+    }
+
+    if (selectedTaskId && !snapshot.tasks.some((task) => task.taskId === selectedTaskId)) {
+      void api.setSelectedTaskId(undefined);
+      return;
+    }
+
+    setSelectedTaskIdInUrl(selectedTaskId);
+  }, [api, selectedTaskId, snapshot.tasks, taskSelectionHydrated]);
 
   async function moveTask(taskId: string, status: TaskStatus) {
     const task = snapshot.tasks.find((candidate) => candidate.taskId === taskId);
@@ -59,6 +104,12 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
     const run = await api.retryRun(runId);
     await api.setSelectedTaskId(run.taskId);
     setNotice('Started a fresh run.');
+  }
+
+  async function retryPreview(runId: string) {
+    const run = await api.retryPreview(runId);
+    await api.setSelectedTaskId(run.taskId);
+    setNotice('Retrying preview discovery for the current PR.');
   }
 
   async function retryEvidence(runId: string) {
@@ -95,6 +146,7 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
           selectedRepoId={selectedRepoId}
           onRepoChange={(repoId) => void api.setSelectedRepoId(repoId)}
           onAddRepo={() => setRepoModalOpen(true)}
+          onEditRepo={selectedRepo ? () => setRepoToEditId(selectedRepo.repoId) : undefined}
           onCreateTask={() => setTaskModalOpen(true)}
           onExport={() => downloadJson('agentboard-export.json', api.exportState())}
           onImport={handleImport}
@@ -117,7 +169,13 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
             onSelectTask={(taskId) => void toggleTaskSelection(taskId)}
             onMoveTask={(taskId, status) => void moveTask(taskId, status)}
           />
-          <DetailPanel detail={detail} logs={logs} onRetryRun={(runId) => void retryRun(runId)} onRetryEvidence={(runId) => void retryEvidence(runId)} />
+          <DetailPanel
+            detail={detail}
+            logs={logs}
+            onRetryRun={(runId) => void retryRun(runId)}
+            onRetryPreview={(runId) => void retryPreview(runId)}
+            onRetryEvidence={(runId) => void retryEvidence(runId)}
+          />
         </main>
       </div>
 
@@ -128,6 +186,26 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
               await api.createRepo(input);
               setRepoModalOpen(false);
               setNotice('Repo added to the board.');
+            }}
+          />
+        </Modal>
+      ) : null}
+
+      {repoToEdit ? (
+        <Modal title={`Edit ${repoToEdit.slug}`} onClose={() => setRepoToEditId(undefined)}>
+          <RepoForm
+            initialValues={{
+              slug: repoToEdit.slug,
+              defaultBranch: repoToEdit.defaultBranch,
+              baselineUrl: repoToEdit.baselineUrl,
+              previewCheckName: repoToEdit.previewCheckName,
+              codexAuthBundleR2Key: repoToEdit.codexAuthBundleR2Key
+            }}
+            submitLabel="Save repo"
+            onSubmit={async (input) => {
+              await api.updateRepo(repoToEdit.repoId, input);
+              setRepoToEditId(undefined);
+              setNotice(`Updated ${repoToEdit.slug}.`);
             }}
           />
         </Modal>

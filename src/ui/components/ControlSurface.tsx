@@ -60,6 +60,7 @@ export function ControlSurfaceHeader({
   selectedRepoId,
   onRepoChange,
   onAddRepo,
+  onEditRepo,
   onCreateTask,
   onExport,
   onImport
@@ -68,6 +69,7 @@ export function ControlSurfaceHeader({
   selectedRepoId: string | 'all';
   onRepoChange: (repoId: string | 'all') => void;
   onAddRepo: () => void;
+  onEditRepo?: () => void;
   onCreateTask: () => void;
   onExport: () => void;
   onImport: (event: ChangeEvent<HTMLInputElement>) => void;
@@ -105,6 +107,11 @@ export function ControlSurfaceHeader({
               <ActionButton variant="primary" onClick={onCreateTask}>
                 Create task
               </ActionButton>
+              {selectedRepoId !== 'all' && onEditRepo ? (
+                <ActionButton variant="secondary" onClick={onEditRepo}>
+                  Edit repo
+                </ActionButton>
+              ) : null}
               <ActionButton variant="secondary" onClick={onAddRepo}>
                 Add repo
               </ActionButton>
@@ -142,7 +149,7 @@ export function SummaryRow({ repos, visibleTasks }: { repos: Repo[]; visibleTask
       </section>
       <div className="flex flex-wrap items-center gap-3 rounded-xl border border-cyan-500/20 bg-cyan-500/8 px-4 py-2.5 text-sm text-cyan-50">
         <span className="inline-flex rounded-full border border-cyan-400/30 bg-cyan-400/10 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-cyan-200">
-          Mock mode
+          Run mode
         </span>
         <span className="text-sm text-cyan-50/90">Drag a task into Active to start a real run with Codex, PR creation, preview discovery, and evidence.</span>
       </div>

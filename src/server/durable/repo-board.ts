@@ -7,19 +7,24 @@ import type { BoardEvent } from '../shared/events';
 import { stringifyBoardEvent } from '../shared/events';
 import { EMPTY_REPO_BOARD_STATE, type RepoBoardState } from '../shared/state';
 import { applyRunTransition, appendRunError, buildArtifactManifest, createRealRun, type RunTransitionPatch } from '../shared/real-run';
+import { executeRunJob } from '../run-orchestrator';
 
 const STORAGE_KEY = 'repo-board-state';
+const LOCAL_JOBS_KEY = 'repo-board-local-jobs';
 
 type RepoScopedEvent = BoardEvent & { repoId?: string };
+type LocalJobs = Record<string, 'full_run' | 'evidence_only' | 'preview_only'>;
 
 export class RepoBoardDO extends DurableObject<Env> {
   private state: RepoBoardState = EMPTY_REPO_BOARD_STATE;
+  private localJobs: LocalJobs = {};
   private ready: Promise<void>;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     this.ready = this.ctx.blockConcurrencyWhile(async () => {
       this.state = (await this.ctx.storage.get<RepoBoardState>(STORAGE_KEY)) ?? EMPTY_REPO_BOARD_STATE;
+      this.localJobs = (await this.ctx.storage.get<LocalJobs>(LOCAL_JOBS_KEY)) ?? {};
     });
   }
 
@@ -196,6 +201,34 @@ export class RepoBoardDO extends DurableObject<Env> {
     return updated;
   }
 
+  async retryPreview(runId: string) {
+    await this.ready;
+    const run = await this.getRun(runId);
+    const nowIso = new Date().toISOString();
+    const updated = applyRunTransition(
+      { ...run, endedAt: undefined },
+      {
+        status: 'WAITING_PREVIEW',
+        previewUrl: undefined,
+        previewStatus: 'DISCOVERING',
+        evidenceStatus: 'NOT_STARTED',
+        appendTimelineNote: 'Retrying preview discovery for the existing PR.'
+      },
+      nowIso
+    );
+
+    this.state = {
+      ...this.state,
+      runs: this.state.runs.map((candidate) => (candidate.runId === runId ? updated : candidate)),
+      tasks: this.state.tasks.map((candidate) =>
+        candidate.taskId === run.taskId ? { ...candidate, status: 'REVIEW', updatedAt: nowIso } : candidate
+      )
+    };
+    await this.persist();
+    await this.emit({ type: 'run.updated', payload: { run: updated } }, updated.repoId);
+    return updated;
+  }
+
   async appendRunLogs(runId: string, logs: RunLogEntry[]) {
     await this.ready;
     const run = await this.getRun(runId);
@@ -289,8 +322,35 @@ export class RepoBoardDO extends DurableObject<Env> {
     return tail ? logs.slice(-tail) : logs;
   }
 
+  async scheduleLocalRun(runId: string, mode: 'full_run' | 'evidence_only' | 'preview_only') {
+    await this.ready;
+    this.localJobs[runId] = mode;
+    await this.persistLocalJobs();
+    await this.ctx.storage.setAlarm(Date.now());
+  }
+
   async alarm() {
-    // Stage 3 no longer uses alarm-driven mock progression.
+    await this.ready;
+    const jobs = Object.entries(this.localJobs);
+    if (!jobs.length) {
+      return;
+    }
+
+    for (const [runId, mode] of jobs) {
+      const run = this.state.runs.find((candidate) => candidate.runId === runId);
+      if (!run) {
+        delete this.localJobs[runId];
+        continue;
+      }
+
+      delete this.localJobs[runId];
+      await this.persistLocalJobs();
+      try {
+        await executeRunJob(this.env, { repoId: run.repoId, taskId: run.taskId, runId, mode }, sleepForAlarm);
+      } catch (error) {
+        console.error('Local alarm run execution failed', { runId, error });
+      }
+    }
   }
 
   private async handleWebSocket() {
@@ -314,6 +374,10 @@ export class RepoBoardDO extends DurableObject<Env> {
     await this.ctx.storage.put(STORAGE_KEY, this.state);
   }
 
+  private async persistLocalJobs() {
+    await this.ctx.storage.put(LOCAL_JOBS_KEY, this.localJobs);
+  }
+
   private cloneState(): RepoBoardState {
     return cloneRepoBoardState(this.state);
   }
@@ -330,6 +394,11 @@ export class RepoBoardDO extends DurableObject<Env> {
     const repos = await Promise.all(repoIds.map((repoId) => this.getRepo(repoId)));
     return { repos, tasks, runs, logs: [...this.state.logs] };
   }
+}
+
+function sleepForAlarm(_name: string, duration: number | `${number} ${string}`) {
+  const milliseconds = typeof duration === 'number' ? duration : Number.parseInt(duration, 10) * 1000;
+  return new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
 }
 
 function deriveTaskStatus(run: AgentRun, current: TaskStatus): TaskStatus {

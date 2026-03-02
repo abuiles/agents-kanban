@@ -21,6 +21,11 @@ function readString(value: unknown, field: string, required = true): string | un
   throw badRequest(`Invalid ${field}.`);
 }
 
+function readTrimmedString(value: unknown, field: string, required = true): string | undefined {
+  const result = readString(value, field, required);
+  return typeof result === 'string' ? result.trim() : result;
+}
+
 function readBoolean(value: unknown, field: string, required = false): boolean | undefined {
   if (typeof value === 'boolean') {
     return value;
@@ -91,12 +96,12 @@ export function parseCreateRepoInput(body: unknown): CreateRepoInput {
   }
 
   return {
-    slug: readString(body.slug, 'slug')!,
-    defaultBranch: readString(body.defaultBranch, 'defaultBranch', false),
-    baselineUrl: readString(body.baselineUrl, 'baselineUrl')!,
+    slug: readTrimmedString(body.slug, 'slug')!,
+    defaultBranch: readTrimmedString(body.defaultBranch, 'defaultBranch', false),
+    baselineUrl: readTrimmedString(body.baselineUrl, 'baselineUrl')!,
     enabled: readBoolean(body.enabled, 'enabled', false),
-    previewCheckName: readString(body.previewCheckName, 'previewCheckName', false),
-    codexAuthBundleR2Key: readString(body.codexAuthBundleR2Key, 'codexAuthBundleR2Key', false)
+    previewCheckName: readTrimmedString(body.previewCheckName, 'previewCheckName', false),
+    codexAuthBundleR2Key: readTrimmedString(body.codexAuthBundleR2Key, 'codexAuthBundleR2Key', false)
   };
 }
 
@@ -106,12 +111,12 @@ export function parseUpdateRepoInput(body: unknown): UpdateRepoInput {
   }
 
   const patch: UpdateRepoInput = {};
-  if (hasOwn(body, 'slug')) patch.slug = readString(body.slug, 'slug', false);
-  if (hasOwn(body, 'defaultBranch')) patch.defaultBranch = readString(body.defaultBranch, 'defaultBranch', false);
-  if (hasOwn(body, 'baselineUrl')) patch.baselineUrl = readString(body.baselineUrl, 'baselineUrl', false);
+  if (hasOwn(body, 'slug')) patch.slug = readTrimmedString(body.slug, 'slug', false);
+  if (hasOwn(body, 'defaultBranch')) patch.defaultBranch = readTrimmedString(body.defaultBranch, 'defaultBranch', false);
+  if (hasOwn(body, 'baselineUrl')) patch.baselineUrl = readTrimmedString(body.baselineUrl, 'baselineUrl', false);
   if (hasOwn(body, 'enabled')) patch.enabled = readBoolean(body.enabled, 'enabled', false);
-  if (hasOwn(body, 'previewCheckName')) patch.previewCheckName = readString(body.previewCheckName, 'previewCheckName', false);
-  if (hasOwn(body, 'codexAuthBundleR2Key')) patch.codexAuthBundleR2Key = readString(body.codexAuthBundleR2Key, 'codexAuthBundleR2Key', false);
+  if (hasOwn(body, 'previewCheckName')) patch.previewCheckName = readTrimmedString(body.previewCheckName, 'previewCheckName', false);
+  if (hasOwn(body, 'codexAuthBundleR2Key')) patch.codexAuthBundleR2Key = readTrimmedString(body.codexAuthBundleR2Key, 'codexAuthBundleR2Key', false);
   return patch;
 }
 

@@ -1,6 +1,6 @@
 import type { ArtifactManifest, AgentRun, Repo, RunError, RunLogEntry, RunStatus, Task } from '../../ui/domain/types';
 
-export type RunJobMode = 'full_run' | 'evidence_only';
+export type RunJobMode = 'full_run' | 'evidence_only' | 'preview_only';
 
 export type RunJobParams = {
   repoId: string;
@@ -19,6 +19,7 @@ export type RunTransitionPatch = {
   previewStatus?: AgentRun['previewStatus'];
   evidenceStatus?: AgentRun['evidenceStatus'];
   workflowInstanceId?: string;
+  orchestrationMode?: AgentRun['orchestrationMode'];
   sandboxId?: string;
   evidenceSandboxId?: string;
   commitSha?: string;
@@ -48,6 +49,7 @@ export function createRealRun(task: Task, runId: string, now = new Date()): Agen
     previewStatus: 'UNKNOWN',
     evidenceStatus: 'NOT_STARTED',
     executorType: 'sandbox',
+    orchestrationMode: 'workflow',
     executionSummary: {}
   };
 }

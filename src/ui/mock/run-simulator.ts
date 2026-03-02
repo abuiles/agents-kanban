@@ -106,6 +106,36 @@ export class RunSimulator {
     return this.store.getSnapshot().runs.find((candidate) => candidate.runId === runId)!;
   }
 
+  retryPreview(runId: string): AgentRun {
+    const now = new Date().toISOString();
+    this.store.update((snapshot) => ({
+      ...snapshot,
+      runs: snapshot.runs.map((run) => {
+        if (run.runId !== runId) {
+          return run;
+        }
+
+        const pendingEvents = [
+          { status: 'WAITING_PREVIEW' as const, executeAt: now, note: 'Retrying preview discovery only.' },
+          { status: 'EVIDENCE_RUNNING' as const, executeAt: new Date(Date.now() + 2_000).toISOString() },
+          { status: 'DONE' as const, executeAt: new Date(Date.now() + 6_000).toISOString() }
+        ];
+
+        return {
+          ...run,
+          status: 'WAITING_PREVIEW',
+          previewUrl: undefined,
+          endedAt: undefined,
+          pendingEvents,
+          timeline: [...run.timeline, { status: 'WAITING_PREVIEW', at: now, note: 'Retrying preview discovery only.' }]
+        };
+      })
+    }));
+
+    this.scheduleRun(runId);
+    return this.store.getSnapshot().runs.find((candidate) => candidate.runId === runId)!;
+  }
+
   private advanceRun(runId: string, status: RunStatus, note?: string) {
     const now = new Date().toISOString();
     let generatedLogs: RunLogEntry[] = [];
