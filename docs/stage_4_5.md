@@ -206,6 +206,15 @@ Rules:
 - an operator can access a tenant only if they hold an active seat in that tenant
 - cross-tenant reads and writes are forbidden server-side
 
+Migration defaults (S45-10):
+
+- pre-tenant records missing `tenantId` are backfilled to `tenant_legacy`
+- task ownership defaults from repo ownership when available
+- run ownership defaults from task ownership, then repo ownership
+- run event ownership defaults from run ownership, then task/repo ownership
+- run command ownership defaults from run ownership
+- operator session ownership defaults from owning run
+
 ### Usage ledger
 
 ```ts

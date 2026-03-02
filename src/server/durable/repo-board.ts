@@ -25,6 +25,7 @@ import { buildLatestRunsByTaskId, isDependencyMergedToDefaultBranch } from '../s
 import { resolveRunSource } from '../shared/run-source-resolution';
 import { normalizeOperatorSession, normalizeRunLlmState, normalizeTaskUiMeta } from '../../shared/llm';
 import { hasRunReview, normalizeDependencyReviewMetadata, normalizeRunReviewMetadata, normalizeTaskBranchSourceReviewMetadata } from '../../shared/scm';
+import { DEFAULT_TENANT_ID, normalizeTenantId } from '../../shared/tenant';
 
 const STORAGE_KEY = 'repo-board-state';
 const LOCAL_JOBS_KEY = 'repo-board-local-jobs';
@@ -102,10 +103,12 @@ export class RepoBoardDO extends DurableObject<Env> {
 
   async createTask(input: CreateTaskInput): Promise<Task> {
     await this.ready;
+    const repo = await this.getRepo(input.repoId);
     const now = new Date().toISOString();
     const taskId = createTaskId(input.repoId);
     validateDependenciesForTask(input.repoId, taskId, input.dependencies);
     const task: Task = {
+      tenantId: repo.tenantId,
       taskId,
       repoId: input.repoId,
       title: input.title,
@@ -424,19 +427,31 @@ export class RepoBoardDO extends DurableObject<Env> {
   async appendRunEvents(runId: string, events: RunEvent[]) {
     await this.ready;
     const run = await this.getRun(runId);
+    const normalizedEvents = events.map((event) => ({
+      ...event,
+      tenantId: run.tenantId,
+      repoId: run.repoId,
+      taskId: run.taskId,
+      runId
+    }));
     this.state = {
       ...this.state,
-      events: [...this.state.events, ...events]
+      events: [...this.state.events, ...normalizedEvents]
     };
     await this.persist();
-    await this.emit({ type: 'run.events_appended', payload: { runId, events } }, run.repoId);
+    await this.emit({ type: 'run.events_appended', payload: { runId, events: normalizedEvents } }, run.repoId);
   }
 
   async upsertRunCommands(runId: string, commands: RunCommand[]) {
     await this.ready;
     const run = await this.getRun(runId);
+    const normalizedCommands = commands.map((command) => ({
+      ...command,
+      tenantId: run.tenantId,
+      runId
+    }));
     const byId = new Map(this.state.commands.map((command) => [command.id, command]));
-    for (const command of commands) {
+    for (const command of normalizedCommands) {
       byId.set(command.id, command);
     }
 
@@ -456,7 +471,7 @@ export class RepoBoardDO extends DurableObject<Env> {
     };
     await this.persist();
     await this.emit({ type: 'run.updated', payload: { run: updatedRun } }, run.repoId);
-    await this.emit({ type: 'run.commands_upserted', payload: { runId, commands } }, run.repoId);
+    await this.emit({ type: 'run.commands_upserted', payload: { runId, commands: normalizedCommands } }, run.repoId);
   }
 
   async transitionRun(runId: string, patch: RunTransitionPatch): Promise<AgentRun> {
@@ -578,7 +593,16 @@ export class RepoBoardDO extends DurableObject<Env> {
   async updateOperatorSession(runId: string, session?: OperatorSession) {
     await this.ready;
     const run = await this.getRun(runId);
-    const normalizedSession = normalizeOperatorSession(session);
+    const normalizedSession = normalizeOperatorSession(
+      session
+        ? {
+            ...session,
+            tenantId: run.tenantId,
+            runId,
+            sandboxId: session.sandboxId || run.sandboxId || ''
+          }
+        : undefined
+    );
     const updated = normalizeRunLlmState({
       ...run,
       operatorSession: normalizedSession,
@@ -604,6 +628,7 @@ export class RepoBoardDO extends DurableObject<Env> {
     const sessionName = getOperatorSessionName(run);
     if (!run.sandboxId) {
       return {
+        tenantId: run.tenantId,
         runId,
         repoId: run.repoId,
         taskId: run.taskId,
@@ -622,6 +647,7 @@ export class RepoBoardDO extends DurableObject<Env> {
 
     if (isTerminalRunStatus(run.status)) {
       return {
+        tenantId: run.tenantId,
         runId,
         repoId: run.repoId,
         taskId: run.taskId,
@@ -640,6 +666,7 @@ export class RepoBoardDO extends DurableObject<Env> {
     }
 
     return {
+      tenantId: run.tenantId,
       runId,
       repoId: run.repoId,
       taskId: run.taskId,
@@ -667,6 +694,7 @@ export class RepoBoardDO extends DurableObject<Env> {
     const now = new Date().toISOString();
     const sessionName = getOperatorSessionName(run);
     const session = run.operatorSession ?? {
+      tenantId: run.tenantId,
       id: `${runId}:${sessionName}`,
       runId,
       sandboxId: run.sandboxId,
@@ -969,6 +997,7 @@ function buildRunEvent(
 ): RunEvent {
   const at = new Date().toISOString();
   return {
+    tenantId: run.tenantId,
     id: `${run.runId}_${eventType}_${at}_${Math.random().toString(36).slice(2, 8)}`,
     runId: run.runId,
     repoId: run.repoId,
@@ -1077,14 +1106,31 @@ function cloneRepoBoardState(state: RepoBoardState): RepoBoardState {
 }
 
 function normalizeRepoBoardState(state?: Partial<RepoBoardState> | null): RepoBoardState {
-  return {
-    tasks: (state?.tasks ?? []).map((task) => ({
-      ...task,
-      branchSource: cloneTaskBranchSource(task.branchSource),
-      uiMeta: normalizeTaskUiMeta(task.uiMeta)
-    })),
-    runs: (state?.runs ?? []).map((run) => ({
-      ...normalizeRunLlmState(normalizeRunReviewMetadata(run)),
+  const normalizedTasks = (state?.tasks ?? []).map((task) => ({
+    ...task,
+    tenantId: normalizeTenantId(task.tenantId),
+    branchSource: cloneTaskBranchSource(task.branchSource),
+    uiMeta: normalizeTaskUiMeta(task.uiMeta)
+  }));
+  const taskTenantIds = new Map(normalizedTasks.map((task) => [task.taskId, task.tenantId]));
+  const repoTenantIds = new Map(normalizedTasks.map((task) => [task.repoId, task.tenantId]));
+
+  const normalizedRuns = (state?.runs ?? []).map((run) => {
+    const tenantId = normalizeTenantId(run.tenantId ?? taskTenantIds.get(run.taskId) ?? repoTenantIds.get(run.repoId));
+    const operatorSession = run.operatorSession
+      ? normalizeOperatorSession({
+          ...run.operatorSession,
+          tenantId,
+          runId: run.runId,
+          sandboxId: run.operatorSession.sandboxId || run.sandboxId || ''
+        })
+      : undefined;
+    return {
+      ...normalizeRunLlmState(normalizeRunReviewMetadata({
+        ...run,
+        tenantId,
+        operatorSession
+      })),
       dependencyContext: run.dependencyContext ? normalizeDependencyReviewMetadata({ ...run.dependencyContext }) : undefined,
       executionSummary: run.executionSummary
         ? {
@@ -1100,17 +1146,38 @@ function normalizeRepoBoardState(state?: Partial<RepoBoardState> | null): RepoBo
               : undefined
           }
         : undefined
-    })),
+    };
+  });
+  const runTenantIds = new Map(normalizedRuns.map((run) => [run.runId, run.tenantId]));
+  for (const run of normalizedRuns) {
+    if (!repoTenantIds.has(run.repoId)) {
+      repoTenantIds.set(run.repoId, normalizeTenantId(run.tenantId));
+    }
+  }
+
+  return {
+    tasks: normalizedTasks,
+    runs: normalizedRuns,
     logs: (state?.logs ?? [])
       .slice(-MAX_LOG_ENTRIES)
       .map((log) => ({ ...log, message: trimText(log.message, MAX_LOG_MESSAGE_CHARS) })),
     events: (state?.events ?? [])
       .slice(-MAX_EVENT_ENTRIES)
-      .map((event) => ({ ...event, message: trimText(event.message, MAX_EVENT_MESSAGE_CHARS) })),
+      .map((event) => ({
+        ...event,
+        tenantId: normalizeTenantId(
+          event.tenantId
+          ?? runTenantIds.get(event.runId)
+          ?? taskTenantIds.get(event.taskId)
+          ?? repoTenantIds.get(event.repoId)
+        ),
+        message: trimText(event.message, MAX_EVENT_MESSAGE_CHARS)
+      })),
     commands: (state?.commands ?? [])
       .slice(-MAX_COMMAND_ENTRIES)
       .map((command) => ({
         ...command,
+        tenantId: normalizeTenantId(command.tenantId ?? runTenantIds.get(command.runId) ?? DEFAULT_TENANT_ID),
         stdoutPreview: trimOptionalText(command.stdoutPreview, MAX_COMMAND_PREVIEW_CHARS),
         stderrPreview: trimOptionalText(command.stderrPreview, MAX_COMMAND_PREVIEW_CHARS)
       }))

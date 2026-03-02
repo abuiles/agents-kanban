@@ -354,6 +354,7 @@ export function parseCreateRepoInput(body: unknown): CreateRepoInput {
   }
 
   return normalizeRepoPreviewFields({
+    tenantId: readTrimmedString(body.tenantId, 'tenantId', false),
     slug: slug ?? projectPath,
     scmProvider: readEnumValue(body.scmProvider, 'scmProvider', SCM_PROVIDERS, false),
     scmBaseUrl: readTrimmedString(body.scmBaseUrl, 'scmBaseUrl', false),
@@ -384,6 +385,7 @@ export function parseUpdateRepoInput(body: unknown): UpdateRepoInput {
 
   const patch: UpdateRepoInput = {};
   if (hasOwn(body, 'slug')) patch.slug = readTrimmedString(body.slug, 'slug', false);
+  if (hasOwn(body, 'tenantId')) patch.tenantId = readTrimmedString(body.tenantId, 'tenantId', false);
   if (hasOwn(body, 'scmProvider')) patch.scmProvider = readEnumValue(body.scmProvider, 'scmProvider', SCM_PROVIDERS, false);
   if (hasOwn(body, 'scmBaseUrl')) patch.scmBaseUrl = readTrimmedString(body.scmBaseUrl, 'scmBaseUrl', false);
   if (hasOwn(body, 'projectPath')) patch.projectPath = readTrimmedString(body.projectPath, 'projectPath', false);

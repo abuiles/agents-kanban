@@ -663,6 +663,7 @@ async function emitCommandLifecycle(
   const commandId = buildRunCommandId(runId, phase);
   const startedAt = new Date().toISOString();
   const startedCommand: RunCommand = {
+    tenantId: run.tenantId,
     id: commandId,
     runId,
     phase: phase as RunCommandPhase,
@@ -829,6 +830,7 @@ function buildRunEvent(
 ): RunEvent {
   const at = new Date().toISOString();
   return {
+    tenantId: run.tenantId,
     id: `${run.runId}_${eventType}_${at}_${Math.random().toString(36).slice(2, 8)}`,
     runId: run.runId,
     repoId: run.repoId,
