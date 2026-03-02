@@ -1,14 +1,16 @@
-import type { Repo, Task, AgentRun, PreviewAdapterKind } from '../../ui/domain/types';
+import type {
+  Repo,
+  Task,
+  AgentRun,
+  LlmReasoningEffort,
+  PreviewAdapterKind,
+  PreviewDiagnostic,
+  PreviewResolutionStatus
+} from '../../ui/domain/types';
 import type { ScmCommitCheck } from '../scm/adapter';
+import type { LlmAdapter, LlmPromptExecutionResult, LlmRuntimeContext, SleepFn } from '../llm/adapter';
 
 export type PreviewDiscoverySource = 'summary' | 'details_url' | 'html_url';
-
-export type PreviewDiagnostic = {
-  code: string;
-  level: 'info' | 'error';
-  message: string;
-  metadata?: Record<string, string | number | boolean>;
-};
 
 export type PreviewDiscoveryResult = {
   previewUrl?: string;
@@ -28,11 +30,21 @@ export type PreviewDiscoveryResult = {
 };
 
 export type PreviewResolution = {
-  status: 'ready' | 'pending' | 'failed' | 'timed_out';
+  status: PreviewResolutionStatus;
   previewUrl?: string;
   adapter: PreviewAdapterKind;
   explanation: string;
   diagnostics: PreviewDiagnostic[];
+};
+
+export type PreviewLlmContext = {
+  adapter: LlmAdapter;
+  runtimeContext: LlmRuntimeContext;
+  model: string;
+  reasoningEffort?: LlmReasoningEffort;
+  cwd: string;
+  sleepFn: SleepFn;
+  runPrompt: (prompt: string, options?: { timeoutMs?: number; outputSchema?: Record<string, unknown> }) => Promise<LlmPromptExecutionResult>;
 };
 
 export type PreviewAdapterContext = {
@@ -40,6 +52,7 @@ export type PreviewAdapterContext = {
   task?: Task;
   run?: AgentRun;
   checks: ScmCommitCheck[];
+  llm?: PreviewLlmContext;
 };
 
 export type PreviewAdapterResult = {
@@ -49,5 +62,5 @@ export type PreviewAdapterResult = {
 
 export type PreviewAdapter = {
   kind: PreviewAdapterKind;
-  resolve(context: PreviewAdapterContext): PreviewAdapterResult;
+  resolve(context: PreviewAdapterContext): PreviewAdapterResult | Promise<PreviewAdapterResult>;
 };

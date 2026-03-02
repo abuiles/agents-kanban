@@ -1039,7 +1039,20 @@ function cloneRepoBoardState(state: RepoBoardState): RepoBoardState {
       errors: run.errors.map((error) => ({ ...error })),
       timeline: run.timeline.map((entry) => ({ ...entry })),
       pendingEvents: run.pendingEvents.map((event) => ({ ...event })),
-      executionSummary: run.executionSummary ? { ...run.executionSummary } : undefined,
+      executionSummary: run.executionSummary
+        ? {
+            ...run.executionSummary,
+            previewResolution: run.executionSummary.previewResolution
+              ? {
+                  ...run.executionSummary.previewResolution,
+                  diagnostics: run.executionSummary.previewResolution.diagnostics.map((diagnostic) => ({
+                    ...diagnostic,
+                    metadata: diagnostic.metadata ? { ...diagnostic.metadata } : undefined
+                  }))
+                }
+              : undefined
+          }
+        : undefined,
       artifacts: run.artifacts ? [...run.artifacts] : undefined,
       latestCodexResumeCommand: (run.llmAdapter ?? run.operatorSession?.llmAdapter ?? 'codex') === 'codex'
         ? (run.latestCodexResumeCommand ?? run.llmResumeCommand)
@@ -1072,7 +1085,21 @@ function normalizeRepoBoardState(state?: Partial<RepoBoardState> | null): RepoBo
     })),
     runs: (state?.runs ?? []).map((run) => ({
       ...normalizeRunLlmState(normalizeRunReviewMetadata(run)),
-      dependencyContext: run.dependencyContext ? normalizeDependencyReviewMetadata({ ...run.dependencyContext }) : undefined
+      dependencyContext: run.dependencyContext ? normalizeDependencyReviewMetadata({ ...run.dependencyContext }) : undefined,
+      executionSummary: run.executionSummary
+        ? {
+            ...run.executionSummary,
+            previewResolution: run.executionSummary.previewResolution
+              ? {
+                  ...run.executionSummary.previewResolution,
+                  diagnostics: (run.executionSummary.previewResolution.diagnostics ?? []).map((diagnostic) => ({
+                    ...diagnostic,
+                    metadata: diagnostic.metadata ? { ...diagnostic.metadata } : undefined
+                  }))
+                }
+              : undefined
+          }
+        : undefined
     })),
     logs: (state?.logs ?? [])
       .slice(-MAX_LOG_ENTRIES)

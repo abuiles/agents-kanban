@@ -25,6 +25,21 @@ export type RepoPreviewConfig = {
   checkName?: string;
   promptRecipe?: string;
 };
+export type PreviewResolutionStatus = 'ready' | 'pending' | 'failed' | 'timed_out';
+export type PreviewDiagnostic = {
+  code: string;
+  level: 'info' | 'error';
+  message: string;
+  metadata?: Record<string, string | number | boolean>;
+};
+export type RunPreviewResolution = {
+  adapter: PreviewAdapterKind;
+  status: PreviewResolutionStatus;
+  explanation: string;
+  checkedAt: string;
+  previewUrl?: string;
+  diagnostics: PreviewDiagnostic[];
+};
 
 export type RunEventType =
   | 'run.status_changed'
@@ -317,6 +332,7 @@ export type AgentRun = {
     codexOutcome?: 'changes' | 'no_changes' | 'failed';
     testsOutcome?: 'passed' | 'failed' | 'skipped';
     prCommented?: boolean;
+    previewResolution?: RunPreviewResolution;
   };
   artifacts?: string[];
   artifactManifest?: ArtifactManifest;

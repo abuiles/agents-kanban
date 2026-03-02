@@ -12,6 +12,7 @@ import type { ScmAdapter, ScmAdapterCredential } from './scm/adapter';
 import { getScmAdapter } from './scm/registry';
 import { getScmSourceRefFetchSpec } from './scm/source-ref';
 import { getLlmAdapter, resolveLlmAdapterKind } from './llm/registry';
+import { executePromptWithLlmAdapter } from './llm/runtime';
 import { getPreviewAdapter } from './preview/registry';
 import type { PreviewAdapterResult } from './preview/adapter';
 
@@ -357,6 +358,7 @@ npx -y playwright install chromium
 async function waitForPreview(
   env: Stage3Env,
   repoBoard: DurableObjectStub<RepoBoardDO>,
+  task: Task,
   repo: Repo,
   runId: string,
   sleepFn: SleepFn,
@@ -370,7 +372,23 @@ async function waitForPreview(
   }
 
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    const discovery = await lookupPreviewUrl(repo, headSha, scmAdapter, scmCredential);
+    const run = await repoBoard.getRun(runId);
+    const discovery = await lookupPreviewUrl(env, repoBoard, task, repo, run, headSha, sleepFn, scmAdapter, scmCredential);
+    await repoBoard.transitionRun(runId, {
+      executionSummary: {
+        previewResolution: {
+          adapter: discovery.resolution.adapter,
+          status: discovery.resolution.status,
+          explanation: discovery.resolution.explanation,
+          checkedAt: new Date().toISOString(),
+          previewUrl: discovery.resolution.previewUrl,
+          diagnostics: discovery.resolution.diagnostics.map((diagnostic) => ({
+            ...diagnostic,
+            metadata: diagnostic.metadata ? { ...diagnostic.metadata } : undefined
+          }))
+        }
+      }
+    });
     await repoBoard.appendRunLogs(runId, [
       buildRunLog(runId, `Preview discovery attempt ${attempt}/${attempts}.`, 'preview', 'info', { headSha }),
       buildRunLog(
@@ -413,9 +431,9 @@ async function discoverPreviewAndRunEvidence(
   await repoBoard.transitionRun(runId, {
     status: 'WAITING_PREVIEW',
     previewStatus: 'DISCOVERING',
-    appendTimelineNote: 'Polling SCM checks for preview URL.'
+    appendTimelineNote: 'Resolving preview URL.'
   });
-  const preview = await waitForPreview(env, repoBoard, repo, runId, sleepFn, scmAdapter, scmCredential);
+  const preview = await waitForPreview(env, repoBoard, task, repo, runId, sleepFn, scmAdapter, scmCredential);
   if (preview.status !== 'ready') {
     const timeoutMessage = preview.status === 'timed_out'
       ? 'Preview URL did not appear before timeout. Completing run without preview evidence.'
@@ -471,16 +489,55 @@ async function finishRunWithoutEvidence(repoBoard: DurableObjectStub<RepoBoardDO
 }
 
 async function lookupPreviewUrl(
+  env: Stage3Env,
+  repoBoard: DurableObjectStub<RepoBoardDO>,
+  task: Task,
   repo: Repo,
+  run: Awaited<ReturnType<RepoBoardDO['getRun']>>,
   headSha: string,
+  sleepFn: SleepFn,
   scmAdapter: ScmAdapter,
   scmCredential: ScmAdapterCredential
 ) {
   const checks = await scmAdapter.listCommitChecks(repo, headSha, scmCredential);
   const previewAdapter = getPreviewAdapter(repo);
+  const llmAdapterKind = resolveLlmAdapterKind(task, run.llmAdapter);
+  const llmAdapter = getLlmAdapter(llmAdapterKind);
+  const sandbox = getSandbox(env.Sandbox, run.sandboxId ?? run.runId);
+  const llmModel = run.llmModel ?? task.uiMeta?.llmModel ?? task.uiMeta?.codexModel ?? 'gpt-5.3-codex';
+  const llmReasoningEffort = run.llmReasoningEffort ?? task.uiMeta?.llmReasoningEffort ?? task.uiMeta?.codexReasoningEffort ?? 'medium';
+
   return previewAdapter.resolve({
     repo,
-    checks
+    task,
+    run,
+    checks,
+    llm: {
+      adapter: llmAdapter,
+      runtimeContext: { env, sandbox, repoBoard, runId: run.runId },
+      model: llmModel,
+      reasoningEffort: llmReasoningEffort,
+      cwd: '/workspace/repo',
+      sleepFn,
+      runPrompt: (prompt, options) =>
+        executePromptWithLlmAdapter(
+          llmAdapter,
+          { env, sandbox, repoBoard, runId: run.runId },
+          {
+            repo,
+            task,
+            run,
+            cwd: '/workspace/repo',
+            prompt,
+            model: llmModel,
+            reasoningEffort: llmReasoningEffort,
+            timeoutMs: options?.timeoutMs,
+            outputSchema: options?.outputSchema,
+            phase: 'preview'
+          },
+          sleepFn
+        )
+    }
   });
 }
 
@@ -508,6 +565,9 @@ function formatPreviewDiscoveryLog(discovery: PreviewAdapterResult) {
     : '';
 
   if (discovery.resolution.previewUrl) {
+    if (discovery.resolution.adapter === 'prompt_recipe') {
+      return `${discovery.resolution.explanation}: ${discovery.resolution.previewUrl} | checks: ${checks}${diagnostics}`;
+    }
     return `Preview discovery matched ${discovery.compatibility.matchedCheck ?? 'unknown check'} via ${discovery.compatibility.adapter ?? discovery.resolution.adapter} from ${discovery.compatibility.source ?? 'unknown source'}: ${discovery.resolution.previewUrl} | checks: ${checks}${diagnostics}`;
   }
 

@@ -148,6 +148,71 @@ PROMPT="$(cat /workspace/task.txt)"
 "$CURSOR_BIN" -p --force --output-format text --model ${shellQuote(request.model)} "$PROMPT"
 `)}`;
     return runCursorProcessWithLogs(context, command);
+  },
+
+  async runPrompt(context, request) {
+    const startedAt = Date.now();
+    const timeoutSeconds = Math.max(1, Math.ceil((request.timeoutMs ?? 45_000) / 1000));
+    await context.sandbox.writeFile('/workspace/prompt.txt', request.prompt);
+    const command = `bash -lc ${shellQuote(`set -euo pipefail
+export HOME="\${HOME:-/root}"
+mkdir -p ${request.cwd}
+cd ${request.cwd}
+if command -v cursor-agent >/dev/null 2>&1; then
+  CURSOR_BIN="cursor-agent"
+elif command -v cursor >/dev/null 2>&1; then
+  CURSOR_BIN="cursor"
+else
+  echo "Cursor CLI is not installed." >&2
+  exit 127
+fi
+run_with_timeout() {
+  if command -v timeout >/dev/null 2>&1; then
+    timeout ${timeoutSeconds}s "$@"
+  else
+    "$@"
+  fi
+}
+PROMPT="$(cat /workspace/prompt.txt)"
+run_with_timeout "$CURSOR_BIN" -p --force --output-format text --model ${shellQuote(request.model)} "$PROMPT"
+`)}`;
+    const phase = request.phase ?? 'preview';
+    const result = await emitCommandLifecycle(
+      context.repoBoard,
+      context.runId,
+      phase,
+      command,
+      () => context.sandbox.exec(command)
+    );
+    const elapsedMs = Date.now() - startedAt;
+    const rawOutput = result.stdout?.trim();
+
+    if (result.exitCode === 124) {
+      return {
+        status: 'timed_out',
+        elapsedMs,
+        timeoutMs: request.timeoutMs ?? 45_000,
+        rawOutput,
+        stderr: result.stderr
+      };
+    }
+
+    if (!result.success) {
+      return {
+        status: 'failed',
+        elapsedMs,
+        message: result.stderr?.trim() || 'Cursor CLI prompt execution failed.',
+        rawOutput,
+        stderr: result.stderr
+      };
+    }
+
+    return {
+      status: 'success',
+      elapsedMs,
+      rawOutput: rawOutput ?? '',
+      stderr: result.stderr
+    };
   }
 };
 
