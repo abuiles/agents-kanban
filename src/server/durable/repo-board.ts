@@ -20,6 +20,7 @@ import { stringifyBoardEvent } from '../shared/events';
 import { EMPTY_REPO_BOARD_STATE, type RepoBoardState } from '../shared/state';
 import { applyRunTransition, appendRunError, buildArtifactManifest, createRealRun, type RunTransitionPatch } from '../shared/real-run';
 import { executeRunJob } from '../run-orchestrator';
+import { refreshDependencyStates } from '../shared/dependency-state';
 
 const STORAGE_KEY = 'repo-board-state';
 const LOCAL_JOBS_KEY = 'repo-board-local-jobs';
@@ -122,9 +123,12 @@ export class RepoBoardDO extends DurableObject<Env> {
       ...this.state,
       tasks: [task, ...this.state.tasks]
     };
+    const refreshedTasks = this.refreshDependencyStatesForRepo(now);
+    const finalTask = this.state.tasks.find((candidate) => candidate.taskId === task.taskId) ?? task;
     await this.persist();
-    await this.emit({ type: 'task.updated', payload: { task } }, input.repoId);
-    return task;
+    await this.emit({ type: 'task.updated', payload: { task: finalTask } }, input.repoId);
+    await this.emitDependencyRefreshUpdates(input.repoId, refreshedTasks, [finalTask.taskId]);
+    return finalTask;
   }
 
   async updateTask(taskId: string, patch: UpdateTaskInput): Promise<Task> {
@@ -166,9 +170,12 @@ export class RepoBoardDO extends DurableObject<Env> {
       ...this.state,
       tasks: this.state.tasks.map((candidate) => (candidate.taskId === taskId ? updated : candidate))
     };
+    const refreshedTasks = this.refreshDependencyStatesForRepo(updated.updatedAt);
+    const finalTask = this.state.tasks.find((candidate) => candidate.taskId === updated.taskId) ?? updated;
     await this.persist();
-    await this.emit({ type: 'task.updated', payload: { task: updated } }, updated.repoId);
-    return updated;
+    await this.emit({ type: 'task.updated', payload: { task: finalTask } }, updated.repoId);
+    await this.emitDependencyRefreshUpdates(updated.repoId, refreshedTasks, [finalTask.taskId]);
+    return finalTask;
   }
 
   async startRun(taskId: string): Promise<AgentRun> {
@@ -193,9 +200,11 @@ export class RepoBoardDO extends DurableObject<Env> {
       ),
       runs: [run, ...this.state.runs]
     };
+    const refreshedTasks = this.refreshDependencyStatesForRepo(now.toISOString());
     await this.persist();
     await this.emit({ type: 'task.updated', payload: { task: this.state.tasks.find((candidate) => candidate.taskId === taskId)! } }, task.repoId);
     await this.emit({ type: 'run.updated', payload: { run } }, task.repoId);
+    await this.emitDependencyRefreshUpdates(task.repoId, refreshedTasks, [taskId]);
     return run;
   }
 
@@ -242,9 +251,11 @@ export class RepoBoardDO extends DurableObject<Env> {
       ),
       runs: [nextRun, ...this.state.runs]
     };
+    const refreshedTasks = this.refreshDependencyStatesForRepo(now.toISOString());
     await this.persist();
     await this.emit({ type: 'task.updated', payload: { task: this.state.tasks.find((candidate) => candidate.taskId === task.taskId)! } }, task.repoId);
     await this.emit({ type: 'run.updated', payload: { run: nextRun } }, task.repoId);
+    await this.emitDependencyRefreshUpdates(task.repoId, refreshedTasks, [task.taskId]);
     return nextRun;
   }
 
@@ -270,8 +281,10 @@ export class RepoBoardDO extends DurableObject<Env> {
         candidate.taskId === run.taskId ? { ...candidate, status: 'REVIEW', updatedAt: nowIso } : candidate
       )
     };
+    const refreshedTasks = this.refreshDependencyStatesForRepo(nowIso);
     await this.persist();
     await this.emit({ type: 'run.updated', payload: { run: updated } }, updated.repoId);
+    await this.emitDependencyRefreshUpdates(updated.repoId, refreshedTasks, [run.taskId]);
     return updated;
   }
 
@@ -298,8 +311,10 @@ export class RepoBoardDO extends DurableObject<Env> {
         candidate.taskId === run.taskId ? { ...candidate, status: 'REVIEW', updatedAt: nowIso } : candidate
       )
     };
+    const refreshedTasks = this.refreshDependencyStatesForRepo(nowIso);
     await this.persist();
     await this.emit({ type: 'run.updated', payload: { run: updated } }, updated.repoId);
+    await this.emitDependencyRefreshUpdates(updated.repoId, refreshedTasks, [run.taskId]);
     return updated;
   }
 
@@ -394,12 +409,15 @@ export class RepoBoardDO extends DurableObject<Env> {
       runs: this.state.runs.map((candidate) => (candidate.runId === runId ? updated : candidate)),
       events: [...this.state.events, ...events]
     };
+    const refreshedTasks = this.refreshDependencyStatesForRepo(nowIso);
     await this.persist();
-    await this.emit({ type: 'task.updated', payload: { task: nextTask } }, updated.repoId);
+    const finalTask = this.state.tasks.find((candidate) => candidate.taskId === nextTask.taskId) ?? nextTask;
+    await this.emit({ type: 'task.updated', payload: { task: finalTask } }, updated.repoId);
     await this.emit({ type: 'run.updated', payload: { run: updated } }, updated.repoId);
     if (events.length) {
       await this.emit({ type: 'run.events_appended', payload: { runId, events } }, updated.repoId);
     }
+    await this.emitDependencyRefreshUpdates(updated.repoId, refreshedTasks, [finalTask.taskId]);
     return updated;
   }
 
@@ -425,9 +443,12 @@ export class RepoBoardDO extends DurableObject<Env> {
       tasks: this.state.tasks.map((candidate) => (candidate.taskId === nextTask.taskId ? nextTask : candidate)),
       runs: this.state.runs.map((candidate) => (candidate.runId === runId ? updated : candidate))
     };
+    const refreshedTasks = this.refreshDependencyStatesForRepo(nowIso);
     await this.persist();
-    await this.emit({ type: 'task.updated', payload: { task: nextTask } }, updated.repoId);
+    const finalTask = this.state.tasks.find((candidate) => candidate.taskId === nextTask.taskId) ?? nextTask;
+    await this.emit({ type: 'task.updated', payload: { task: finalTask } }, updated.repoId);
     await this.emit({ type: 'run.updated', payload: { run: updated } }, updated.repoId);
+    await this.emitDependencyRefreshUpdates(updated.repoId, refreshedTasks, [finalTask.taskId]);
     return updated;
   }
 
@@ -602,11 +623,14 @@ export class RepoBoardDO extends DurableObject<Env> {
       runs: this.state.runs.map((candidate) => (candidate.runId === runId ? updated : candidate)),
       events: [...this.state.events, ...events]
     };
+    const refreshedTasks = this.refreshDependencyStatesForRepo(now);
     await this.persist();
-    await this.emit({ type: 'task.updated', payload: { task: nextTask } }, updated.repoId);
+    const finalTask = this.state.tasks.find((candidate) => candidate.taskId === nextTask.taskId) ?? nextTask;
+    await this.emit({ type: 'task.updated', payload: { task: finalTask } }, updated.repoId);
     await this.emit({ type: 'run.updated', payload: { run: updated } }, updated.repoId);
     await this.emit({ type: 'run.operator_session_updated', payload: { runId, session: nextSession } }, updated.repoId);
     await this.emit({ type: 'run.events_appended', payload: { runId, events } }, updated.repoId);
+    await this.emitDependencyRefreshUpdates(updated.repoId, refreshedTasks, [finalTask.taskId]);
     return updated;
   }
 
@@ -688,6 +712,33 @@ export class RepoBoardDO extends DurableObject<Env> {
       events: [...this.state.events],
       commands: [...this.state.commands]
     };
+  }
+
+  private refreshDependencyStatesForRepo(nowIso: string) {
+    const result = refreshDependencyStates(this.state.tasks, this.state.runs, nowIso);
+    if (!result.changedTaskIds.length) {
+      return [];
+    }
+
+    this.state = {
+      ...this.state,
+      tasks: result.tasks
+    };
+    return result.tasks.filter((task) => result.changedTaskIds.includes(task.taskId));
+  }
+
+  private async emitDependencyRefreshUpdates(repoId: string, tasks: Task[], excludeTaskIds: string[] = []) {
+    if (!tasks.length) {
+      return;
+    }
+
+    const excluded = new Set(excludeTaskIds);
+    for (const task of tasks) {
+      if (excluded.has(task.taskId)) {
+        continue;
+      }
+      await this.emit({ type: 'task.updated', payload: { task } }, repoId);
+    }
   }
 }
 
