@@ -76,7 +76,11 @@ export class BoardIndexDO extends DurableObject<Env> {
     const url = new URL(request.url);
     if (url.pathname.endsWith('/ws')) {
       const repoId = url.searchParams.get('repoId') ?? 'all';
-      return this.handleWebSocket(repoId);
+      const tenantId = url.searchParams.get('tenantId') ?? request.headers.get('x-tenant-id') ?? undefined;
+      if (!tenantId) {
+        throw badRequest('Missing tenantId for board websocket subscription.');
+      }
+      return this.handleWebSocket(repoId, tenantId);
     }
 
     return new Response('Not found', { status: 404 });
@@ -522,11 +526,27 @@ export class BoardIndexDO extends DurableObject<Env> {
     const repos = await this.listRepos(normalizedTenantId);
     const selected = repoId && repoId !== 'all' ? repos.filter((repo) => repo.repoId === repoId) : repos;
     const slices = await Promise.all(selected.map((repo) => this.env.REPO_BOARD.getByName(repo.repoId).getBoardSlice()));
-    const tasks = slices.flatMap((slice) => slice.tasks);
-    const runs = slices.flatMap((slice) => slice.runs);
-    const logs = slices.flatMap((slice) => slice.logs);
-    const events = slices.flatMap((slice) => slice.events ?? []);
-    const commands = slices.flatMap((slice) => slice.commands ?? []);
+    const tasks = slices
+      .flatMap((slice) => slice.tasks)
+      .filter((task) => !normalizedTenantId || normalizeTenantId(task.tenantId) === normalizedTenantId);
+    const runs = slices
+      .flatMap((slice) => slice.runs)
+      .filter((run) => !normalizedTenantId || normalizeTenantId(run.tenantId) === normalizedTenantId);
+    const runIds = new Set(runs.map((run) => run.runId));
+    const taskIds = new Set(tasks.map((task) => task.taskId));
+    const logs = slices.flatMap((slice) => slice.logs).filter((log) => runIds.has(log.runId));
+    const events = slices
+      .flatMap((slice) => slice.events ?? [])
+      .filter((event) =>
+        !normalizedTenantId
+        || (normalizeTenantId(event.tenantId) === normalizedTenantId && (runIds.has(event.runId) || taskIds.has(event.taskId)))
+      );
+    const commands = slices
+      .flatMap((slice) => slice.commands ?? [])
+      .filter((command) =>
+        !normalizedTenantId
+        || (normalizeTenantId(command.tenantId) === normalizedTenantId && runIds.has(command.runId))
+      );
 
     return {
       repos,
@@ -570,7 +590,12 @@ export class BoardIndexDO extends DurableObject<Env> {
       })
     );
 
-    await this.broadcast({ type: 'board.snapshot', payload: await this.getBoardSync('all') });
+    const tenantIds = [...new Set(snapshot.repos.map((repo) => normalizeTenantId(repo.tenantId)))];
+    await Promise.all(
+      tenantIds.map(async (tenantId) => {
+        await this.broadcast({ type: 'board.snapshot', payload: await this.getBoardSync('all', tenantId) }, undefined, tenantId);
+      })
+    );
   }
 
   async findTaskRepoId(taskId: string) {
@@ -595,31 +620,77 @@ export class BoardIndexDO extends DurableObject<Env> {
     return undefined;
   }
 
-  async notifyRepoEvent(event: BoardEvent & { repoId?: string }) {
+  async notifyRepoEvent(event: BoardEvent & { repoId?: string; tenantId?: string }) {
     await this.ready;
+    const tenantId = await this.resolveEventTenantId(event);
+    if (!tenantId) {
+      return;
+    }
     const message = stringifyBoardEvent(event);
-    for (const socket of this.ctx.getWebSockets('scope:all')) {
+    for (const socket of this.ctx.getWebSockets(buildTenantAllScopeTag(tenantId))) {
       socket.send(message);
     }
 
     if (event.repoId) {
-      for (const socket of this.ctx.getWebSockets(`scope:repo:${event.repoId}`)) {
+      for (const socket of this.ctx.getWebSockets(buildTenantRepoScopeTag(tenantId, event.repoId))) {
         socket.send(message);
       }
     }
   }
 
-  private async handleWebSocket(repoId: string) {
+  private async handleWebSocket(repoId: string, tenantId: string) {
+    const normalizedTenantId = normalizeTenantId(tenantId);
+    if (repoId !== 'all') {
+      const repo = await this.getRepo(repoId);
+      if (normalizeTenantId(repo.tenantId) !== normalizedTenantId) {
+        throw forbidden(`Cross-tenant websocket access denied: repo ${repoId} belongs to tenant ${repo.tenantId}.`);
+      }
+    }
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
-    const tag = repoId === 'all' ? 'scope:all' : `scope:repo:${repoId}`;
-    this.ctx.acceptWebSocket(server, [tag]);
-    server.send(stringifyBoardEvent({ type: 'board.snapshot', payload: await this.getBoardSync(repoId) }));
+    const tags = repoId === 'all'
+      ? [buildTenantAllScopeTag(normalizedTenantId)]
+      : [buildTenantRepoScopeTag(normalizedTenantId, repoId)];
+    this.ctx.acceptWebSocket(server, tags);
+    server.send(stringifyBoardEvent({ type: 'board.snapshot', payload: await this.getBoardSync(repoId, normalizedTenantId) }));
     return new Response(null, { status: 101, webSocket: client });
   }
 
-  private async broadcast(event: BoardEvent, repoId?: string) {
-    await this.notifyRepoEvent({ ...event, repoId });
+  private async broadcast(event: BoardEvent, repoId?: string, tenantId?: string) {
+    await this.notifyRepoEvent({ ...event, repoId, tenantId });
+  }
+
+  private async resolveEventTenantId(event: BoardEvent & { repoId?: string; tenantId?: string }) {
+    if (event.tenantId) {
+      return normalizeTenantId(event.tenantId);
+    }
+    switch (event.type) {
+      case 'repo.updated':
+        return normalizeTenantId(event.payload.repo.tenantId);
+      case 'task.updated':
+        return normalizeTenantId(event.payload.task.tenantId);
+      case 'run.updated':
+        return normalizeTenantId(event.payload.run.tenantId);
+      case 'run.events_appended':
+        if (event.payload.events[0]?.tenantId) {
+          return normalizeTenantId(event.payload.events[0].tenantId);
+        }
+        break;
+      case 'run.commands_upserted':
+        if (event.payload.commands[0]?.tenantId) {
+          return normalizeTenantId(event.payload.commands[0].tenantId);
+        }
+        break;
+      default:
+        break;
+    }
+
+    if (event.repoId) {
+      const repo = this.repos.find((candidate) => candidate.repoId === event.repoId);
+      return repo ? normalizeTenantId(repo.tenantId) : undefined;
+    }
+
+    return undefined;
   }
 
   private async persist() {
@@ -760,6 +831,14 @@ function createRepoIdentity(repo: Repo): string {
 
 function buildScmCredentialId(scmProvider: ScmProvider, host: string) {
   return `${scmProvider}:${normalizeCredentialHost(host)}`;
+}
+
+function buildTenantAllScopeTag(tenantId: string) {
+  return `scope:tenant:${normalizeTenantId(tenantId)}:all`;
+}
+
+function buildTenantRepoScopeTag(tenantId: string, repoId: string) {
+  return `scope:tenant:${normalizeTenantId(tenantId)}:repo:${repoId}`;
 }
 
 function normalizeStoredScmCredential(credential: StoredScmCredential): StoredScmCredential {

@@ -26,7 +26,6 @@ import { resolveRunSource } from '../shared/run-source-resolution';
 import { normalizeOperatorSession, normalizeRunLlmState, normalizeTaskUiMeta } from '../../shared/llm';
 import { hasRunReview, normalizeDependencyReviewMetadata, normalizeRunReviewMetadata, normalizeTaskBranchSourceReviewMetadata } from '../../shared/scm';
 import { DEFAULT_TENANT_ID, normalizeTenantId } from '../../shared/tenant';
-import { writeUsageLedgerEntriesBestEffort } from '../usage-ledger';
 
 const STORAGE_KEY = 'repo-board-state';
 const LOCAL_JOBS_KEY = 'repo-board-local-jobs';
@@ -85,20 +84,27 @@ export class RepoBoardDO extends DurableObject<Env> {
     return this.state.runs.some((run) => run.runId === runId);
   }
 
-  async listTasks() {
+  async listTasks(tenantId?: string) {
     await this.ready;
-    return [...this.state.tasks].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+    const normalizedTenantId = tenantId ? normalizeTenantId(tenantId) : undefined;
+    return [...this.state.tasks]
+      .filter((task) => !normalizedTenantId || normalizeTenantId(task.tenantId) === normalizedTenantId)
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
   }
 
-  async getTask(taskId: string): Promise<TaskDetail> {
+  async getTask(taskId: string, tenantId?: string): Promise<TaskDetail> {
     await this.ready;
     const task = this.state.tasks.find((candidate) => candidate.taskId === taskId);
     if (!task) {
       throw notFound(`Task ${taskId} not found.`, { taskId });
     }
+    assertTenantMatch(task.tenantId, tenantId, 'Task', taskId);
 
     const repo = await this.getRepo(task.repoId);
-    const runs = this.state.runs.filter((candidate) => candidate.taskId === taskId).sort((left, right) => right.startedAt.localeCompare(left.startedAt));
+    const runs = this.state.runs
+      .filter((candidate) => candidate.taskId === taskId)
+      .filter((candidate) => !tenantId || normalizeTenantId(candidate.tenantId) === normalizeTenantId(tenantId))
+      .sort((left, right) => right.startedAt.localeCompare(left.startedAt));
     return { task, repo, runs, latestRun: runs[0] };
   }
 
@@ -148,11 +154,16 @@ export class RepoBoardDO extends DurableObject<Env> {
     return finalTask;
   }
 
-  async updateTask(taskId: string, patch: UpdateTaskInput): Promise<Task> {
+  async updateTask(taskId: string, patch: UpdateTaskInput, tenantId?: string): Promise<Task> {
     await this.ready;
     const existing = this.state.tasks.find((candidate) => candidate.taskId === taskId);
     if (!existing) {
       throw notFound(`Task ${taskId} not found.`, { taskId });
+    }
+    assertTenantMatch(existing.tenantId, tenantId, 'Task', taskId);
+
+    if (patch.repoId && patch.repoId !== existing.repoId) {
+      throw badRequest('Task repoId cannot be changed.');
     }
 
     if (patch.dependencies) {
@@ -198,12 +209,13 @@ export class RepoBoardDO extends DurableObject<Env> {
     return finalTask;
   }
 
-  async deleteTask(taskId: string): Promise<{ taskId: string; deleted: true }> {
+  async deleteTask(taskId: string, tenantId?: string): Promise<{ taskId: string; deleted: true }> {
     await this.ready;
     const task = this.state.tasks.find((candidate) => candidate.taskId === taskId);
     if (!task) {
       throw notFound(`Task ${taskId} not found.`, { taskId });
     }
+    assertTenantMatch(task.tenantId, tenantId, 'Task', taskId);
     const runIds = new Set(this.state.runs.filter((run) => run.taskId === taskId).map((run) => run.runId));
 
     this.state = {
@@ -218,15 +230,20 @@ export class RepoBoardDO extends DurableObject<Env> {
     return { taskId, deleted: true };
   }
 
-  async startRun(taskId: string, options?: { forceNew?: boolean; baseRunId?: string; dependencyAutoStart?: boolean }): Promise<AgentRun> {
+  async startRun(
+    taskId: string,
+    options?: { forceNew?: boolean; baseRunId?: string; dependencyAutoStart?: boolean; tenantId?: string }
+  ): Promise<AgentRun> {
     await this.ready;
     const task = this.state.tasks.find((candidate) => candidate.taskId === taskId);
     if (!task) {
       throw notFound(`Task ${taskId} not found.`, { taskId });
     }
+    assertTenantMatch(task.tenantId, options?.tenantId, 'Task', taskId);
 
     const existing = this.state.runs.find((run) => run.taskId === taskId && !isTerminalRunStatus(run.status));
     if (existing && !options?.forceNew) {
+      assertTenantMatch(existing.tenantId, options?.tenantId, 'Run', existing.runId);
       return existing;
     }
     if (options?.dependencyAutoStart && task.runId) {
@@ -288,25 +305,26 @@ export class RepoBoardDO extends DurableObject<Env> {
     return run;
   }
 
-  async getRun(runId: string) {
+  async getRun(runId: string, tenantId?: string) {
     await this.ready;
     const run = this.state.runs.find((candidate) => candidate.runId === runId);
     if (!run) {
       throw notFound(`Run ${runId} not found.`, { runId });
     }
+    assertTenantMatch(run.tenantId, tenantId, 'Run', runId);
 
     return run;
   }
 
-  async retryRun(runId: string) {
+  async retryRun(runId: string, tenantId?: string) {
     await this.ready;
-    const run = await this.getRun(runId);
-    return this.startRun(run.taskId, { forceNew: true, baseRunId: run.runId });
+    const run = await this.getRun(runId, tenantId);
+    return this.startRun(run.taskId, { forceNew: true, baseRunId: run.runId, tenantId });
   }
 
-  async requestRunChanges(runId: string, prompt: string) {
+  async requestRunChanges(runId: string, prompt: string, tenantId?: string) {
     await this.ready;
-    const existingRun = await this.getRun(runId);
+    const existingRun = await this.getRun(runId, tenantId);
     const task = this.state.tasks.find((candidate) => candidate.taskId === existingRun.taskId);
     if (!task) {
       throw notFound(`Task ${existingRun.taskId} not found.`, { taskId: existingRun.taskId, runId });
@@ -347,9 +365,9 @@ export class RepoBoardDO extends DurableObject<Env> {
     return nextRun;
   }
 
-  async retryEvidence(runId: string) {
+  async retryEvidence(runId: string, tenantId?: string) {
     await this.ready;
-    const run = await this.getRun(runId);
+    const run = await this.getRun(runId, tenantId);
     const nowIso = new Date().toISOString();
     const updated = applyRunTransition(
       { ...run, endedAt: undefined },
@@ -376,9 +394,9 @@ export class RepoBoardDO extends DurableObject<Env> {
     return updated;
   }
 
-  async retryPreview(runId: string) {
+  async retryPreview(runId: string, tenantId?: string) {
     await this.ready;
-    const run = await this.getRun(runId);
+    const run = await this.getRun(runId, tenantId);
     const nowIso = new Date().toISOString();
     const updated = applyRunTransition(
       { ...run, endedAt: undefined },
@@ -475,9 +493,9 @@ export class RepoBoardDO extends DurableObject<Env> {
     await this.emit({ type: 'run.commands_upserted', payload: { runId, commands: normalizedCommands } }, run.repoId);
   }
 
-  async transitionRun(runId: string, patch: RunTransitionPatch): Promise<AgentRun> {
+  async transitionRun(runId: string, patch: RunTransitionPatch, tenantId?: string): Promise<AgentRun> {
     await this.ready;
-    const run = await this.getRun(runId);
+    const run = await this.getRun(runId, tenantId);
     if (isTerminalRunStatus(run.status)) {
       return run;
     }
@@ -524,9 +542,9 @@ export class RepoBoardDO extends DurableObject<Env> {
     return updated;
   }
 
-  async markRunFailed(runId: string, error: RunError): Promise<AgentRun> {
+  async markRunFailed(runId: string, error: RunError, tenantId?: string): Promise<AgentRun> {
     await this.ready;
-    const run = await this.getRun(runId);
+    const run = await this.getRun(runId, tenantId);
     const nowIso = new Date().toISOString();
     const updated = appendRunError(run, error, nowIso);
     const task = this.state.tasks.find((candidate) => candidate.taskId === run.taskId);
@@ -555,62 +573,48 @@ export class RepoBoardDO extends DurableObject<Env> {
     return updated;
   }
 
-  async storeArtifactManifest(runId: string) {
+  async storeArtifactManifest(runId: string, tenantId?: string) {
     await this.ready;
-    const run = await this.getRun(runId);
+    const run = await this.getRun(runId, tenantId);
     const task = this.state.tasks.find((candidate) => candidate.taskId === run.taskId);
     if (!task) {
       throw notFound(`Task ${run.taskId} not found.`, { taskId: run.taskId, runId });
     }
     const repo = await this.getRepo(run.repoId);
     const manifest = buildArtifactManifest(run, task, repo, this.ctx.id.toString());
-    const updated = await this.transitionRun(runId, {
+    return this.transitionRun(runId, {
       artifactManifest: manifest,
       artifacts: [manifest.logs.key, manifest.before?.key, manifest.after?.key, manifest.trace?.key, manifest.video?.key].filter(Boolean) as string[]
-    });
-    await this.recordUsage(updated, [
-      {
-        category: 'r2_write_ops',
-        quantity: 1,
-        source: 'workflow',
-        metadata: { object: 'artifact_manifest' }
-      }
-    ]);
-    return updated;
+    }, tenantId);
   }
 
-  async getRunArtifacts(runId: string) {
-    const run = await this.getRun(runId);
-    await this.recordUsage(run, [
-      {
-        category: 'artifact_download',
-        quantity: 1,
-        source: 'worker',
-        metadata: { endpoint: '/api/runs/:runId/artifacts' }
-      }
-    ]);
+  async getRunArtifacts(runId: string, tenantId?: string) {
+    const run = await this.getRun(runId, tenantId);
     return run.artifactManifest;
   }
 
-  async getRunLogs(runId: string, tail?: number) {
+  async getRunLogs(runId: string, tail?: number, tenantId?: string) {
     await this.ready;
+    await this.getRun(runId, tenantId);
     const logs = this.state.logs.filter((entry) => entry.runId === runId);
     return tail ? logs.slice(-tail) : logs;
   }
 
-  async getRunEvents(runId: string) {
+  async getRunEvents(runId: string, tenantId?: string) {
     await this.ready;
+    await this.getRun(runId, tenantId);
     return this.state.events.filter((entry) => entry.runId === runId);
   }
 
-  async getRunCommands(runId: string) {
+  async getRunCommands(runId: string, tenantId?: string) {
     await this.ready;
+    await this.getRun(runId, tenantId);
     return this.state.commands.filter((entry) => entry.runId === runId);
   }
 
-  async updateOperatorSession(runId: string, session?: OperatorSession) {
+  async updateOperatorSession(runId: string, session?: OperatorSession, tenantId?: string) {
     await this.ready;
-    const run = await this.getRun(runId);
+    const run = await this.getRun(runId, tenantId);
     const normalizedSession = normalizeOperatorSession(
       session
         ? {
@@ -637,22 +641,12 @@ export class RepoBoardDO extends DurableObject<Env> {
     await this.persist();
     await this.emit({ type: 'run.updated', payload: { run: updated } }, updated.repoId);
     await this.emit({ type: 'run.operator_session_updated', payload: { runId, session: normalizedSession } }, updated.repoId);
-    if (normalizedSession) {
-      await this.recordUsage(updated, [
-        {
-          category: 'operator_session_ms',
-          quantity: 1,
-          source: 'operator',
-          metadata: { event: 'operator_session_updated', state: normalizedSession.connectionState }
-        }
-      ]);
-    }
     return updated;
   }
 
-  async getTerminalBootstrap(runId: string): Promise<TerminalBootstrap> {
+  async getTerminalBootstrap(runId: string, tenantId?: string): Promise<TerminalBootstrap> {
     await this.ready;
-    const run = await this.getRun(runId);
+    const run = await this.getRun(runId, tenantId);
     const sessionName = getOperatorSessionName(run);
     if (!run.sandboxId) {
       return {
@@ -712,9 +706,9 @@ export class RepoBoardDO extends DurableObject<Env> {
     };
   }
 
-  async takeOverRun(runId: string, actor = { actorId: 'same-session', actorLabel: 'Operator' }) {
+  async takeOverRun(runId: string, actor = { actorId: 'same-session', actorLabel: 'Operator' }, tenantId?: string) {
     await this.ready;
-    const run = await this.getRun(runId);
+    const run = await this.getRun(runId, tenantId);
     if (!run.sandboxId) {
       throw notFound(`Sandbox for run ${runId} not found.`, { runId });
     }
@@ -789,14 +783,6 @@ export class RepoBoardDO extends DurableObject<Env> {
     await this.emit({ type: 'run.operator_session_updated', payload: { runId, session: nextSession } }, updated.repoId);
     await this.emit({ type: 'run.events_appended', payload: { runId, events } }, updated.repoId);
     await this.emitDependencyRefreshUpdates(updated.repoId, refreshedTasks, [finalTask.taskId]);
-    await this.recordUsage(updated, [
-      {
-        category: 'operator_session_ms',
-        quantity: 1,
-        source: 'operator',
-        metadata: { event: 'operator_takeover_started', sessionName: nextSession.sessionName }
-      }
-    ]);
     return updated;
   }
 
@@ -845,7 +831,7 @@ export class RepoBoardDO extends DurableObject<Env> {
       socket.send(payload);
     }
     const board = this.env.BOARD_INDEX.getByName('agentboard');
-    await board.notifyRepoEvent({ ...event, repoId });
+    await board.notifyRepoEvent({ ...event, repoId, tenantId: await this.resolveEventTenantId(event, repoId) });
   }
 
   private async persist() {
@@ -864,31 +850,6 @@ export class RepoBoardDO extends DurableObject<Env> {
   private async getRepo(repoId: string): Promise<Repo> {
     const board = this.env.BOARD_INDEX.getByName('agentboard');
     return board.getRepo(repoId);
-  }
-
-  private async recordUsage(
-    run: Pick<AgentRun, 'tenantId' | 'repoId' | 'taskId' | 'runId'>,
-    entries: Array<{
-      category: import('../usage-ledger').UsageLedgerCategory;
-      quantity: number;
-      unit?: string;
-      source: import('../usage-ledger').UsageLedgerSource;
-      metadata?: Record<string, string | number | boolean>;
-    }>
-  ) {
-    if (!entries.length) {
-      return;
-    }
-    await writeUsageLedgerEntriesBestEffort(
-      this.env,
-      entries.map((entry) => ({
-        tenantId: normalizeTenantId(run.tenantId),
-        repoId: run.repoId,
-        taskId: run.taskId,
-        runId: run.runId,
-        ...entry
-      }))
-    );
   }
 
   private async buildBoardPayload() {
@@ -976,6 +937,32 @@ export class RepoBoardDO extends DurableObject<Env> {
 
       await this.startRun(task.taskId, { dependencyAutoStart: true });
     }
+  }
+
+  private async resolveEventTenantId(event: RepoScopedEvent, repoId: string) {
+    switch (event.type) {
+      case 'repo.updated':
+        return normalizeTenantId(event.payload.repo.tenantId);
+      case 'task.updated':
+        return normalizeTenantId(event.payload.task.tenantId);
+      case 'run.updated':
+        return normalizeTenantId(event.payload.run.tenantId);
+      case 'run.events_appended':
+        if (event.payload.events[0]?.tenantId) {
+          return normalizeTenantId(event.payload.events[0].tenantId);
+        }
+        break;
+      case 'run.commands_upserted':
+        if (event.payload.commands[0]?.tenantId) {
+          return normalizeTenantId(event.payload.commands[0].tenantId);
+        }
+        break;
+      default: {
+        break;
+      }
+    }
+    const repo = await this.getRepo(repoId);
+    return normalizeTenantId(repo.tenantId);
   }
 }
 
@@ -1107,6 +1094,15 @@ function getOperatorSessionName(run: AgentRun) {
   }
 
   return run.operatorSession.sessionName;
+}
+
+function assertTenantMatch(entityTenantId: string | undefined, expectedTenantId: string | undefined, entityLabel: 'Task' | 'Run', entityId: string) {
+  if (!expectedTenantId) {
+    return;
+  }
+  if (normalizeTenantId(entityTenantId) !== normalizeTenantId(expectedTenantId)) {
+    throw notFound(`${entityLabel} ${entityId} not found.`, entityLabel === 'Task' ? { taskId: entityId } : { runId: entityId });
+  }
 }
 
 function cloneRepoBoardState(state: RepoBoardState): RepoBoardState {
