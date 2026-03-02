@@ -48,14 +48,36 @@ describe('llm compatibility normalization', () => {
 
     expect(run).toMatchObject({
       llmAdapter: 'codex',
+      llmSupportsResume: true,
       llmResumeCommand: 'codex resume thread_1',
       llmSessionId: 'thread_1',
       latestCodexResumeCommand: 'codex resume thread_1'
     });
     expect(run.operatorSession).toMatchObject({
       llmAdapter: 'codex',
+      llmSupportsResume: true,
       llmSessionId: 'thread_1',
       llmResumeCommand: 'codex resume thread_1'
     });
+  });
+
+  it('keeps non-resumable adapters truthful without fabricating resume commands', () => {
+    const run = normalizeRunLlmState({
+      runId: 'run_2',
+      taskId: 'task_2',
+      repoId: 'repo_2',
+      status: 'RUNNING_CODEX',
+      branchName: 'agent/task_2/run_2',
+      llmAdapter: 'cursor_cli',
+      errors: [],
+      startedAt: '2026-03-02T00:00:00.000Z',
+      timeline: [],
+      simulationProfile: 'happy_path',
+      pendingEvents: []
+    });
+
+    expect(run.llmSupportsResume).toBe(false);
+    expect(run.llmResumeCommand).toBeUndefined();
+    expect(run.latestCodexResumeCommand).toBeUndefined();
   });
 });

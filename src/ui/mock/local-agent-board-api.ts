@@ -305,7 +305,7 @@ export class LocalAgentBoardApi implements AgentBoardApi {
           operatorSession: run.operatorSession
             ? normalizeOperatorSession({
                 ...run.operatorSession,
-                takeoverState: run.latestCodexResumeCommand ? 'resumable' : 'operator_control',
+                takeoverState: run.llmSupportsResume && run.llmResumeCommand ? 'resumable' : 'operator_control',
                 connectionState: 'open'
               })
             : normalizeOperatorSession({
@@ -317,8 +317,9 @@ export class LocalAgentBoardApi implements AgentBoardApi {
                 actorId: 'same-session',
                 actorLabel: 'Operator',
                 connectionState: 'open',
-                takeoverState: run.latestCodexResumeCommand ? 'resumable' : 'operator_control',
+                takeoverState: run.llmSupportsResume && run.llmResumeCommand ? 'resumable' : 'operator_control',
                 llmAdapter: run.llmAdapter ?? 'codex',
+                llmSupportsResume: run.llmSupportsResume,
                 llmSessionId: run.llmSessionId,
                 llmResumeCommand: run.llmResumeCommand ?? run.latestCodexResumeCommand,
                 codexResumeCommand: run.latestCodexResumeCommand
@@ -363,6 +364,7 @@ export class LocalAgentBoardApi implements AgentBoardApi {
         cols: 120,
         rows: 32,
         session: run.operatorSession,
+        llmSupportsResume: run.llmSupportsResume,
         llmResumeCommand: run.llmResumeCommand ?? run.latestCodexResumeCommand,
         codexResumeCommand: run.latestCodexResumeCommand
       };
@@ -380,6 +382,7 @@ export class LocalAgentBoardApi implements AgentBoardApi {
       cols: 120,
       rows: 32,
       session: run.operatorSession,
+      llmSupportsResume: run.llmSupportsResume,
       llmResumeCommand: run.llmResumeCommand ?? run.latestCodexResumeCommand,
       codexResumeCommand: run.latestCodexResumeCommand
     };

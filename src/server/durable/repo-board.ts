@@ -583,6 +583,7 @@ export class RepoBoardDO extends DurableObject<Env> {
       ...run,
       operatorSession: normalizedSession,
       llmAdapter: normalizedSession?.llmAdapter ?? run.llmAdapter,
+      llmSupportsResume: normalizedSession?.llmSupportsResume ?? run.llmSupportsResume,
       llmResumeCommand: normalizedSession?.llmResumeCommand ?? run.llmResumeCommand,
       llmSessionId: normalizedSession?.llmSessionId ?? run.llmSessionId,
       latestCodexResumeCommand: normalizedSession?.codexResumeCommand ?? run.latestCodexResumeCommand
@@ -613,6 +614,7 @@ export class RepoBoardDO extends DurableObject<Env> {
         reason: 'sandbox_missing',
         cols: 120,
         rows: 32,
+        llmSupportsResume: run.llmSupportsResume,
         llmResumeCommand: run.llmResumeCommand ?? run.latestCodexResumeCommand,
         codexResumeCommand: run.latestCodexResumeCommand
       };
@@ -631,6 +633,7 @@ export class RepoBoardDO extends DurableObject<Env> {
         cols: 120,
         rows: 32,
         session: run.operatorSession,
+        llmSupportsResume: run.llmSupportsResume,
         llmResumeCommand: run.llmResumeCommand ?? run.latestCodexResumeCommand,
         codexResumeCommand: run.latestCodexResumeCommand
       };
@@ -648,6 +651,7 @@ export class RepoBoardDO extends DurableObject<Env> {
       cols: 120,
       rows: 32,
       session: run.operatorSession,
+      llmSupportsResume: run.llmSupportsResume,
       llmResumeCommand: run.llmResumeCommand ?? run.latestCodexResumeCommand,
       codexResumeCommand: run.latestCodexResumeCommand
     };
@@ -673,6 +677,7 @@ export class RepoBoardDO extends DurableObject<Env> {
       connectionState: 'open' as const,
       takeoverState: 'observing' as const,
       llmAdapter: run.llmAdapter ?? 'codex',
+      llmSupportsResume: run.llmSupportsResume,
       llmSessionId: run.llmSessionId,
       llmResumeCommand: run.llmResumeCommand ?? run.latestCodexResumeCommand,
       codexThreadId: undefined,
@@ -682,7 +687,7 @@ export class RepoBoardDO extends DurableObject<Env> {
       ...session,
       actorId: actor.actorId,
       actorLabel: actor.actorLabel,
-      takeoverState: run.latestCodexResumeCommand ? 'resumable' : 'operator_control',
+      takeoverState: run.llmSupportsResume && run.llmResumeCommand ? 'resumable' : 'operator_control',
       connectionState: session.connectionState === 'failed' ? 'failed' : 'open'
     })!;
 
@@ -1036,7 +1041,9 @@ function cloneRepoBoardState(state: RepoBoardState): RepoBoardState {
       pendingEvents: run.pendingEvents.map((event) => ({ ...event })),
       executionSummary: run.executionSummary ? { ...run.executionSummary } : undefined,
       artifacts: run.artifacts ? [...run.artifacts] : undefined,
-      latestCodexResumeCommand: run.latestCodexResumeCommand ?? run.llmResumeCommand,
+      latestCodexResumeCommand: (run.llmAdapter ?? run.operatorSession?.llmAdapter ?? 'codex') === 'codex'
+        ? (run.latestCodexResumeCommand ?? run.llmResumeCommand)
+        : run.latestCodexResumeCommand,
       currentCommandId: run.currentCommandId,
       artifactManifest: run.artifactManifest
         ? {

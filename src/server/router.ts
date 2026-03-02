@@ -249,6 +249,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
         connectionState: 'connecting' as const,
         takeoverState: run.operatorSession?.takeoverState ?? 'observing',
         llmAdapter: run.operatorSession?.llmAdapter ?? run.llmAdapter ?? 'codex',
+        llmSupportsResume: run.operatorSession?.llmSupportsResume ?? run.llmSupportsResume,
         llmSessionId: run.operatorSession?.llmSessionId ?? run.operatorSession?.codexThreadId ?? run.llmSessionId,
         llmResumeCommand: run.operatorSession?.llmResumeCommand ?? run.operatorSession?.codexResumeCommand ?? run.llmResumeCommand ?? run.latestCodexResumeCommand,
         codexThreadId: run.operatorSession?.codexThreadId,

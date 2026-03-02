@@ -186,6 +186,7 @@ export type OperatorSession = {
   connectionState: 'connecting' | 'open' | 'closed' | 'failed';
   takeoverState: 'codex_control' | 'observing' | 'operator_control' | 'resumable';
   llmAdapter?: LlmAdapter;
+  llmSupportsResume?: boolean;
   llmSessionId?: string;
   llmResumeCommand?: string;
   codexThreadId?: string;
@@ -206,6 +207,7 @@ export type TerminalBootstrap = {
   cols: number;
   rows: number;
   session?: OperatorSession;
+  llmSupportsResume?: boolean;
   llmResumeCommand?: string;
   codexResumeCommand?: string;
 };
@@ -283,6 +285,7 @@ export type AgentRun = {
   codexProcessId?: string;
   currentCommandId?: string;
   llmAdapter?: LlmAdapter;
+  llmSupportsResume?: boolean;
   llmModel?: string;
   llmReasoningEffort?: LlmReasoningEffort;
   llmResumeCommand?: string;
