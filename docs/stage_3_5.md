@@ -577,6 +577,7 @@ Use provider-neutral language:
 7. Implement `GitLabScmAdapter`.
 8. Add GitLab MR source-ref parsing, MR creation, and merge detection.
 9. Add smoke-test docs for hosted GitLab using `glab` as an operator validation tool.
+   - Implemented operator setup reference: `docs/gitlab-self-hosted.md`
 
 ### Phase B: LLM adapters
 
@@ -638,6 +639,7 @@ Use provider-neutral language:
 Add:
 
 - `docs/stage_3_5.md`
+- `docs/gitlab-self-hosted.md`
 - `docs/git-providers.md`
 - `docs/llm-adapters.md`
 - `docs/preview-adapters.md`
@@ -654,6 +656,7 @@ The docs should explicitly state:
 - `glab` is acceptable for local/operator testing, not a runtime dependency
 - Codex remains default, Cursor CLI is the second executor
 - custom preview recipes are LLM-driven prompt recipes
+- self-hosted GitLab setup uses host-scoped credentials and origin-based `scmBaseUrl`
 
 ## Acceptance criteria
 
