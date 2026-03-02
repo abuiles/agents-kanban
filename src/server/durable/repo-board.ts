@@ -26,6 +26,7 @@ import { resolveRunSource } from '../shared/run-source-resolution';
 import { normalizeOperatorSession, normalizeRunLlmState, normalizeTaskUiMeta } from '../../shared/llm';
 import { hasRunReview, normalizeDependencyReviewMetadata, normalizeRunReviewMetadata, normalizeTaskBranchSourceReviewMetadata } from '../../shared/scm';
 import { DEFAULT_TENANT_ID, normalizeTenantId } from '../../shared/tenant';
+import { writeUsageLedgerEntriesBestEffort } from '../usage-ledger';
 
 const STORAGE_KEY = 'repo-board-state';
 const LOCAL_JOBS_KEY = 'repo-board-local-jobs';
@@ -563,14 +564,31 @@ export class RepoBoardDO extends DurableObject<Env> {
     }
     const repo = await this.getRepo(run.repoId);
     const manifest = buildArtifactManifest(run, task, repo, this.ctx.id.toString());
-    return this.transitionRun(runId, {
+    const updated = await this.transitionRun(runId, {
       artifactManifest: manifest,
       artifacts: [manifest.logs.key, manifest.before?.key, manifest.after?.key, manifest.trace?.key, manifest.video?.key].filter(Boolean) as string[]
     });
+    await this.recordUsage(updated, [
+      {
+        category: 'r2_write_ops',
+        quantity: 1,
+        source: 'workflow',
+        metadata: { object: 'artifact_manifest' }
+      }
+    ]);
+    return updated;
   }
 
   async getRunArtifacts(runId: string) {
     const run = await this.getRun(runId);
+    await this.recordUsage(run, [
+      {
+        category: 'artifact_download',
+        quantity: 1,
+        source: 'worker',
+        metadata: { endpoint: '/api/runs/:runId/artifacts' }
+      }
+    ]);
     return run.artifactManifest;
   }
 
@@ -619,6 +637,16 @@ export class RepoBoardDO extends DurableObject<Env> {
     await this.persist();
     await this.emit({ type: 'run.updated', payload: { run: updated } }, updated.repoId);
     await this.emit({ type: 'run.operator_session_updated', payload: { runId, session: normalizedSession } }, updated.repoId);
+    if (normalizedSession) {
+      await this.recordUsage(updated, [
+        {
+          category: 'operator_session_ms',
+          quantity: 1,
+          source: 'operator',
+          metadata: { event: 'operator_session_updated', state: normalizedSession.connectionState }
+        }
+      ]);
+    }
     return updated;
   }
 
@@ -761,6 +789,14 @@ export class RepoBoardDO extends DurableObject<Env> {
     await this.emit({ type: 'run.operator_session_updated', payload: { runId, session: nextSession } }, updated.repoId);
     await this.emit({ type: 'run.events_appended', payload: { runId, events } }, updated.repoId);
     await this.emitDependencyRefreshUpdates(updated.repoId, refreshedTasks, [finalTask.taskId]);
+    await this.recordUsage(updated, [
+      {
+        category: 'operator_session_ms',
+        quantity: 1,
+        source: 'operator',
+        metadata: { event: 'operator_takeover_started', sessionName: nextSession.sessionName }
+      }
+    ]);
     return updated;
   }
 
@@ -828,6 +864,31 @@ export class RepoBoardDO extends DurableObject<Env> {
   private async getRepo(repoId: string): Promise<Repo> {
     const board = this.env.BOARD_INDEX.getByName('agentboard');
     return board.getRepo(repoId);
+  }
+
+  private async recordUsage(
+    run: Pick<AgentRun, 'tenantId' | 'repoId' | 'taskId' | 'runId'>,
+    entries: Array<{
+      category: import('../usage-ledger').UsageLedgerCategory;
+      quantity: number;
+      unit?: string;
+      source: import('../usage-ledger').UsageLedgerSource;
+      metadata?: Record<string, string | number | boolean>;
+    }>
+  ) {
+    if (!entries.length) {
+      return;
+    }
+    await writeUsageLedgerEntriesBestEffort(
+      this.env,
+      entries.map((entry) => ({
+        tenantId: normalizeTenantId(run.tenantId),
+        repoId: run.repoId,
+        taskId: run.taskId,
+        runId: run.runId,
+        ...entry
+      }))
+    );
   }
 
   private async buildBoardPayload() {

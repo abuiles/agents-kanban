@@ -14,6 +14,8 @@ import { getScmSourceRefFetchSpec } from './scm/source-ref';
 import { getLlmAdapter, resolveLlmAdapterKind } from './llm/registry';
 import { getPreviewAdapter } from './preview/registry';
 import type { PreviewAdapterContext, PreviewAdapterResult } from './preview/adapter';
+import { writeUsageLedgerEntriesBestEffort } from './usage-ledger';
+import { normalizeTenantId } from '../shared/tenant';
 
 type WorkflowBinding<T> = {
   create(options?: { id?: string; params?: T; retention?: { successRetention?: string | number; errorRetention?: string | number } }): Promise<{ id: string }>;
@@ -59,24 +61,292 @@ export async function executeRunJob(env: Env, params: RunJobParams, sleepFn: Sle
   const llmExecutorLabel = llmAdapter.kind === 'codex' ? 'Codex' : 'Cursor CLI';
   const llmModel = detail.task.uiMeta?.llmModel ?? detail.task.uiMeta?.codexModel ?? 'gpt-5.1-codex-mini';
   const llmReasoningEffort = detail.task.uiMeta?.llmReasoningEffort ?? detail.task.uiMeta?.codexReasoningEffort ?? 'medium';
+  const workflowStartedAtMs = Date.now();
+  let sandboxStartedAtMs: number | undefined;
+  const emitUsage = async (
+    entries: Array<{
+      category: import('./usage-ledger').UsageLedgerCategory;
+      quantity: number;
+      unit?: string;
+      source: import('./usage-ledger').UsageLedgerSource;
+      metadata?: Record<string, string | number | boolean>;
+    }>
+  ) => {
+    await writeUsageLedgerEntriesBestEffort(
+      env,
+      entries.map((entry) => ({
+        tenantId: normalizeTenantId(run.tenantId),
+        repoId: run.repoId,
+        taskId: run.taskId,
+        runId: run.runId,
+        ...entry
+      }))
+    );
+  };
 
-  if (params.mode === 'evidence_only') {
-    if (!shouldRunEvidence(repo)) {
-      await finishRunWithoutEvidence(repoBoard, params.runId, 'Evidence execution is disabled for this repo.');
-      return;
+  try {
+    await emitUsage([
+      {
+        category: 'workflow_execution',
+        quantity: 1,
+        source: 'workflow',
+        metadata: { mode: params.mode, event: 'workflow_started' }
+      },
+      {
+        category: 'workflow_step',
+        quantity: 1,
+        source: 'workflow',
+        metadata: { mode: params.mode, step: 'run_entered' }
+      }
+    ]);
+
+    if (params.mode === 'evidence_only') {
+      if (!shouldRunEvidence(repo)) {
+        await finishRunWithoutEvidence(repoBoard, params.runId, 'Evidence execution is disabled for this repo.');
+        return;
+      }
+      return runEvidence(env as Stage3Env, board, repoBoard, detail.task, repo, params.runId, sleepFn);
     }
-    return runEvidence(env as Stage3Env, board, repoBoard, detail.task, repo, params.runId, sleepFn);
-  }
 
-  if (params.mode === 'preview_only') {
+    if (params.mode === 'preview_only') {
+      if (!shouldRunPreview(repo)) {
+        await finishRunWithoutPreview(repoBoard, params.runId, 'Preview discovery is disabled for this repo.');
+        return;
+      }
+      const promptRecipeRuntime = repo.previewAdapter === 'prompt_recipe'
+        ? createPromptRecipeRuntime(env as Stage3Env, repoBoard, params.runId, repo, llmAdapter, llmModel, llmReasoningEffort)
+        : undefined;
+      return discoverPreviewAndRunEvidence(
+        env as Stage3Env,
+        repoBoard,
+        detail.task,
+        repo,
+        params.runId,
+        sleepFn,
+        scmAdapter,
+        await getScmCredential(env as Stage3Env, board, repo, scmAdapter),
+        promptRecipeRuntime
+      );
+    }
+
+    const scmCredential = await getScmCredential(env as Stage3Env, board, repo, scmAdapter);
+    const sandbox = getSandbox(env.Sandbox, params.runId);
+    const llmContext = { env, sandbox, repoBoard, runId: params.runId };
+    sandboxStartedAtMs = Date.now();
+
+    await emitUsage([
+      {
+        category: 'workflow_step',
+        quantity: 1,
+        source: 'workflow',
+        metadata: { step: 'sandbox_allocated' }
+      }
+    ]);
+
+    await repoBoard.appendRunLogs(params.runId, [buildRunLog(params.runId, `Starting sandbox run for ${repo.slug}.`, 'bootstrap')]);
+    await repoBoard.transitionRun(params.runId, {
+      status: 'BOOTSTRAPPING',
+      sandboxId: params.runId,
+      llmAdapter: llmAdapter.kind,
+      llmSupportsResume: llmAdapter.capabilities.supportsResume,
+      appendTimelineNote: 'Sandbox bootstrapped.'
+    });
+
+    try {
+      await emitCommandLifecycle(repoBoard, params.runId, 'bootstrap', 'mkdir -p /workspace/repo', () => sandbox.exec('mkdir -p /workspace/repo'));
+      await repoBoard.appendRunLogs(params.runId, [buildRunLog(params.runId, `${scmAdapter.provider} token suffix: ${scmCredential.token.slice(-4)}`, 'bootstrap')]);
+      await llmAdapter.restoreAuth({ ...llmContext, repo });
+      await sandbox.gitCheckout(scmAdapter.buildCloneUrl(repo, scmCredential), {
+        branch: repo.defaultBranch,
+        targetDir: '/workspace/repo'
+      });
+      await emitCommandLifecycle(
+        repoBoard,
+        params.runId,
+        'bootstrap',
+        `cd /workspace/repo && git config user.name 'AgentsKanban' && git config user.email 'agentskanban@local'`,
+        () => sandbox.exec(`cd /workspace/repo && git config user.name 'AgentsKanban' && git config user.email 'agentskanban@local'`)
+      );
+      await prepareRunBranchFromTaskSource(sandbox, repoBoard, params.runId, detail.task, repo, run, scmAdapter);
+    } catch (error) {
+      await failRun(repoBoard, params.runId, 'BOOTSTRAP_FAILED', 'bootstrap', error);
+      throw error;
+    }
+
+    await repoBoard.transitionRun(params.runId, { status: 'RUNNING_CODEX', appendTimelineNote: `${llmExecutorLabel} executing with full sandbox permissions.` });
+
+    try {
+      const prompt = buildLlmPrompt(detail.task, repo, run);
+      const request = {
+        repo,
+        task: detail.task,
+        run,
+        cwd: '/workspace/repo',
+        prompt,
+        model: llmModel,
+        reasoningEffort: llmReasoningEffort
+      } as const;
+      await llmAdapter.ensureInstalled(llmContext);
+      await llmAdapter.logDiagnostics(llmContext, request);
+      await llmAdapter.waitForCapacityIfNeeded?.(llmContext, request, sleepFn);
+      const llmResult = await llmAdapter.run(llmContext, request);
+      if (llmResult.stoppedForTakeover) {
+        await repoBoard.appendRunLogs(params.runId, [
+          buildRunLog(params.runId, `${llmExecutorLabel} execution stopped after operator takeover. Leaving the sandbox under operator control.`, 'codex')
+        ]);
+        return;
+      }
+      if (!llmResult.success) {
+        throw new NonRetryableError(llmResult.stderr || `${llmExecutorLabel} execution failed.`);
+      }
+    } catch (error) {
+      const currentRun = await repoBoard.getRun(params.runId);
+      if (currentRun.status === 'OPERATOR_CONTROLLED') {
+        return;
+      }
+      await failRun(repoBoard, params.runId, 'LLM_FAILED', 'codex', error, false);
+      throw error;
+    }
+
+    await repoBoard.transitionRun(params.runId, {
+      status: 'RUNNING_TESTS',
+      appendTimelineNote: `${llmExecutorLabel}-selected validation commands executed inside the sandbox.`,
+      executionSummary: { testsOutcome: 'skipped' }
+    });
+    await repoBoard.appendRunLogs(params.runId, [buildRunLog(params.runId, `${llmExecutorLabel} was responsible for choosing and running validation commands.`, 'tests')]);
+
+    await repoBoard.transitionRun(params.runId, { status: 'PUSHING_BRANCH', appendTimelineNote: 'Preparing git diff and push.' });
+
+    try {
+      const branchResult = await emitCommandLifecycle(repoBoard, params.runId, 'push', 'cd /workspace/repo && git branch --show-current', () =>
+        sandbox.exec('cd /workspace/repo && git branch --show-current')
+      );
+      if (!branchResult.success) {
+        throw new Error(branchResult.stderr || 'Failed to resolve the current branch.');
+      }
+
+      const currentBranch = branchResult.stdout.trim();
+      if (currentBranch !== run.branchName) {
+        await repoBoard.appendRunLogs(params.runId, [
+          buildRunLog(params.runId, `${llmExecutorLabel} changed the checked out branch to ${currentBranch}. Normalizing push to ${run.branchName} from current HEAD.`, 'push')
+        ]);
+      }
+
+      const statusResult = await emitCommandLifecycle(repoBoard, params.runId, 'push', 'cd /workspace/repo && git status --short', () =>
+        sandbox.exec('cd /workspace/repo && git status --short')
+      );
+      const hasWorkingTreeChanges = Boolean(statusResult.stdout.trim());
+      const baseHeadResult = await emitCommandLifecycle(repoBoard, params.runId, 'push', `cd /workspace/repo && git rev-parse origin/${shellEscape(repo.defaultBranch)}`, () =>
+        sandbox.exec(`cd /workspace/repo && git rev-parse origin/${shellEscape(repo.defaultBranch)}`)
+      );
+      if (!baseHeadResult.success) {
+        throw new Error(baseHeadResult.stderr || `Failed to resolve origin/${repo.defaultBranch}.`);
+      }
+
+      const currentHeadResult = await emitCommandLifecycle(repoBoard, params.runId, 'push', 'cd /workspace/repo && git rev-parse HEAD', () =>
+        sandbox.exec('cd /workspace/repo && git rev-parse HEAD')
+      );
+      if (!currentHeadResult.success) {
+        throw new Error(currentHeadResult.stderr || 'Failed to resolve HEAD.');
+      }
+
+      const hasLocalCommit = currentHeadResult.stdout.trim() !== baseHeadResult.stdout.trim();
+      if (!hasWorkingTreeChanges && !hasLocalCommit) {
+        await failRun(repoBoard, params.runId, 'NO_CHANGES', 'push', `${llmExecutorLabel} finished without producing a diff.`, false);
+        return;
+      }
+
+      let commitMessage: string;
+      if (hasWorkingTreeChanges) {
+        commitMessage = `AgentsKanban: ${detail.task.title}`;
+        const commitResult = await emitCommandLifecycle(
+          repoBoard,
+          params.runId,
+          'push',
+          `cd /workspace/repo && git add -A && git commit -m ${shellQuote(commitMessage)} && git push origin HEAD:${shellEscape(run.branchName)}`,
+          () => sandbox.exec(`cd /workspace/repo && git add -A && git commit -m ${shellQuote(commitMessage)} && git push origin HEAD:${shellEscape(run.branchName)}`)
+        );
+        if (!commitResult.success) {
+          throw new Error(commitResult.stderr || 'Commit and push failed.');
+        }
+      } else {
+        const commitMessageResult = await emitCommandLifecycle(repoBoard, params.runId, 'push', 'cd /workspace/repo && git log -1 --pretty=%s', () =>
+          sandbox.exec('cd /workspace/repo && git log -1 --pretty=%s')
+        );
+        if (!commitMessageResult.success) {
+          throw new Error(commitMessageResult.stderr || 'Failed to read the existing commit message.');
+        }
+        commitMessage = commitMessageResult.stdout.trim() || `AgentsKanban: ${detail.task.title}`;
+        await repoBoard.appendRunLogs(params.runId, [
+          buildRunLog(params.runId, `Detected an existing local commit from ${llmExecutorLabel}; pushing it without creating another commit.`, 'push')
+        ]);
+        const pushResult = await emitCommandLifecycle(repoBoard, params.runId, 'push', `cd /workspace/repo && git push origin HEAD:${shellEscape(run.branchName)}`, () =>
+          sandbox.exec(`cd /workspace/repo && git push origin HEAD:${shellEscape(run.branchName)}`)
+        );
+        if (!pushResult.success) {
+          throw new Error(pushResult.stderr || 'Push failed.');
+        }
+      }
+
+      const shaResult = await emitCommandLifecycle(repoBoard, params.runId, 'push', 'cd /workspace/repo && git rev-parse HEAD', () =>
+        sandbox.exec('cd /workspace/repo && git rev-parse HEAD')
+      );
+      if (!shaResult.success) {
+        throw new Error(shaResult.stderr || 'Failed to resolve the pushed commit SHA.');
+      }
+      await repoBoard.transitionRun(params.runId, {
+        commitSha: shaResult.stdout.trim(),
+        commitMessage,
+        headSha: shaResult.stdout.trim(),
+        executionSummary: { codexOutcome: 'changes' }
+      });
+    } catch (error) {
+      await failRun(repoBoard, params.runId, 'PUSH_FAILED', 'push', error);
+      throw error;
+    }
+
+    try {
+      const latestRun = await repoBoard.getRun(params.runId);
+      if (getRunReviewUrl(latestRun) && getRunReviewNumber(latestRun)) {
+        await repoBoard.transitionRun(params.runId, {
+          status: 'PR_OPEN',
+          reviewState: 'open',
+          landedOnDefaultBranch: false,
+          landedOnDefaultBranchAt: undefined,
+          previewStatus: 'DISCOVERING',
+          appendTimelineNote: 'Existing pull request updated with requested changes.'
+        });
+      } else {
+        const pr = await scmAdapter.createReviewRequest(repo, detail.task, latestRun, scmCredential);
+        await repoBoard.transitionRun(params.runId, {
+          status: 'PR_OPEN',
+          reviewUrl: pr.url,
+          reviewNumber: pr.number,
+          reviewProvider: pr.provider,
+          reviewState: 'open',
+          prNumber: pr.number,
+          prUrl: pr.url,
+          landedOnDefaultBranch: false,
+          landedOnDefaultBranchAt: undefined,
+          previewStatus: 'DISCOVERING',
+          appendTimelineNote: 'Pull request opened.'
+        });
+      }
+    } catch (error) {
+      await failRun(repoBoard, params.runId, 'PR_CREATE_FAILED', 'pr', error);
+      throw error;
+    }
+
     if (!shouldRunPreview(repo)) {
-      await finishRunWithoutPreview(repoBoard, params.runId, 'Preview discovery is disabled for this repo.');
+      await finishRunWithoutPreview(repoBoard, params.runId, 'Preview discovery and evidence are disabled for this repo.');
       return;
     }
+
     const promptRecipeRuntime = repo.previewAdapter === 'prompt_recipe'
       ? createPromptRecipeRuntime(env as Stage3Env, repoBoard, params.runId, repo, llmAdapter, llmModel, llmReasoningEffort)
       : undefined;
-    return discoverPreviewAndRunEvidence(
+
+    await discoverPreviewAndRunEvidence(
       env as Stage3Env,
       repoBoard,
       detail.task,
@@ -84,229 +354,30 @@ export async function executeRunJob(env: Env, params: RunJobParams, sleepFn: Sle
       params.runId,
       sleepFn,
       scmAdapter,
-      await getScmCredential(env as Stage3Env, board, repo, scmAdapter),
+      scmCredential,
       promptRecipeRuntime
     );
-  }
-
-  const scmCredential = await getScmCredential(env as Stage3Env, board, repo, scmAdapter);
-  const sandbox = getSandbox(env.Sandbox, params.runId);
-  const llmContext = { env, sandbox, repoBoard, runId: params.runId };
-
-  await repoBoard.appendRunLogs(params.runId, [buildRunLog(params.runId, `Starting sandbox run for ${repo.slug}.`, 'bootstrap')]);
-  await repoBoard.transitionRun(params.runId, {
-    status: 'BOOTSTRAPPING',
-    sandboxId: params.runId,
-    llmAdapter: llmAdapter.kind,
-    llmSupportsResume: llmAdapter.capabilities.supportsResume,
-    appendTimelineNote: 'Sandbox bootstrapped.'
-  });
-
-  try {
-    await emitCommandLifecycle(repoBoard, params.runId, 'bootstrap', 'mkdir -p /workspace/repo', () => sandbox.exec('mkdir -p /workspace/repo'));
-    await repoBoard.appendRunLogs(params.runId, [buildRunLog(params.runId, `${scmAdapter.provider} token suffix: ${scmCredential.token.slice(-4)}`, 'bootstrap')]);
-    await llmAdapter.restoreAuth({ ...llmContext, repo });
-    await sandbox.gitCheckout(scmAdapter.buildCloneUrl(repo, scmCredential), {
-      branch: repo.defaultBranch,
-      targetDir: '/workspace/repo'
-    });
-    await emitCommandLifecycle(
-      repoBoard,
-      params.runId,
-      'bootstrap',
-      `cd /workspace/repo && git config user.name 'AgentsKanban' && git config user.email 'agentskanban@local'`,
-      () => sandbox.exec(`cd /workspace/repo && git config user.name 'AgentsKanban' && git config user.email 'agentskanban@local'`)
-    );
-    await prepareRunBranchFromTaskSource(sandbox, repoBoard, params.runId, detail.task, repo, run, scmAdapter);
-  } catch (error) {
-    await failRun(repoBoard, params.runId, 'BOOTSTRAP_FAILED', 'bootstrap', error);
-    throw error;
-  }
-
-  await repoBoard.transitionRun(params.runId, { status: 'RUNNING_CODEX', appendTimelineNote: `${llmExecutorLabel} executing with full sandbox permissions.` });
-
-  try {
-    const prompt = buildLlmPrompt(detail.task, repo, run);
-    const request = {
-      repo,
-      task: detail.task,
-      run,
-      cwd: '/workspace/repo',
-      prompt,
-      model: llmModel,
-      reasoningEffort: llmReasoningEffort
-    } as const;
-    await llmAdapter.ensureInstalled(llmContext);
-    await llmAdapter.logDiagnostics(llmContext, request);
-    await llmAdapter.waitForCapacityIfNeeded?.(llmContext, request, sleepFn);
-    const llmResult = await llmAdapter.run(llmContext, request);
-    if (llmResult.stoppedForTakeover) {
-      await repoBoard.appendRunLogs(params.runId, [
-        buildRunLog(params.runId, `${llmExecutorLabel} execution stopped after operator takeover. Leaving the sandbox under operator control.`, 'codex')
-      ]);
-      return;
-    }
-    if (!llmResult.success) {
-      throw new NonRetryableError(llmResult.stderr || `${llmExecutorLabel} execution failed.`);
-    }
-  } catch (error) {
-    const currentRun = await repoBoard.getRun(params.runId);
-    if (currentRun.status === 'OPERATOR_CONTROLLED') {
-      return;
-    }
-    await failRun(repoBoard, params.runId, 'LLM_FAILED', 'codex', error, false);
-    throw error;
-  }
-
-  await repoBoard.transitionRun(params.runId, {
-    status: 'RUNNING_TESTS',
-    appendTimelineNote: `${llmExecutorLabel}-selected validation commands executed inside the sandbox.`,
-    executionSummary: { testsOutcome: 'skipped' }
-  });
-  await repoBoard.appendRunLogs(params.runId, [buildRunLog(params.runId, `${llmExecutorLabel} was responsible for choosing and running validation commands.`, 'tests')]);
-
-  await repoBoard.transitionRun(params.runId, { status: 'PUSHING_BRANCH', appendTimelineNote: 'Preparing git diff and push.' });
-
-  try {
-    const branchResult = await emitCommandLifecycle(repoBoard, params.runId, 'push', 'cd /workspace/repo && git branch --show-current', () =>
-      sandbox.exec('cd /workspace/repo && git branch --show-current')
-    );
-    if (!branchResult.success) {
-      throw new Error(branchResult.stderr || 'Failed to resolve the current branch.');
-    }
-
-    const currentBranch = branchResult.stdout.trim();
-    if (currentBranch !== run.branchName) {
-      await repoBoard.appendRunLogs(params.runId, [
-        buildRunLog(params.runId, `${llmExecutorLabel} changed the checked out branch to ${currentBranch}. Normalizing push to ${run.branchName} from current HEAD.`, 'push')
+  } finally {
+    const endedAtMs = Date.now();
+    await emitUsage([
+      {
+        category: 'workflow_duration_ms',
+        quantity: Math.max(0, endedAtMs - workflowStartedAtMs),
+        source: 'workflow',
+        metadata: { mode: params.mode }
+      }
+    ]);
+    if (sandboxStartedAtMs !== undefined) {
+      await emitUsage([
+        {
+          category: 'sandbox_runtime_ms',
+          quantity: Math.max(0, endedAtMs - sandboxStartedAtMs),
+          source: 'sandbox',
+          metadata: { sandboxId: params.runId }
+        }
       ]);
     }
-
-    const statusResult = await emitCommandLifecycle(repoBoard, params.runId, 'push', 'cd /workspace/repo && git status --short', () =>
-      sandbox.exec('cd /workspace/repo && git status --short')
-    );
-    const hasWorkingTreeChanges = Boolean(statusResult.stdout.trim());
-    const baseHeadResult = await emitCommandLifecycle(repoBoard, params.runId, 'push', `cd /workspace/repo && git rev-parse origin/${shellEscape(repo.defaultBranch)}`, () =>
-      sandbox.exec(`cd /workspace/repo && git rev-parse origin/${shellEscape(repo.defaultBranch)}`)
-    );
-    if (!baseHeadResult.success) {
-      throw new Error(baseHeadResult.stderr || `Failed to resolve origin/${repo.defaultBranch}.`);
-    }
-
-    const currentHeadResult = await emitCommandLifecycle(repoBoard, params.runId, 'push', 'cd /workspace/repo && git rev-parse HEAD', () =>
-      sandbox.exec('cd /workspace/repo && git rev-parse HEAD')
-    );
-    if (!currentHeadResult.success) {
-      throw new Error(currentHeadResult.stderr || 'Failed to resolve HEAD.');
-    }
-
-    const hasLocalCommit = currentHeadResult.stdout.trim() !== baseHeadResult.stdout.trim();
-    if (!hasWorkingTreeChanges && !hasLocalCommit) {
-      await failRun(repoBoard, params.runId, 'NO_CHANGES', 'push', `${llmExecutorLabel} finished without producing a diff.`, false);
-      return;
-    }
-
-    let commitMessage: string;
-    if (hasWorkingTreeChanges) {
-      commitMessage = `AgentsKanban: ${detail.task.title}`;
-      const commitResult = await emitCommandLifecycle(
-        repoBoard,
-        params.runId,
-        'push',
-        `cd /workspace/repo && git add -A && git commit -m ${shellQuote(commitMessage)} && git push origin HEAD:${shellEscape(run.branchName)}`,
-        () => sandbox.exec(`cd /workspace/repo && git add -A && git commit -m ${shellQuote(commitMessage)} && git push origin HEAD:${shellEscape(run.branchName)}`)
-      );
-      if (!commitResult.success) {
-        throw new Error(commitResult.stderr || 'Commit and push failed.');
-      }
-    } else {
-      const commitMessageResult = await emitCommandLifecycle(repoBoard, params.runId, 'push', 'cd /workspace/repo && git log -1 --pretty=%s', () =>
-        sandbox.exec('cd /workspace/repo && git log -1 --pretty=%s')
-      );
-      if (!commitMessageResult.success) {
-        throw new Error(commitMessageResult.stderr || 'Failed to read the existing commit message.');
-      }
-      commitMessage = commitMessageResult.stdout.trim() || `AgentsKanban: ${detail.task.title}`;
-      await repoBoard.appendRunLogs(params.runId, [
-        buildRunLog(params.runId, `Detected an existing local commit from ${llmExecutorLabel}; pushing it without creating another commit.`, 'push')
-      ]);
-      const pushResult = await emitCommandLifecycle(repoBoard, params.runId, 'push', `cd /workspace/repo && git push origin HEAD:${shellEscape(run.branchName)}`, () =>
-        sandbox.exec(`cd /workspace/repo && git push origin HEAD:${shellEscape(run.branchName)}`)
-      );
-      if (!pushResult.success) {
-        throw new Error(pushResult.stderr || 'Push failed.');
-      }
-    }
-
-    const shaResult = await emitCommandLifecycle(repoBoard, params.runId, 'push', 'cd /workspace/repo && git rev-parse HEAD', () =>
-      sandbox.exec('cd /workspace/repo && git rev-parse HEAD')
-    );
-    if (!shaResult.success) {
-      throw new Error(shaResult.stderr || 'Failed to resolve the pushed commit SHA.');
-    }
-    await repoBoard.transitionRun(params.runId, {
-      commitSha: shaResult.stdout.trim(),
-      commitMessage,
-      headSha: shaResult.stdout.trim(),
-      executionSummary: { codexOutcome: 'changes' }
-    });
-  } catch (error) {
-    await failRun(repoBoard, params.runId, 'PUSH_FAILED', 'push', error);
-    throw error;
   }
-
-  try {
-    const latestRun = await repoBoard.getRun(params.runId);
-    if (getRunReviewUrl(latestRun) && getRunReviewNumber(latestRun)) {
-      await repoBoard.transitionRun(params.runId, {
-        status: 'PR_OPEN',
-        reviewState: 'open',
-        landedOnDefaultBranch: false,
-        landedOnDefaultBranchAt: undefined,
-        previewStatus: 'DISCOVERING',
-        appendTimelineNote: 'Existing pull request updated with requested changes.'
-      });
-    } else {
-      const pr = await scmAdapter.createReviewRequest(repo, detail.task, latestRun, scmCredential);
-      await repoBoard.transitionRun(params.runId, {
-        status: 'PR_OPEN',
-        reviewUrl: pr.url,
-        reviewNumber: pr.number,
-        reviewProvider: pr.provider,
-        reviewState: 'open',
-        prNumber: pr.number,
-        prUrl: pr.url,
-        landedOnDefaultBranch: false,
-        landedOnDefaultBranchAt: undefined,
-        previewStatus: 'DISCOVERING',
-        appendTimelineNote: 'Pull request opened.'
-      });
-    }
-  } catch (error) {
-    await failRun(repoBoard, params.runId, 'PR_CREATE_FAILED', 'pr', error);
-    throw error;
-  }
-
-  if (!shouldRunPreview(repo)) {
-    await finishRunWithoutPreview(repoBoard, params.runId, 'Preview discovery and evidence are disabled for this repo.');
-    return;
-  }
-
-  const promptRecipeRuntime = repo.previewAdapter === 'prompt_recipe'
-    ? createPromptRecipeRuntime(env as Stage3Env, repoBoard, params.runId, repo, llmAdapter, llmModel, llmReasoningEffort)
-    : undefined;
-
-  await discoverPreviewAndRunEvidence(
-    env as Stage3Env,
-    repoBoard,
-    detail.task,
-    repo,
-    params.runId,
-    sleepFn,
-    scmAdapter,
-    scmCredential,
-    promptRecipeRuntime
-  );
 }
 
 async function runEvidence(
@@ -363,7 +434,7 @@ npx -y playwright install chromium
   }
 
   const updated = await repoBoard.storeArtifactManifest(runId);
-  await persistArtifactManifest(env, updated.runId, updated.artifactManifest);
+  await persistArtifactManifest(env, updated);
   if (getRunReviewNumber(updated)) {
     const scmAdapter = getScmAdapter(repo);
     const scmCredential = await getScmCredential(env, board, repo, scmAdapter);
@@ -624,13 +695,37 @@ async function getScmCredential(
   throw new NonRetryableError(`Missing SCM credential for provider ${scmAdapter.provider} host ${getRepoHost(repo)}.`);
 }
 
-async function persistArtifactManifest(env: Stage3Env, runId: string, manifest: Awaited<ReturnType<RepoBoardDO['getRunArtifacts']>>) {
+async function persistArtifactManifest(env: Stage3Env, run: Awaited<ReturnType<RepoBoardDO['getRun']>>) {
+  const manifest = run.artifactManifest;
   if (!manifest || !env.RUN_ARTIFACTS) {
     return;
   }
-  await env.RUN_ARTIFACTS.put(`runs/${runId}/manifest.json`, JSON.stringify(manifest, null, 2), {
+  const payload = JSON.stringify(manifest, null, 2);
+  await env.RUN_ARTIFACTS.put(`runs/${run.runId}/manifest.json`, payload, {
     httpMetadata: { contentType: 'application/json' }
   });
+  await writeUsageLedgerEntriesBestEffort(env, [
+    {
+      tenantId: normalizeTenantId(run.tenantId),
+      repoId: run.repoId,
+      taskId: run.taskId,
+      runId: run.runId,
+      category: 'r2_write_ops',
+      quantity: 1,
+      source: 'workflow',
+      metadata: { object: 'manifest.json' }
+    },
+    {
+      tenantId: normalizeTenantId(run.tenantId),
+      repoId: run.repoId,
+      taskId: run.taskId,
+      runId: run.runId,
+      category: 'r2_storage_bytes',
+      quantity: payload.length,
+      source: 'workflow',
+      metadata: { object: 'manifest.json' }
+    }
+  ]);
 }
 
 async function failRun(repoBoard: DurableObjectStub<RepoBoardDO>, runId: string, code: string, phase: NonNullable<ReturnType<typeof buildRunLog>['phase']>, error: unknown, retryable = true) {
