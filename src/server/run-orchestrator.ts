@@ -968,10 +968,17 @@ async function execStreamWithLogs(
           if (resumeMatch.resumeCommand && resumeMatch.resumeCommand !== latestResumeCommand) {
             latestResumeCommand = resumeMatch.resumeCommand;
             const latestRun = await repoBoard.getRun(runId);
-            await repoBoard.transitionRun(runId, { latestCodexResumeCommand: latestResumeCommand });
+            await repoBoard.transitionRun(runId, {
+              llmResumeCommand: latestResumeCommand,
+              llmSessionId: latestThreadId,
+              latestCodexResumeCommand: latestResumeCommand
+            });
             if (latestRun.operatorSession) {
               await repoBoard.updateOperatorSession(runId, {
                 ...latestRun.operatorSession,
+                llmAdapter: latestRun.operatorSession.llmAdapter ?? latestRun.llmAdapter ?? 'codex',
+                llmResumeCommand: latestResumeCommand,
+                llmSessionId: latestThreadId,
                 codexResumeCommand: latestResumeCommand,
                 codexThreadId: latestThreadId,
                 takeoverState: latestRun.operatorSession.takeoverState === 'operator_control' ? 'resumable' : latestRun.operatorSession.takeoverState
@@ -1153,10 +1160,17 @@ async function runCodexProcessWithLogs(
           if (resumeMatch.resumeCommand && resumeMatch.resumeCommand !== latestResumeCommand) {
             latestResumeCommand = resumeMatch.resumeCommand;
             const latestRun = await repoBoard.getRun(runId);
-            await repoBoard.transitionRun(runId, { latestCodexResumeCommand: latestResumeCommand });
+            await repoBoard.transitionRun(runId, {
+              llmResumeCommand: latestResumeCommand,
+              llmSessionId: latestThreadId,
+              latestCodexResumeCommand: latestResumeCommand
+            });
             if (latestRun.operatorSession) {
               await repoBoard.updateOperatorSession(runId, {
                 ...latestRun.operatorSession,
+                llmAdapter: latestRun.operatorSession.llmAdapter ?? latestRun.llmAdapter ?? 'codex',
+                llmResumeCommand: latestResumeCommand,
+                llmSessionId: latestThreadId,
                 codexResumeCommand: latestResumeCommand,
                 codexThreadId: latestThreadId,
                 takeoverState: latestRun.operatorSession.takeoverState === 'operator_control' ? 'resumable' : latestRun.operatorSession.takeoverState

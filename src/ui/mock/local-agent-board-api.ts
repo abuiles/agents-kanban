@@ -4,6 +4,7 @@ import { getTaskDetail, getTasksForRepo } from '../domain/selectors';
 import { LocalBoardStore } from '../store/local-board-store';
 import { parseImportedBoard } from '../store/import-export';
 import { RunSimulator } from './run-simulator';
+import { normalizeOperatorSession, normalizeRunLlmState, normalizeTaskUiMeta } from '../../shared/llm';
 import { normalizeCredentialHost, normalizeRepo } from '../../shared/scm';
 
 function nowIso() {
@@ -140,11 +141,14 @@ export class LocalAgentBoardApi implements AgentBoardApi {
       status: input.status ?? 'INBOX',
       createdAt: timestamp,
       updatedAt: timestamp,
-      uiMeta: {
+      uiMeta: normalizeTaskUiMeta({
         simulationProfile: input.simulationProfile ?? 'happy_path',
-        codexModel: input.codexModel ?? 'gpt-5.1-codex-mini',
-        codexReasoningEffort: input.codexReasoningEffort ?? 'medium'
-      }
+        llmAdapter: input.llmAdapter,
+        llmModel: input.llmModel,
+        llmReasoningEffort: input.llmReasoningEffort,
+        codexModel: input.codexModel,
+        codexReasoningEffort: input.codexReasoningEffort
+      })
     };
 
     this.store.update((snapshot) => ({
@@ -184,11 +188,14 @@ export class LocalAgentBoardApi implements AgentBoardApi {
           sourceRef: patch.sourceRef ?? task.sourceRef,
           context: patch.context ?? task.context,
           acceptanceCriteria: patch.acceptanceCriteria ?? task.acceptanceCriteria,
-          uiMeta: {
+          uiMeta: normalizeTaskUiMeta({
             simulationProfile: patch.simulationProfile ?? task.uiMeta?.simulationProfile ?? 'happy_path',
-            codexModel: patch.codexModel ?? task.uiMeta?.codexModel ?? 'gpt-5.1-codex-mini',
-            codexReasoningEffort: patch.codexReasoningEffort ?? task.uiMeta?.codexReasoningEffort ?? 'medium'
-          },
+            llmAdapter: patch.llmAdapter ?? task.uiMeta?.llmAdapter,
+            llmModel: patch.llmModel ?? task.uiMeta?.llmModel,
+            llmReasoningEffort: patch.llmReasoningEffort ?? task.uiMeta?.llmReasoningEffort,
+            codexModel: patch.codexModel ?? task.uiMeta?.codexModel,
+            codexReasoningEffort: patch.codexReasoningEffort ?? task.uiMeta?.codexReasoningEffort
+          }),
           updatedAt: nowIso()
         };
         return updatedTask;
@@ -290,18 +297,18 @@ export class LocalAgentBoardApi implements AgentBoardApi {
           return run;
         }
 
-        updatedRun = {
+        updatedRun = normalizeRunLlmState({
           ...run,
           status: 'OPERATOR_CONTROLLED',
           codexProcessId: undefined,
           currentCommandId: undefined,
           operatorSession: run.operatorSession
-            ? {
+            ? normalizeOperatorSession({
                 ...run.operatorSession,
                 takeoverState: run.latestCodexResumeCommand ? 'resumable' : 'operator_control',
                 connectionState: 'open'
-              }
-            : {
+              })
+            : normalizeOperatorSession({
                 id: `session_${runId}`,
                 runId,
                 sandboxId: run.sandboxId ?? `mock-${runId}`,
@@ -311,9 +318,12 @@ export class LocalAgentBoardApi implements AgentBoardApi {
                 actorLabel: 'Operator',
                 connectionState: 'open',
                 takeoverState: run.latestCodexResumeCommand ? 'resumable' : 'operator_control',
+                llmAdapter: run.llmAdapter ?? 'codex',
+                llmSessionId: run.llmSessionId,
+                llmResumeCommand: run.llmResumeCommand ?? run.latestCodexResumeCommand,
                 codexResumeCommand: run.latestCodexResumeCommand
-              }
-        };
+              })
+        });
         return updatedRun;
       })
     }));
@@ -353,6 +363,7 @@ export class LocalAgentBoardApi implements AgentBoardApi {
         cols: 120,
         rows: 32,
         session: run.operatorSession,
+        llmResumeCommand: run.llmResumeCommand ?? run.latestCodexResumeCommand,
         codexResumeCommand: run.latestCodexResumeCommand
       };
     }
@@ -369,6 +380,7 @@ export class LocalAgentBoardApi implements AgentBoardApi {
       cols: 120,
       rows: 32,
       session: run.operatorSession,
+      llmResumeCommand: run.llmResumeCommand ?? run.latestCodexResumeCommand,
       codexResumeCommand: run.latestCodexResumeCommand
     };
   }

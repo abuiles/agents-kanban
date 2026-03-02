@@ -4,6 +4,7 @@ import { SCM_PROVIDERS } from '../../shared/scm';
 
 const CODEX_MODELS = new Set(['gpt-5.1-codex-mini', 'gpt-5.3-codex', 'gpt-5.3-codex-spark'] as const);
 const CODEX_REASONING_EFFORTS = new Set(['low', 'medium', 'high'] as const);
+const LLM_ADAPTERS = new Set(['codex', 'cursor_cli'] as const);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -216,6 +217,60 @@ function readBranchSource(value: unknown, required = true): CreateTaskInput['bra
   };
 }
 
+function readTaskLlmFields(body: Record<string, unknown>, mode: 'create' | 'update') {
+  const hasField = (key: string) => mode === 'create' || hasOwn(body, key);
+
+  const llmAdapter = hasField('llmAdapter')
+    ? readEnumValue(body.llmAdapter, 'llmAdapter', LLM_ADAPTERS, false)
+    : undefined;
+  const llmModel = hasField('llmModel')
+    ? readTrimmedString(body.llmModel, 'llmModel', false)
+    : undefined;
+  const llmReasoningEffort = hasField('llmReasoningEffort')
+    ? readEnumValue(body.llmReasoningEffort, 'llmReasoningEffort', CODEX_REASONING_EFFORTS, false)
+    : undefined;
+  const codexModel = hasField('codexModel')
+    ? readEnumValue(body.codexModel, 'codexModel', CODEX_MODELS, false)
+    : undefined;
+  const codexReasoningEffort = hasField('codexReasoningEffort')
+    ? readEnumValue(body.codexReasoningEffort, 'codexReasoningEffort', CODEX_REASONING_EFFORTS, false)
+    : undefined;
+
+  if (llmAdapter && llmAdapter !== 'codex' && (typeof codexModel !== 'undefined' || typeof codexReasoningEffort !== 'undefined')) {
+    throw badRequest('Invalid LLM payload: codex compatibility fields require llmAdapter "codex".');
+  }
+
+  if (llmModel && codexModel && llmModel !== codexModel) {
+    throw badRequest('Invalid LLM payload: llmModel and codexModel must match when both are provided.');
+  }
+
+  if (llmReasoningEffort && codexReasoningEffort && llmReasoningEffort !== codexReasoningEffort) {
+    throw badRequest('Invalid LLM payload: llmReasoningEffort and codexReasoningEffort must match when both are provided.');
+  }
+
+  const effectiveAdapter = llmAdapter ?? ((typeof codexModel !== 'undefined' || typeof codexReasoningEffort !== 'undefined') ? 'codex' : undefined);
+  const effectiveModel = llmModel ?? codexModel;
+  const effectiveReasoningEffort = llmReasoningEffort ?? codexReasoningEffort;
+  const normalizedCodexModel = (effectiveAdapter ?? 'codex') === 'codex'
+    ? readEnumValue(codexModel ?? effectiveModel, 'llmModel', CODEX_MODELS, false)
+    : codexModel;
+  const normalizedCodexReasoningEffort = (effectiveAdapter ?? 'codex') === 'codex'
+    ? readEnumValue(codexReasoningEffort ?? effectiveReasoningEffort, 'llmReasoningEffort', CODEX_REASONING_EFFORTS, false)
+    : codexReasoningEffort;
+
+  if ((effectiveAdapter ?? 'codex') === 'codex' && effectiveModel) {
+    readEnumValue(effectiveModel, 'llmModel', CODEX_MODELS, true);
+  }
+
+  return {
+    llmAdapter: effectiveAdapter,
+    llmModel: effectiveModel,
+    llmReasoningEffort: effectiveReasoningEffort,
+    codexModel: normalizedCodexModel,
+    codexReasoningEffort: normalizedCodexReasoningEffort
+  };
+}
+
 export async function readJson(request: Request) {
   try {
     return (await request.json()) as unknown;
@@ -298,6 +353,7 @@ export function parseCreateTaskInput(body: unknown): CreateTaskInput {
     throw badRequest('Invalid task payload.');
   }
 
+  const llmFields = readTaskLlmFields(body, 'create');
   return {
     repoId: readString(body.repoId, 'repoId')!,
     title: readString(body.title, 'title')!,
@@ -313,8 +369,7 @@ export function parseCreateTaskInput(body: unknown): CreateTaskInput {
     baselineUrlOverride: readString(body.baselineUrlOverride, 'baselineUrlOverride', false),
     status: readString(body.status, 'status', false) as CreateTaskInput['status'],
     simulationProfile: readString(body.simulationProfile, 'simulationProfile', false) as CreateTaskInput['simulationProfile'],
-    codexModel: readEnumValue(body.codexModel, 'codexModel', CODEX_MODELS, false),
-    codexReasoningEffort: readEnumValue(body.codexReasoningEffort, 'codexReasoningEffort', CODEX_REASONING_EFFORTS, false)
+    ...llmFields
   };
 }
 
@@ -324,6 +379,7 @@ export function parseUpdateTaskInput(body: unknown): UpdateTaskInput {
   }
 
   const patch: UpdateTaskInput = {};
+  const llmFields = readTaskLlmFields(body, 'update');
   if (hasOwn(body, 'repoId')) patch.repoId = readString(body.repoId, 'repoId', false);
   if (hasOwn(body, 'title')) patch.title = readString(body.title, 'title', false);
   if (hasOwn(body, 'description')) patch.description = readString(body.description, 'description', false);
@@ -338,8 +394,15 @@ export function parseUpdateTaskInput(body: unknown): UpdateTaskInput {
   if (hasOwn(body, 'baselineUrlOverride')) patch.baselineUrlOverride = readString(body.baselineUrlOverride, 'baselineUrlOverride', false);
   if (hasOwn(body, 'status')) patch.status = readString(body.status, 'status', false) as UpdateTaskInput['status'];
   if (hasOwn(body, 'simulationProfile')) patch.simulationProfile = readString(body.simulationProfile, 'simulationProfile', false) as UpdateTaskInput['simulationProfile'];
-  if (hasOwn(body, 'codexModel')) patch.codexModel = readEnumValue(body.codexModel, 'codexModel', CODEX_MODELS, false);
-  if (hasOwn(body, 'codexReasoningEffort')) patch.codexReasoningEffort = readEnumValue(body.codexReasoningEffort, 'codexReasoningEffort', CODEX_REASONING_EFFORTS, false);
+  if (hasOwn(body, 'llmAdapter') || hasOwn(body, 'codexModel') || hasOwn(body, 'codexReasoningEffort')) patch.llmAdapter = llmFields.llmAdapter;
+  if (hasOwn(body, 'llmModel') || hasOwn(body, 'codexModel')) {
+    patch.llmModel = llmFields.llmModel;
+    patch.codexModel = llmFields.codexModel;
+  }
+  if (hasOwn(body, 'llmReasoningEffort') || hasOwn(body, 'codexReasoningEffort')) {
+    patch.llmReasoningEffort = llmFields.llmReasoningEffort;
+    patch.codexReasoningEffort = llmFields.codexReasoningEffort;
+  }
   if (hasOwn(body, 'runId')) patch.runId = readString(body.runId, 'runId', false);
   return patch;
 }

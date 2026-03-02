@@ -52,6 +52,39 @@ describe('task validation', () => {
     expect(parsed.branchSource?.upstreamReviewProvider).toBe('gitlab');
   });
 
+  it('parses generic llm task fields and mirrors codex aliases', () => {
+    const parsed = parseCreateTaskInput(
+      createTaskPayload({
+        llmAdapter: 'codex',
+        llmModel: 'gpt-5.3-codex-spark',
+        llmReasoningEffort: 'high'
+      })
+    );
+
+    expect(parsed).toMatchObject({
+      llmAdapter: 'codex',
+      llmModel: 'gpt-5.3-codex-spark',
+      llmReasoningEffort: 'high',
+      codexModel: 'gpt-5.3-codex-spark',
+      codexReasoningEffort: 'high'
+    });
+  });
+
+  it('accepts codex compatibility fields without explicit llmAdapter', () => {
+    const parsed = parseCreateTaskInput(
+      createTaskPayload({
+        codexModel: 'gpt-5.3-codex-spark',
+        codexReasoningEffort: 'high'
+      })
+    );
+
+    expect(parsed).toMatchObject({
+      llmAdapter: 'codex',
+      llmModel: 'gpt-5.3-codex-spark',
+      llmReasoningEffort: 'high'
+    });
+  });
+
   it('rejects create payload with multiple primary dependencies', () => {
     expect(() =>
       parseCreateTaskInput(
@@ -100,6 +133,24 @@ describe('task validation', () => {
         }
       })
     ).toThrow('Invalid branchSource.upstreamReviewNumber.');
+  });
+
+  it('rejects mismatched llm and codex compatibility fields', () => {
+    expect(() =>
+      parseUpdateTaskInput({
+        llmModel: 'gpt-5.3-codex',
+        codexModel: 'gpt-5.3-codex-spark'
+      })
+    ).toThrow('Invalid LLM payload: llmModel and codexModel must match when both are provided.');
+  });
+
+  it('rejects codex compatibility fields for non-codex adapters', () => {
+    expect(() =>
+      parseUpdateTaskInput({
+        llmAdapter: 'cursor_cli',
+        codexModel: 'gpt-5.3-codex'
+      })
+    ).toThrow('Invalid LLM payload: codex compatibility fields require llmAdapter "codex".');
   });
 });
 

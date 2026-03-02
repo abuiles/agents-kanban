@@ -3,6 +3,7 @@ import { buildLogsForStatus } from './log-builder';
 import { buildSimulationPlan } from './run-templates';
 import { getBaselineUrl } from '../domain/selectors';
 import { LocalBoardStore } from '../store/local-board-store';
+import { normalizeRunLlmState, normalizeTaskUiMeta } from '../../shared/llm';
 
 const terminalStatuses: RunStatus[] = ['DONE', 'FAILED'];
 
@@ -50,8 +51,9 @@ export class RunSimulator {
   createRun(task: Task, options?: { branchName?: string; prUrl?: string; prNumber?: number; baseRunId?: string; changeRequest?: AgentRun['changeRequest'] }): AgentRun {
     const startedAt = new Date();
     const runId = `run_${task.taskId}_${startedAt.getTime()}`;
-    const profile = task.uiMeta?.simulationProfile ?? 'happy_path';
-    const run: AgentRun = {
+    const taskUiMeta = normalizeTaskUiMeta(task.uiMeta);
+    const profile = taskUiMeta?.simulationProfile ?? 'happy_path';
+    const run: AgentRun = normalizeRunLlmState({
       runId,
       taskId: task.taskId,
       repoId: task.repoId,
@@ -65,9 +67,12 @@ export class RunSimulator {
       errors: [],
       startedAt: startedAt.toISOString(),
       timeline: [],
+      llmAdapter: taskUiMeta?.llmAdapter ?? 'codex',
+      llmModel: taskUiMeta?.llmModel,
+      llmReasoningEffort: taskUiMeta?.llmReasoningEffort,
       simulationProfile: profile,
       pendingEvents: buildSimulationPlan(startedAt, profile)
-    };
+    });
 
     this.store.update((snapshot) => ({
       ...snapshot,
