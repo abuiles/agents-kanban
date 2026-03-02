@@ -267,6 +267,8 @@ export function parseUpdateRepoInput(body: unknown): UpdateRepoInput {
   if (patch.slug && patch.projectPath && patch.slug !== patch.projectPath) {
     throw badRequest('Invalid repo patch payload: slug and projectPath must match when both are provided.');
   }
+  if (patch.slug && !patch.projectPath) patch.projectPath = patch.slug;
+  if (patch.projectPath && !patch.slug) patch.slug = patch.projectPath;
   if (hasOwn(body, 'defaultBranch')) patch.defaultBranch = readTrimmedString(body.defaultBranch, 'defaultBranch', false);
   if (hasOwn(body, 'baselineUrl')) patch.baselineUrl = readTrimmedString(body.baselineUrl, 'baselineUrl', false);
   if (hasOwn(body, 'enabled')) patch.enabled = readBoolean(body.enabled, 'enabled', false);

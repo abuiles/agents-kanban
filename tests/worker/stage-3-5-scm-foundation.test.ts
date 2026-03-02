@@ -67,6 +67,23 @@ describe('Stage 3.5 SCM foundation', () => {
     expect(updated.scmBaseUrl).toBe('https://github.com');
   });
 
+  it('keeps legacy slug-only repo updates working after projectPath is stored', async () => {
+    const board = env.BOARD_INDEX.getByName('agentboard');
+    const repo = await board.createRepo({
+      slug: 'acme/original',
+      baselineUrl: 'https://original.example.com'
+    });
+
+    const updated = await board.updateRepo(repo.repoId, {
+      slug: 'acme/legacy-rename'
+    });
+
+    expect(updated.projectPath).toBe('acme/legacy-rename');
+    expect(updated.slug).toBe('acme/legacy-rename');
+    expect(updated.scmProvider).toBe('github');
+    expect(updated.scmBaseUrl).toBe('https://github.com');
+  });
+
   it('persists provider-neutral review metadata while mirroring legacy PR aliases', async () => {
     const board = env.BOARD_INDEX.getByName('agentboard');
     const repo = await board.createRepo({
