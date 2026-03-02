@@ -55,6 +55,7 @@ export async function executeRunJob(env: Env, params: RunJobParams, sleepFn: Sle
   const scmAdapter = getScmAdapter(repo);
   const llmAdapterKind = resolveLlmAdapterKind(detail.task, run.llmAdapter);
   const llmAdapter = getLlmAdapter(llmAdapterKind);
+  const llmExecutorLabel = llmAdapter.kind === 'codex' ? 'Codex' : 'Cursor CLI';
   const llmModel = detail.task.uiMeta?.llmModel ?? detail.task.uiMeta?.codexModel ?? 'gpt-5.1-codex-mini';
   const llmReasoningEffort = detail.task.uiMeta?.llmReasoningEffort ?? detail.task.uiMeta?.codexReasoningEffort ?? 'medium';
 
@@ -117,10 +118,10 @@ export async function executeRunJob(env: Env, params: RunJobParams, sleepFn: Sle
     throw error;
   }
 
-  await repoBoard.transitionRun(params.runId, { status: 'RUNNING_CODEX', appendTimelineNote: 'Codex executing with full sandbox permissions.' });
+  await repoBoard.transitionRun(params.runId, { status: 'RUNNING_CODEX', appendTimelineNote: `${llmExecutorLabel} executing with full sandbox permissions.` });
 
   try {
-    const prompt = buildCodexPrompt(detail.task, repo, run);
+    const prompt = buildLlmPrompt(detail.task, repo, run);
     const request = {
       repo,
       task: detail.task,
@@ -133,31 +134,31 @@ export async function executeRunJob(env: Env, params: RunJobParams, sleepFn: Sle
     await llmAdapter.ensureInstalled(llmContext);
     await llmAdapter.logDiagnostics(llmContext, request);
     await llmAdapter.waitForCapacityIfNeeded?.(llmContext, request, sleepFn);
-    const codexResult = await llmAdapter.run(llmContext, request);
-    if (codexResult.stoppedForTakeover) {
+    const llmResult = await llmAdapter.run(llmContext, request);
+    if (llmResult.stoppedForTakeover) {
       await repoBoard.appendRunLogs(params.runId, [
-        buildRunLog(params.runId, 'Codex execution stopped after operator takeover. Leaving the sandbox under operator control.', 'codex')
+        buildRunLog(params.runId, `${llmExecutorLabel} execution stopped after operator takeover. Leaving the sandbox under operator control.`, 'codex')
       ]);
       return;
     }
-    if (!codexResult.success) {
-      throw new NonRetryableError(codexResult.stderr || 'Codex execution failed.');
+    if (!llmResult.success) {
+      throw new NonRetryableError(llmResult.stderr || `${llmExecutorLabel} execution failed.`);
     }
   } catch (error) {
     const currentRun = await repoBoard.getRun(params.runId);
     if (currentRun.status === 'OPERATOR_CONTROLLED') {
       return;
     }
-    await failRun(repoBoard, params.runId, 'CODEX_FAILED', 'codex', error, false);
+    await failRun(repoBoard, params.runId, 'LLM_FAILED', 'codex', error, false);
     throw error;
   }
 
   await repoBoard.transitionRun(params.runId, {
     status: 'RUNNING_TESTS',
-    appendTimelineNote: 'Codex-selected validation commands executed inside the sandbox.',
+    appendTimelineNote: `${llmExecutorLabel}-selected validation commands executed inside the sandbox.`,
     executionSummary: { testsOutcome: 'skipped' }
   });
-  await repoBoard.appendRunLogs(params.runId, [buildRunLog(params.runId, 'Codex was responsible for choosing and running validation commands.', 'tests')]);
+  await repoBoard.appendRunLogs(params.runId, [buildRunLog(params.runId, `${llmExecutorLabel} was responsible for choosing and running validation commands.`, 'tests')]);
 
   await repoBoard.transitionRun(params.runId, { status: 'PUSHING_BRANCH', appendTimelineNote: 'Preparing git diff and push.' });
 
@@ -172,7 +173,7 @@ export async function executeRunJob(env: Env, params: RunJobParams, sleepFn: Sle
     const currentBranch = branchResult.stdout.trim();
     if (currentBranch !== run.branchName) {
       await repoBoard.appendRunLogs(params.runId, [
-        buildRunLog(params.runId, `Codex changed the checked out branch to ${currentBranch}. Normalizing push to ${run.branchName} from current HEAD.`, 'push')
+        buildRunLog(params.runId, `${llmExecutorLabel} changed the checked out branch to ${currentBranch}. Normalizing push to ${run.branchName} from current HEAD.`, 'push')
       ]);
     }
 
@@ -196,7 +197,7 @@ export async function executeRunJob(env: Env, params: RunJobParams, sleepFn: Sle
 
     const hasLocalCommit = currentHeadResult.stdout.trim() !== baseHeadResult.stdout.trim();
     if (!hasWorkingTreeChanges && !hasLocalCommit) {
-      await failRun(repoBoard, params.runId, 'NO_CHANGES', 'push', 'Codex finished without producing a diff.', false);
+      await failRun(repoBoard, params.runId, 'NO_CHANGES', 'push', `${llmExecutorLabel} finished without producing a diff.`, false);
       return;
     }
 
@@ -222,7 +223,7 @@ export async function executeRunJob(env: Env, params: RunJobParams, sleepFn: Sle
       }
       commitMessage = commitMessageResult.stdout.trim() || `AgentsKanban: ${detail.task.title}`;
       await repoBoard.appendRunLogs(params.runId, [
-        buildRunLog(params.runId, 'Detected an existing local commit from Codex; pushing it without creating another commit.', 'push')
+        buildRunLog(params.runId, `Detected an existing local commit from ${llmExecutorLabel}; pushing it without creating another commit.`, 'push')
       ]);
       const pushResult = await emitCommandLifecycle(repoBoard, params.runId, 'push', `cd /workspace/repo && git push origin HEAD:${shellEscape(run.branchName)}`, () =>
         sandbox.exec(`cd /workspace/repo && git push origin HEAD:${shellEscape(run.branchName)}`)
@@ -591,7 +592,7 @@ async function emitCommandLifecycle(
   return result;
 }
 
-function buildCodexPrompt(task: Task, repo: Repo, run: Awaited<ReturnType<RepoBoardDO['getRun']>>) {
+function buildLlmPrompt(task: Task, repo: Repo, run: Awaited<ReturnType<RepoBoardDO['getRun']>>) {
   return [
     `You are working on the Git repository for ${repo.slug}.`,
     '',
