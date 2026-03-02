@@ -166,4 +166,23 @@ describe('resolveRunSource', () => {
     expect(source.branchSource.kind).toBe('default_branch');
     expect(source.dependencyContext.sourceMode).toBe('default_branch');
   });
+
+  it('uses default branch after upstream is merged, even if review lineage metadata exists', () => {
+    const upstreamTask = buildTask('task_up', { status: 'DONE' });
+    const downstreamTask = buildTask('task_down', {
+      dependencies: [{ upstreamTaskId: 'task_up', mode: 'review_ready' }]
+    });
+
+    const source = resolveRunSource({
+      task: downstreamTask,
+      tasks: [upstreamTask, downstreamTask],
+      runs: [buildRun('task_up', 'DONE', { headSha: 'a'.repeat(40), prNumber: 45, prUrl: 'https://github.com/acme/repo/pull/45' })],
+      defaultBranch: 'main',
+      resolvedAt
+    });
+
+    expect(source.branchSource.kind).toBe('default_branch');
+    expect(source.branchSource.resolvedRef).toBe('main');
+    expect(source.dependencyContext.sourceMode).toBe('default_branch');
+  });
 });

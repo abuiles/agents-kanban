@@ -89,6 +89,27 @@ describe('refreshDependencyStates', () => {
     expect(refreshed.dependencyState?.reasons[0]?.state).toBe('ready');
   });
 
+  it('uses merged-to-default readiness when upstream task is done with a PR run', () => {
+    const upstream = buildTask('task_up', { status: 'DONE' });
+    const downstream = buildTask('task_down', {
+      dependencies: [{ upstreamTaskId: 'task_up', mode: 'review_ready' }]
+    });
+
+    const result = refreshDependencyStates(
+      [upstream, downstream],
+      [buildRun('task_up', 'DONE', { prUrl: 'https://github.com/acme/repo/pull/10', prNumber: 10 })],
+      '2026-03-02T01:15:00.000Z'
+    );
+    const refreshed = result.tasks.find((task) => task.taskId === 'task_down')!;
+
+    expect(refreshed.dependencyState?.blocked).toBe(false);
+    expect(refreshed.dependencyState?.reasons[0]).toMatchObject({
+      upstreamTaskId: 'task_up',
+      state: 'ready',
+      message: 'Upstream task task_up is merged into the default branch.'
+    });
+  });
+
   it('preserves existing unblockedAt while still unblocked', () => {
     const upstream = buildTask('task_up', { status: 'REVIEW' });
     const downstream = buildTask('task_down', {

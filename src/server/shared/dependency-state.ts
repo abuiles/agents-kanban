@@ -1,16 +1,10 @@
 import type { AgentRun, Task, TaskAutomationState, TaskDependencyReason, TaskDependencyState } from '../../ui/domain/types';
+import { buildLatestRunsByTaskId, isDependencyMergedToDefaultBranch, isDependencyReviewReady } from './dependency-readiness';
 
 type RefreshDependencyStatesResult = {
   tasks: Task[];
   changedTaskIds: string[];
 };
-
-const REVIEW_READY_RUN_STATUSES: Set<AgentRun['status']> = new Set([
-  'PR_OPEN',
-  'WAITING_PREVIEW',
-  'EVIDENCE_RUNNING',
-  'DONE'
-]);
 
 export function refreshDependencyStates(tasks: Task[], runs: AgentRun[], nowIso: string): RefreshDependencyStatesResult {
   if (!tasks.length) {
@@ -51,17 +45,6 @@ export function refreshDependencyStates(tasks: Task[], runs: AgentRun[], nowIso:
   return { tasks: nextTasks, changedTaskIds };
 }
 
-function buildLatestRunsByTaskId(runs: AgentRun[]) {
-  const latestRunsByTaskId = new Map<string, AgentRun>();
-  for (const run of runs) {
-    const current = latestRunsByTaskId.get(run.taskId);
-    if (!current || run.startedAt > current.startedAt) {
-      latestRunsByTaskId.set(run.taskId, run);
-    }
-  }
-  return latestRunsByTaskId;
-}
-
 function buildDependencyState(
   task: Task,
   tasksById: Map<string, Task>,
@@ -79,7 +62,15 @@ function buildDependencyState(
     }
 
     const upstreamRun = latestRunsByTaskId.get(dependency.upstreamTaskId);
-    if (isReviewReady(upstreamTask, upstreamRun)) {
+    if (isDependencyMergedToDefaultBranch(upstreamTask, upstreamRun)) {
+      return {
+        upstreamTaskId: dependency.upstreamTaskId,
+        state: 'ready',
+        message: `Upstream task ${dependency.upstreamTaskId} is merged into the default branch.`
+      };
+    }
+
+    if (isDependencyReviewReady(upstreamTask, upstreamRun)) {
       return {
         upstreamTaskId: dependency.upstreamTaskId,
         state: 'ready',
@@ -110,22 +101,6 @@ function buildAutomationState(automationState: TaskAutomationState | undefined, 
     ...automationState,
     lastDependencyRefreshAt: nowIso
   };
-}
-
-function isReviewReady(task: Task, latestRun: AgentRun | undefined) {
-  if (task.status === 'REVIEW' || task.status === 'DONE') {
-    return true;
-  }
-
-  if (!latestRun) {
-    return false;
-  }
-
-  if (REVIEW_READY_RUN_STATUSES.has(latestRun.status)) {
-    return true;
-  }
-
-  return latestRun.status === 'FAILED' && Boolean(latestRun.prUrl);
 }
 
 function areDependencyStatesEqual(left: TaskDependencyState | undefined, right: TaskDependencyState | undefined) {

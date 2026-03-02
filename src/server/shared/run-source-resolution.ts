@@ -1,11 +1,5 @@
 import type { AgentRun, Task, TaskBranchSource } from '../../ui/domain/types';
-
-const REVIEW_READY_RUN_STATUSES: Set<AgentRun['status']> = new Set([
-  'PR_OPEN',
-  'WAITING_PREVIEW',
-  'EVIDENCE_RUNNING',
-  'DONE'
-]);
+import { isDependencyMergedToDefaultBranch, isDependencyReviewReady } from './dependency-readiness';
 
 type ResolveRunSourceInput = {
   task: Task;
@@ -74,7 +68,11 @@ function resolveDependencyReviewSource(task: Task, tasks: Task[], runs: AgentRun
     return undefined;
   }
 
-  if (!isReviewReadyRun(upstreamRun) || !upstreamRun.headSha || !upstreamRun.prNumber) {
+  if (isDependencyMergedToDefaultBranch(upstreamTask, upstreamRun)) {
+    return undefined;
+  }
+
+  if (!isDependencyReviewReady(upstreamTask, upstreamRun) || !upstreamRun.headSha || !upstreamRun.prNumber) {
     return undefined;
   }
 
@@ -127,11 +125,4 @@ function getLatestRunForTask(runs: AgentRun[], taskId: string) {
     }
   }
   return latestRun;
-}
-
-function isReviewReadyRun(run: AgentRun) {
-  if (REVIEW_READY_RUN_STATUSES.has(run.status)) {
-    return true;
-  }
-  return run.status === 'FAILED' && Boolean(run.prUrl);
 }

@@ -21,6 +21,7 @@ import { EMPTY_REPO_BOARD_STATE, type RepoBoardState } from '../shared/state';
 import { applyRunTransition, appendRunError, buildArtifactManifest, createRealRun, type RunTransitionPatch } from '../shared/real-run';
 import { executeRunJob } from '../run-orchestrator';
 import { refreshDependencyStates } from '../shared/dependency-state';
+import { buildLatestRunsByTaskId, isDependencyMergedToDefaultBranch } from '../shared/dependency-readiness';
 import { resolveRunSource } from '../shared/run-source-resolution';
 
 const STORAGE_KEY = 'repo-board-state';
@@ -794,6 +795,8 @@ export class RepoBoardDO extends DurableObject<Env> {
     const candidateIds = new Set(candidateTaskIds);
     const repo = await this.getRepo(repoId);
     const nowIso = new Date().toISOString();
+    const tasksById = new Map(this.state.tasks.map((task) => [task.taskId, task]));
+    const latestRunsByTaskId = buildLatestRunsByTaskId(this.state.runs);
 
     for (const task of this.state.tasks) {
       if (task.repoId !== repoId || !candidateIds.has(task.taskId) || !isRunnableDependencyAutoStartTask(task)) {
@@ -812,7 +815,7 @@ export class RepoBoardDO extends DurableObject<Env> {
         defaultBranch: repo.defaultBranch,
         resolvedAt: nowIso
       });
-      if (resolvedSource.dependencyContext.sourceMode !== 'dependency_review_head') {
+      if (!canAutoStartFromResolvedDependencySource(task, resolvedSource.dependencyContext.sourceMode, tasksById, latestRunsByTaskId)) {
         continue;
       }
 
@@ -837,6 +840,40 @@ export class RepoBoardDO extends DurableObject<Env> {
       await this.startRun(task.taskId);
     }
   }
+}
+
+function canAutoStartFromResolvedDependencySource(
+  task: Task,
+  sourceMode: NonNullable<AgentRun['dependencyContext']>['sourceMode'],
+  tasksById: Map<string, Task>,
+  latestRunsByTaskId: Map<string, AgentRun>
+) {
+  if (sourceMode === 'dependency_review_head') {
+    return true;
+  }
+
+  if (sourceMode !== 'default_branch') {
+    return false;
+  }
+
+  if (task.status !== 'INBOX' && task.status !== 'READY') {
+    return false;
+  }
+
+  const dependencies = task.dependencies ?? [];
+  if (!dependencies.length) {
+    return false;
+  }
+
+  for (const dependency of dependencies) {
+    const upstreamTask = tasksById.get(dependency.upstreamTaskId);
+    const upstreamRun = latestRunsByTaskId.get(dependency.upstreamTaskId);
+    if (!upstreamTask || !isDependencyMergedToDefaultBranch(upstreamTask, upstreamRun)) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 function isRunnableDependencyAutoStartTask(task: Task) {
