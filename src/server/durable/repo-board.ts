@@ -834,6 +834,10 @@ export class RepoBoardDO extends DurableObject<Env> {
     const tasksById = new Map(this.state.tasks.map((task) => [task.taskId, task]));
     const latestRunsByTaskId = buildLatestRunsByTaskId(this.state.runs);
     const runHistoryTaskIds = new Set(this.state.runs.map((run) => run.taskId));
+    const hasRepoActiveRun = this.state.runs.some((run) => run.repoId === repoId && !isTerminalRunStatus(run.status));
+    if (hasRepoActiveRun) {
+      return;
+    }
 
     for (const task of this.state.tasks) {
       if (task.repoId !== repoId || !candidateIds.has(task.taskId) || !isRunnableDependencyAutoStartTask(task)) {
@@ -860,6 +864,7 @@ export class RepoBoardDO extends DurableObject<Env> {
       }
 
       await this.startRun(task.taskId, { dependencyAutoStart: true });
+      return;
     }
   }
 }
