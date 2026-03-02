@@ -6,6 +6,8 @@ const CODEX_MODELS = new Set(['gpt-5.1-codex-mini', 'gpt-5.3-codex', 'gpt-5.3-co
 const CODEX_REASONING_EFFORTS = new Set(['low', 'medium', 'high'] as const);
 const LLM_ADAPTERS = new Set(['codex', 'cursor_cli'] as const);
 const PREVIEW_ADAPTERS = new Set(['cloudflare_checks', 'prompt_recipe'] as const);
+const TENANT_MEMBER_ROLES = new Set(['owner', 'member'] as const);
+const TENANT_SEAT_STATES = new Set(['active', 'invited', 'revoked'] as const);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -34,6 +36,18 @@ function readTrimmedString(value: unknown, field: string, required = true): stri
 
 function readBoolean(value: unknown, field: string, required = false): boolean | undefined {
   if (typeof value === 'boolean') {
+    return value;
+  }
+
+  if (!required && typeof value === 'undefined') {
+    return undefined;
+  }
+
+  throw badRequest(`Invalid ${field}.`);
+}
+
+function readPositiveInteger(value: unknown, field: string, required = false): number | undefined {
+  if (typeof value === 'number' && Number.isInteger(value) && value > 0) {
     return value;
   }
 
@@ -496,5 +510,65 @@ export function parseUpdateTaskInput(body: unknown): UpdateTaskInput {
     patch.codexReasoningEffort = llmFields.codexReasoningEffort;
   }
   if (hasOwn(body, 'runId')) patch.runId = readString(body.runId, 'runId', false);
+  return patch;
+}
+
+export type CreateTenantInput = {
+  name: string;
+  slug: string;
+  domain?: string;
+  seatLimit?: number;
+  defaultSeatLimit?: number;
+};
+
+export type CreateTenantMemberInput = {
+  userId: string;
+  role?: 'owner' | 'member';
+  seatState?: 'active' | 'invited' | 'revoked';
+};
+
+export type UpdateTenantMemberInput = {
+  role?: 'owner' | 'member';
+  seatState?: 'active' | 'invited' | 'revoked';
+};
+
+export function parseCreateTenantInput(body: unknown): CreateTenantInput {
+  if (!isRecord(body)) {
+    throw badRequest('Invalid tenant payload.');
+  }
+
+  return {
+    name: readTrimmedString(body.name, 'name')!,
+    slug: readTrimmedString(body.slug, 'slug')!,
+    domain: readTrimmedString(body.domain, 'domain', false),
+    seatLimit: readPositiveInteger(body.seatLimit, 'seatLimit', false),
+    defaultSeatLimit: readPositiveInteger(body.defaultSeatLimit, 'defaultSeatLimit', false)
+  };
+}
+
+export function parseCreateTenantMemberInput(body: unknown): CreateTenantMemberInput {
+  if (!isRecord(body)) {
+    throw badRequest('Invalid tenant member payload.');
+  }
+
+  return {
+    userId: readTrimmedString(body.userId, 'userId')!,
+    role: readEnumValue(body.role, 'role', TENANT_MEMBER_ROLES, false),
+    seatState: readEnumValue(body.seatState, 'seatState', TENANT_SEAT_STATES, false)
+  };
+}
+
+export function parseUpdateTenantMemberInput(body: unknown): UpdateTenantMemberInput {
+  if (!isRecord(body)) {
+    throw badRequest('Invalid tenant member patch payload.');
+  }
+
+  const patch: UpdateTenantMemberInput = {};
+  if (hasOwn(body, 'role')) {
+    patch.role = readEnumValue(body.role, 'role', TENANT_MEMBER_ROLES, false);
+  }
+  if (hasOwn(body, 'seatState')) {
+    patch.seatState = readEnumValue(body.seatState, 'seatState', TENANT_SEAT_STATES, false);
+  }
   return patch;
 }

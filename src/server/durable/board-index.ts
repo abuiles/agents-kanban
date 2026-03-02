@@ -1,23 +1,44 @@
 import type { CreateRepoInput, UpdateRepoInput, UpsertScmCredentialInput } from '../../ui/domain/api';
-import type { BoardSnapshotV1, Repo, ScmCredential, ScmProvider } from '../../ui/domain/types';
+import type { BoardSnapshotV1, Repo, ScmCredential, ScmProvider, Tenant, TenantMember, TenantSeatSummary } from '../../ui/domain/types';
 import { DurableObject } from 'cloudflare:workers';
-import { conflict, notFound } from '../http/errors';
+import { conflict, forbidden, notFound } from '../http/errors';
 import { createRepoId } from '../shared/ids';
 import type { BoardEvent } from '../shared/events';
 import { stringifyBoardEvent } from '../shared/events';
 import { buildBoardSnapshot, type BoardSyncResponse } from '../shared/state';
 import { buildRepoScmKey, getRepoHost, getRepoProjectPath, normalizeCredentialHost, normalizeRepo } from '../../shared/scm';
+import { DEFAULT_TENANT_ID, normalizeTenantId } from '../../shared/tenant';
 
 const REPOS_STORAGE_KEY = 'board-index-repos';
 const SCM_CREDENTIALS_STORAGE_KEY = 'board-index-scm-credentials';
+const TENANTS_STORAGE_KEY = 'board-index-tenants';
+const TENANT_MEMBERSHIPS_STORAGE_KEY = 'board-index-tenant-memberships';
+const DEFAULT_SEAT_LIMIT = 5;
+const SYSTEM_USER_ID = 'user_system';
 
 type StoredScmCredential = ScmCredential & {
   token: string;
 };
 
+type TenantRecordInput = {
+  name: string;
+  slug: string;
+  domain?: string;
+  seatLimit?: number;
+  defaultSeatLimit?: number;
+};
+
+type TenantMemberRecordInput = {
+  userId: string;
+  role?: TenantMember['role'];
+  seatState?: TenantMember['seatState'];
+};
+
 export class BoardIndexDO extends DurableObject<Env> {
   private repos: Repo[] = [];
   private scmCredentials: StoredScmCredential[] = [];
+  private tenants: Tenant[] = [];
+  private tenantMemberships: TenantMember[] = [];
   private ready: Promise<void>;
 
   constructor(ctx: DurableObjectState, env: Env) {
@@ -25,8 +46,14 @@ export class BoardIndexDO extends DurableObject<Env> {
     this.ready = this.ctx.blockConcurrencyWhile(async () => {
       const storedRepos = (await this.ctx.storage.get<Repo[]>(REPOS_STORAGE_KEY)) ?? [];
       const storedScmCredentials = (await this.ctx.storage.get<StoredScmCredential[]>(SCM_CREDENTIALS_STORAGE_KEY)) ?? [];
+      const storedTenants = (await this.ctx.storage.get<Tenant[]>(TENANTS_STORAGE_KEY)) ?? [];
+      const storedTenantMemberships = (await this.ctx.storage.get<TenantMember[]>(TENANT_MEMBERSHIPS_STORAGE_KEY)) ?? [];
       this.repos = storedRepos.map((repo) => normalizeRepo(repo));
       this.scmCredentials = storedScmCredentials.map((credential) => normalizeStoredScmCredential(credential));
+      this.tenants = storedTenants.map((tenant) => normalizeTenantRecord(tenant));
+      this.tenantMemberships = storedTenantMemberships.map((membership) => normalizeTenantMemberRecord(membership));
+      this.ensureBootstrapTenantAndOwner();
+      await this.persist();
     });
   }
 
@@ -41,9 +68,12 @@ export class BoardIndexDO extends DurableObject<Env> {
     return new Response('Not found', { status: 404 });
   }
 
-  async listRepos() {
+  async listRepos(tenantId?: string) {
     await this.ready;
-    return [...this.repos].sort((left, right) => left.slug.localeCompare(right.slug));
+    const normalizedTenantId = tenantId ? normalizeTenantId(tenantId) : undefined;
+    return [...this.repos]
+      .filter((repo) => !normalizedTenantId || normalizeTenantId(repo.tenantId) === normalizedTenantId)
+      .sort((left, right) => left.slug.localeCompare(right.slug));
   }
 
   async getRepo(repoId: string) {
@@ -53,6 +83,180 @@ export class BoardIndexDO extends DurableObject<Env> {
       throw notFound(`Repo ${repoId} not found.`);
     }
     return repo;
+  }
+
+  async listTenantsForUser(userId: string): Promise<Tenant[]> {
+    await this.ready;
+    const allowedTenantIds = new Set(
+      this.tenantMemberships
+        .filter((membership) => membership.userId === userId && membership.seatState === 'active')
+        .map((membership) => membership.tenantId)
+    );
+    return [...this.tenants]
+      .filter((tenant) => allowedTenantIds.has(tenant.id))
+      .sort((left, right) => left.slug.localeCompare(right.slug));
+  }
+
+  async getTenant(tenantId: string): Promise<Tenant> {
+    await this.ready;
+    const normalizedTenantId = normalizeTenantId(tenantId);
+    const tenant = this.tenants.find((candidate) => candidate.id === normalizedTenantId);
+    if (!tenant) {
+      throw notFound(`Tenant ${normalizedTenantId} not found.`);
+    }
+    return tenant;
+  }
+
+  async getTenantMembership(tenantId: string, userId: string): Promise<TenantMember | undefined> {
+    await this.ready;
+    const normalizedTenantId = normalizeTenantId(tenantId);
+    return this.tenantMemberships.find((membership) => membership.tenantId === normalizedTenantId && membership.userId === userId);
+  }
+
+  async hasActiveTenantAccess(tenantId: string, userId: string): Promise<boolean> {
+    await this.ready;
+    const membership = await this.getTenantMembership(tenantId, userId);
+    return Boolean(membership && membership.seatState === 'active');
+  }
+
+  async listTenantMembers(tenantId: string): Promise<TenantMember[]> {
+    await this.ready;
+    const normalizedTenantId = normalizeTenantId(tenantId);
+    return [...this.tenantMemberships]
+      .filter((membership) => membership.tenantId === normalizedTenantId)
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+  }
+
+  async getTenantSeatSummary(tenantId: string): Promise<TenantSeatSummary> {
+    await this.ready;
+    const tenant = await this.getTenant(tenantId);
+    const seatsUsed = this.tenantMemberships.filter((membership) => membership.tenantId === tenant.id && membership.seatState === 'active').length;
+    return {
+      tenantId: tenant.id,
+      seatLimit: tenant.seatLimit,
+      seatsUsed,
+      seatsAvailable: Math.max(0, tenant.seatLimit - seatsUsed)
+    };
+  }
+
+  async createTenant(input: TenantRecordInput, actorUserId: string): Promise<{ tenant: Tenant; ownerMembership: TenantMember; seatSummary: TenantSeatSummary }> {
+    await this.ready;
+    const slug = normalizeTenantSlug(input.slug);
+    if (this.tenants.some((tenant) => tenant.slug === slug)) {
+      throw conflict(`Tenant slug ${slug} already exists.`);
+    }
+    const now = new Date().toISOString();
+    const tenant: Tenant = normalizeTenantRecord({
+      id: createTenantId(slug),
+      slug,
+      name: input.name.trim(),
+      status: 'active',
+      domain: input.domain?.trim() || undefined,
+      createdByUserId: actorUserId,
+      defaultSeatLimit: input.defaultSeatLimit ?? input.seatLimit ?? DEFAULT_SEAT_LIMIT,
+      seatLimit: input.seatLimit ?? input.defaultSeatLimit ?? DEFAULT_SEAT_LIMIT,
+      settings: undefined,
+      createdAt: now,
+      updatedAt: now
+    });
+    const ownerMembership: TenantMember = normalizeTenantMemberRecord({
+      id: createTenantMemberId(tenant.id, actorUserId),
+      tenantId: tenant.id,
+      userId: actorUserId,
+      role: 'owner',
+      seatState: 'active',
+      createdAt: now,
+      updatedAt: now
+    });
+
+    this.tenants = [tenant, ...this.tenants];
+    this.tenantMemberships = [...this.tenantMemberships, ownerMembership];
+    await this.persist();
+    return {
+      tenant,
+      ownerMembership,
+      seatSummary: await this.getTenantSeatSummary(tenant.id)
+    };
+  }
+
+  async createTenantMember(tenantId: string, input: TenantMemberRecordInput, actorUserId: string): Promise<{ member: TenantMember; seatSummary: TenantSeatSummary }> {
+    await this.ready;
+    const tenant = await this.getTenant(tenantId);
+    await this.assertOwnerAccess(tenant.id, actorUserId);
+
+    if (this.tenantMemberships.some((membership) => membership.tenantId === tenant.id && membership.userId === input.userId)) {
+      throw conflict(`Member ${input.userId} already exists in tenant ${tenant.id}.`);
+    }
+
+    if ((input.seatState ?? 'active') === 'active') {
+      this.assertSeatCapacity(tenant.id);
+    }
+
+    const now = new Date().toISOString();
+    const member: TenantMember = normalizeTenantMemberRecord({
+      id: createTenantMemberId(tenant.id, input.userId),
+      tenantId: tenant.id,
+      userId: input.userId,
+      role: input.role ?? 'member',
+      seatState: input.seatState ?? 'active',
+      createdAt: now,
+      updatedAt: now
+    });
+    this.tenantMemberships = [...this.tenantMemberships, member];
+    await this.persist();
+    return {
+      member,
+      seatSummary: await this.getTenantSeatSummary(tenant.id)
+    };
+  }
+
+  async updateTenantMember(
+    tenantId: string,
+    memberId: string,
+    patch: Pick<TenantMemberRecordInput, 'role' | 'seatState'>,
+    actorUserId: string
+  ): Promise<{ member: TenantMember; seatSummary: TenantSeatSummary }> {
+    await this.ready;
+    const tenant = await this.getTenant(tenantId);
+    await this.assertOwnerAccess(tenant.id, actorUserId);
+
+    const existing = this.tenantMemberships.find((membership) => membership.tenantId === tenant.id && membership.id === memberId);
+    if (!existing) {
+      throw notFound(`Member ${memberId} not found in tenant ${tenant.id}.`);
+    }
+
+    if (existing.seatState !== 'active' && patch.seatState === 'active') {
+      this.assertSeatCapacity(tenant.id);
+    }
+
+    const updated: TenantMember = normalizeTenantMemberRecord({
+      ...existing,
+      role: patch.role ?? existing.role,
+      seatState: patch.seatState ?? existing.seatState,
+      updatedAt: new Date().toISOString()
+    });
+
+    if (existing.role === 'owner' && (updated.role !== 'owner' || updated.seatState !== 'active')) {
+      const otherActiveOwners = this.tenantMemberships.filter(
+        (membership) =>
+          membership.tenantId === tenant.id
+          && membership.id !== existing.id
+          && membership.role === 'owner'
+          && membership.seatState === 'active'
+      );
+      if (otherActiveOwners.length === 0) {
+        throw forbidden(`Tenant ${tenant.id} requires at least one active owner.`);
+      }
+    }
+
+    this.tenantMemberships = this.tenantMemberships.map((membership) =>
+      membership.id === memberId && membership.tenantId === tenant.id ? updated : membership
+    );
+    await this.persist();
+    return {
+      member: updated,
+      seatSummary: await this.getTenantSeatSummary(tenant.id)
+    };
   }
 
   async createRepo(input: CreateRepoInput) {
@@ -150,9 +354,10 @@ export class BoardIndexDO extends DurableObject<Env> {
     return stripScmCredentialSecret(credential);
   }
 
-  async getBoardSync(repoId?: string): Promise<BoardSyncResponse> {
+  async getBoardSync(repoId?: string, tenantId?: string): Promise<BoardSyncResponse> {
     await this.ready;
-    const repos = await this.listRepos();
+    const normalizedTenantId = tenantId ? normalizeTenantId(tenantId) : undefined;
+    const repos = await this.listRepos(normalizedTenantId);
     const selected = repoId && repoId !== 'all' ? repos.filter((repo) => repo.repoId === repoId) : repos;
     const slices = await Promise.all(selected.map((repo) => this.env.REPO_BOARD.getByName(repo.repoId).getBoardSlice()));
     const tasks = slices.flatMap((slice) => slice.tasks);
@@ -258,6 +463,63 @@ export class BoardIndexDO extends DurableObject<Env> {
   private async persist() {
     await this.ctx.storage.put(REPOS_STORAGE_KEY, this.repos);
     await this.ctx.storage.put(SCM_CREDENTIALS_STORAGE_KEY, this.scmCredentials);
+    await this.ctx.storage.put(TENANTS_STORAGE_KEY, this.tenants);
+    await this.ctx.storage.put(TENANT_MEMBERSHIPS_STORAGE_KEY, this.tenantMemberships);
+  }
+
+  private ensureBootstrapTenantAndOwner() {
+    const now = new Date().toISOString();
+    if (!this.tenants.some((tenant) => tenant.id === DEFAULT_TENANT_ID)) {
+      this.tenants = [
+        normalizeTenantRecord({
+          id: DEFAULT_TENANT_ID,
+          slug: DEFAULT_TENANT_ID,
+          name: 'Legacy Tenant',
+          status: 'active',
+          createdByUserId: SYSTEM_USER_ID,
+          defaultSeatLimit: 100,
+          seatLimit: 100,
+          createdAt: now,
+          updatedAt: now
+        }),
+        ...this.tenants
+      ];
+    }
+    if (!this.tenantMemberships.some((membership) => membership.tenantId === DEFAULT_TENANT_ID && membership.userId === SYSTEM_USER_ID)) {
+      this.tenantMemberships = [
+        normalizeTenantMemberRecord({
+          id: createTenantMemberId(DEFAULT_TENANT_ID, SYSTEM_USER_ID),
+          tenantId: DEFAULT_TENANT_ID,
+          userId: SYSTEM_USER_ID,
+          role: 'owner',
+          seatState: 'active',
+          createdAt: now,
+          updatedAt: now
+        }),
+        ...this.tenantMemberships
+      ];
+    }
+  }
+
+  private async assertOwnerAccess(tenantId: string, userId: string) {
+    const membership = await this.getTenantMembership(tenantId, userId);
+    if (!membership || membership.seatState !== 'active') {
+      throw forbidden(`User ${userId} does not have an active seat in tenant ${tenantId}.`);
+    }
+    if (membership.role !== 'owner') {
+      throw forbidden(`User ${userId} must be an owner of tenant ${tenantId}.`);
+    }
+  }
+
+  private assertSeatCapacity(tenantId: string) {
+    const tenant = this.tenants.find((candidate) => candidate.id === tenantId);
+    if (!tenant) {
+      throw notFound(`Tenant ${tenantId} not found.`);
+    }
+    const seatsUsed = this.tenantMemberships.filter((membership) => membership.tenantId === tenantId && membership.seatState === 'active').length;
+    if (seatsUsed >= tenant.seatLimit) {
+      throw conflict(`Tenant ${tenantId} has no available seats.`);
+    }
   }
 }
 
@@ -319,5 +581,45 @@ function stripScmCredentialSecret(credential: StoredScmCredential): ScmCredentia
     hasSecret: credential.hasSecret,
     createdAt: credential.createdAt,
     updatedAt: credential.updatedAt
+  };
+}
+
+function normalizeTenantSlug(value: string): string {
+  const slug = value.trim().toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '');
+  if (!slug) {
+    throw new Error('Invalid tenant slug.');
+  }
+  return slug;
+}
+
+function createTenantId(slug: string): string {
+  return `tenant_${slug}`;
+}
+
+function createTenantMemberId(tenantId: string, userId: string): string {
+  return `${tenantId}:${userId}`;
+}
+
+function normalizeTenantRecord(tenant: Tenant): Tenant {
+  return {
+    ...tenant,
+    id: normalizeTenantId(tenant.id),
+    slug: normalizeTenantSlug(tenant.slug),
+    name: tenant.name.trim(),
+    status: tenant.status === 'suspended' ? 'suspended' : 'active',
+    createdByUserId: tenant.createdByUserId.trim(),
+    defaultSeatLimit: tenant.defaultSeatLimit > 0 ? Math.floor(tenant.defaultSeatLimit) : DEFAULT_SEAT_LIMIT,
+    seatLimit: tenant.seatLimit > 0 ? Math.floor(tenant.seatLimit) : DEFAULT_SEAT_LIMIT
+  };
+}
+
+function normalizeTenantMemberRecord(member: TenantMember): TenantMember {
+  return {
+    ...member,
+    id: member.id.trim(),
+    tenantId: normalizeTenantId(member.tenantId),
+    userId: member.userId.trim(),
+    role: member.role === 'owner' ? 'owner' : 'member',
+    seatState: member.seatState === 'invited' || member.seatState === 'revoked' ? member.seatState : 'active'
   };
 }

@@ -78,6 +78,13 @@ export type TenantMember = {
   updatedAt: string;
 };
 
+export type TenantSeatSummary = {
+  tenantId: string;
+  seatLimit: number;
+  seatsUsed: number;
+  seatsAvailable: number;
+};
+
 export type User = {
   id: string;
   email: string;
