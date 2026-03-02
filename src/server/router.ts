@@ -6,6 +6,7 @@ import { parseCreateRepoInput, parseCreateTaskInput, parseUpdateRepoInput, parse
 import { extractRepoIdFromRunId, extractRepoIdFromTaskId } from './shared/ids';
 import { parseBoardSnapshot } from '../ui/store/board-snapshot';
 import { scheduleRunJob } from './run-orchestrator';
+import { getRunUsage, getTenantRunUsage, getTenantUsageSummary } from './usage-reporting';
 
 const BOARD_OBJECT_NAME = 'agentboard';
 
@@ -67,6 +68,14 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
     if (url.pathname === '/api/tasks' && request.method === 'POST') {
       const input = parseCreateTaskInput(await readJson(request));
       return json(await env.REPO_BOARD.getByName(input.repoId).createTask(input), { status: 201 });
+    }
+
+    if (url.pathname === '/api/tenant-usage' && request.method === 'GET') {
+      return json(await getTenantUsageSummary(url, env));
+    }
+
+    if (url.pathname === '/api/tenant-usage/runs' && request.method === 'GET') {
+      return json(await getTenantRunUsage(url, env));
     }
 
     const taskMatch = url.pathname.match(/^\/api\/tasks\/([^/]+)$/);
@@ -198,6 +207,12 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
       const repoId = await resolveRepoIdForRun(board, runId);
       const tail = url.searchParams.get('tail');
       return json(await env.REPO_BOARD.getByName(repoId).getRunLogs(runId, tail ? Number(tail) : undefined));
+    }
+
+    const runUsageMatch = url.pathname.match(/^\/api\/runs\/([^/]+)\/usage$/);
+    if (runUsageMatch && request.method === 'GET') {
+      const runId = decodeURIComponent(runUsageMatch[1]);
+      return json(await getRunUsage(runId, env));
     }
 
     const runEventsMatch = url.pathname.match(/^\/api\/runs\/([^/]+)\/events$/);
