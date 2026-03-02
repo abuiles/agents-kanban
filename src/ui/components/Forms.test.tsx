@@ -1,7 +1,41 @@
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
-import { TaskForm } from './Forms';
+import { RepoForm, TaskForm } from './Forms';
+
+describe('RepoForm', () => {
+  it('submits provider-neutral SCM repo fields', async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+
+    render(<RepoForm onSubmit={onSubmit} />);
+
+    const scmProviderField = screen.getByText('SCM provider').closest('label')?.querySelector('select');
+    const scmBaseUrlField = screen.getByText('SCM base URL').closest('label')?.querySelector('input');
+    const projectPathField = screen.getByText('Project path').closest('label')?.querySelector('input');
+    const baselineUrlField = screen.getByText('Baseline URL').closest('label')?.querySelector('input');
+
+    expect(scmProviderField).not.toBeNull();
+    expect(scmBaseUrlField).not.toBeNull();
+    expect(projectPathField).not.toBeNull();
+    expect(baselineUrlField).not.toBeNull();
+
+    await user.selectOptions(scmProviderField! as unknown as Element, 'gitlab');
+    await user.clear(scmBaseUrlField!);
+    await user.type(scmBaseUrlField!, 'https://gitlab.example.com');
+    await user.type(projectPathField!, 'group/platform/repo');
+    await user.type(baselineUrlField!, 'https://repo.example.com');
+
+    await user.click(screen.getByRole('button', { name: 'Add repo' }));
+
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
+      slug: 'group/platform/repo',
+      scmProvider: 'gitlab',
+      scmBaseUrl: 'https://gitlab.example.com',
+      projectPath: 'group/platform/repo'
+    }));
+  });
+});
 
 describe('TaskForm', () => {
   it('submits Stage 3.1 dependency and execution settings', async () => {

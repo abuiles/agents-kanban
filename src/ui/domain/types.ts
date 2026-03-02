@@ -16,6 +16,7 @@ export type RunStatus =
 export type SimulationProfile = 'happy_path' | 'fail_tests' | 'fail_preview';
 export type CodexModel = 'gpt-5.3-codex' | 'gpt-5.3-codex-spark' | 'gpt-5.1-codex-mini';
 export type CodexReasoningEffort = 'low' | 'medium' | 'high';
+export type ScmProvider = 'github' | 'gitlab';
 
 export type RunEventType =
   | 'run.status_changed'
@@ -33,6 +34,9 @@ export type RunCommandPhase = 'bootstrap' | 'codex' | 'tests' | 'push' | 'pr' | 
 export type Repo = {
   repoId: string;
   slug: string;
+  scmProvider?: ScmProvider;
+  scmBaseUrl?: string;
+  projectPath?: string;
   defaultBranch: string;
   baselineUrl: string;
   enabled: boolean;
@@ -41,6 +45,16 @@ export type Repo = {
   previewCheckName?: string;
   previewUrlPattern?: string;
   codexAuthBundleR2Key?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ScmCredential = {
+  credentialId: string;
+  scmProvider: ScmProvider;
+  host: string;
+  label?: string;
+  hasSecret: boolean;
   createdAt: string;
   updatedAt: string;
 };

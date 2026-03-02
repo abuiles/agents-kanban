@@ -1,5 +1,5 @@
-import type { AgentBoardApi, CreateRepoInput, CreateTaskInput, RequestRunChangesInput, UpdateRepoInput, UpdateTaskInput } from '../domain/api';
-import type { AgentRun, BoardSnapshotV1, OperatorSession, Repo, RunCommand, RunEvent, RunLogEntry, Task, TaskDetail, TerminalBootstrap } from '../domain/types';
+import type { AgentBoardApi, CreateRepoInput, CreateTaskInput, RequestRunChangesInput, UpdateRepoInput, UpdateTaskInput, UpsertScmCredentialInput } from '../domain/api';
+import type { AgentRun, BoardSnapshotV1, OperatorSession, Repo, RunCommand, RunEvent, RunLogEntry, ScmCredential, Task, TaskDetail, TerminalBootstrap } from '../domain/types';
 import { getTaskDetail } from '../domain/selectors';
 import { parseBoardSnapshot } from '../store/board-snapshot';
 import { UiPreferencesStore } from '../store/ui-preferences-store';
@@ -24,6 +24,7 @@ type BoardEvent =
   | { type: 'board.snapshot'; payload: BoardSyncResponse }
   | { type: 'repo.updated'; payload: { repo: Repo } }
   | { type: 'task.updated'; payload: { task: Task } }
+  | { type: 'task.deleted'; payload: { taskId: string } }
   | { type: 'run.updated'; payload: { run: AgentRun } }
   | { type: 'run.logs_appended'; payload: { runId: string; logs: RunLogEntry[] } }
   | { type: 'run.events_appended'; payload: { runId: string; events: RunEvent[] } }
@@ -72,6 +73,23 @@ export class HttpAgentBoardApi implements AgentBoardApi {
     const repo = await this.request<Repo>(`/api/repos/${encodeURIComponent(repoId)}`, { method: 'PATCH', body: JSON.stringify(patch) });
     await this.refresh();
     return repo;
+  }
+
+  async listScmCredentials() {
+    return this.request<ScmCredential[]>('/api/scm/credentials');
+  }
+
+  async getScmCredential(scmProvider: UpsertScmCredentialInput['scmProvider'], host: string) {
+    return this.request<ScmCredential>(`/api/scm/credentials/${encodeURIComponent(scmProvider)}/${encodeURIComponent(host)}`).catch((error: Error) => {
+      if (error.message.includes('not found')) {
+        return undefined;
+      }
+      throw error;
+    });
+  }
+
+  async upsertScmCredential(input: UpsertScmCredentialInput) {
+    return this.request<ScmCredential>('/api/scm/credentials', { method: 'POST', body: JSON.stringify(input) });
   }
 
   async createTask(input: CreateTaskInput) {
@@ -261,6 +279,14 @@ export class HttpAgentBoardApi implements AgentBoardApi {
         return;
       case 'task.updated':
         this.mergeTask(event.payload.task);
+        return;
+      case 'task.deleted':
+        this.snapshot = this.composeSnapshot({
+          ...this.snapshot,
+          tasks: this.snapshot.tasks.filter((task) => task.taskId !== event.payload.taskId),
+          runs: this.snapshot.runs.filter((run) => run.taskId !== event.payload.taskId)
+        });
+        this.emit();
         return;
       case 'run.updated':
         this.mergeRun(event.payload.run);

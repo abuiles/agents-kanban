@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseCreateTaskInput, parseUpdateTaskInput } from './validation';
+import { parseCreateRepoInput, parseCreateTaskInput, parseUpdateRepoInput, parseUpdateTaskInput, parseUpsertScmCredentialInput } from './validation';
 
 function createTaskPayload(overrides: Record<string, unknown> = {}) {
   return {
@@ -96,5 +96,69 @@ describe('task validation', () => {
         }
       })
     ).toThrow('Invalid branchSource.upstreamPrNumber.');
+  });
+});
+
+describe('repo validation', () => {
+  it('parses provider-neutral repo payloads and keeps slug compatibility', () => {
+    const parsed = parseCreateRepoInput({
+      scmProvider: 'gitlab',
+      scmBaseUrl: 'https://gitlab.example.com',
+      projectPath: 'group/platform/repo',
+      baselineUrl: 'https://repo.example.com'
+    });
+
+    expect(parsed).toMatchObject({
+      scmProvider: 'gitlab',
+      scmBaseUrl: 'https://gitlab.example.com',
+      projectPath: 'group/platform/repo',
+      slug: 'group/platform/repo'
+    });
+  });
+
+  it('accepts legacy GitHub slug-only payloads', () => {
+    const parsed = parseCreateRepoInput({
+      slug: 'abuiles/minions',
+      baselineUrl: 'https://minions.example.com'
+    });
+
+    expect(parsed.slug).toBe('abuiles/minions');
+    expect(parsed.projectPath).toBe('abuiles/minions');
+    expect(parsed.scmProvider).toBeUndefined();
+  });
+
+  it('rejects mismatched slug and projectPath values', () => {
+    expect(() =>
+      parseUpdateRepoInput({
+        slug: 'acme/one',
+        projectPath: 'acme/two'
+      })
+    ).toThrow('Invalid repo patch payload: slug and projectPath must match when both are provided.');
+  });
+});
+
+describe('SCM credential validation', () => {
+  it('parses provider credential payloads', () => {
+    expect(parseUpsertScmCredentialInput({
+      scmProvider: 'github',
+      host: 'github.com',
+      token: 'secret-token',
+      label: 'Default GitHub'
+    })).toMatchObject({
+      scmProvider: 'github',
+      host: 'github.com',
+      token: 'secret-token',
+      label: 'Default GitHub'
+    });
+  });
+
+  it('rejects unknown providers', () => {
+    expect(() =>
+      parseUpsertScmCredentialInput({
+        scmProvider: 'bitbucket',
+        host: 'example.com',
+        token: 'secret-token'
+      })
+    ).toThrow('Invalid scmProvider.');
   });
 });

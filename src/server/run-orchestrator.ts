@@ -13,6 +13,7 @@ import {
   getCodexCapacityDecision,
   type CodexRateLimitsResponse
 } from './codex-rate-limit';
+import { buildGithubApiBaseUrl, buildGithubGitUrl, getRepoHost } from '../shared/scm';
 
 type WorkflowBinding<T> = {
   create(options?: { id?: string; params?: T; retention?: { successRetention?: string | number; errorRetention?: string | number } }): Promise<{ id: string }>;
@@ -57,14 +58,14 @@ export async function executeRunJob(env: Env, params: RunJobParams, sleepFn: Sle
   const codexReasoningEffort = detail.task.uiMeta?.codexReasoningEffort ?? 'medium';
 
   if (params.mode === 'evidence_only') {
-    return runEvidence(env as Stage3Env, repoBoard, detail.task, repo, params.runId, sleepFn);
+    return runEvidence(env as Stage3Env, board, repoBoard, detail.task, repo, params.runId, sleepFn);
   }
 
   if (params.mode === 'preview_only') {
-    return discoverPreviewAndRunEvidence(env as Stage3Env, repoBoard, detail.task, repo, params.runId, sleepFn, await getGithubPat(env as Stage3Env));
+    return discoverPreviewAndRunEvidence(env as Stage3Env, repoBoard, detail.task, repo, params.runId, sleepFn, await getGithubPat(env as Stage3Env, board, repo));
   }
 
-  const pat = await getGithubPat(env as Stage3Env);
+  const pat = await getGithubPat(env as Stage3Env, board, repo);
   const sandbox = getSandbox(env.Sandbox, params.runId);
 
   await repoBoard.appendRunLogs(params.runId, [buildRunLog(params.runId, `Starting sandbox run for ${repo.slug}.`, 'bootstrap')]);
@@ -75,7 +76,7 @@ export async function executeRunJob(env: Env, params: RunJobParams, sleepFn: Sle
     await repoBoard.appendRunLogs(params.runId, [buildRunLog(params.runId, `GitHub PAT suffix: ${pat.slice(-4)}`, 'bootstrap')]);
     await restoreCodexAuth(env as Stage3Env, sandbox, repo, params.runId, repoBoard);
     await logCodexAuthDiagnostics(sandbox, params.runId, repoBoard);
-    await sandbox.gitCheckout(buildGithubCloneUrl(repo.slug, pat), {
+    await sandbox.gitCheckout(buildGithubCloneUrl(repo, pat), {
       branch: repo.defaultBranch,
       targetDir: '/workspace/repo'
     });
@@ -258,7 +259,15 @@ cat /workspace/task.txt | codex exec -m ${codexModel} -c model_reasoning_effort=
   await discoverPreviewAndRunEvidence(env as Stage3Env, repoBoard, detail.task, repo, params.runId, sleepFn, pat);
 }
 
-async function runEvidence(env: Stage3Env, repoBoard: DurableObjectStub<RepoBoardDO>, task: Task, repo: Repo, runId: string, _sleepFn: SleepFn) {
+async function runEvidence(
+  env: Stage3Env,
+  board: DurableObjectStub<BoardIndexDO>,
+  repoBoard: DurableObjectStub<RepoBoardDO>,
+  task: Task,
+  repo: Repo,
+  runId: string,
+  _sleepFn: SleepFn
+) {
   const run = await repoBoard.getRun(runId);
   const baselineUrl = task.baselineUrlOverride ?? repo.baselineUrl;
   const previewUrl = run.previewUrl;
@@ -306,7 +315,7 @@ npx -y playwright install chromium
   const updated = await repoBoard.storeArtifactManifest(runId);
   await persistArtifactManifest(env, updated.runId, updated.artifactManifest);
   if (updated.prNumber) {
-    const pat = await getGithubPat(env);
+    const pat = await getGithubPat(env, board, repo);
     await upsertRunComment(repo, task, updated, pat);
   }
   await repoBoard.transitionRun(runId, { status: 'DONE', evidenceStatus: 'READY', endedAt: new Date().toISOString(), appendTimelineNote: 'Evidence captured and manifest stored.' });
@@ -373,11 +382,11 @@ async function discoverPreviewAndRunEvidence(
     evidenceStatus: 'RUNNING',
     appendTimelineNote: 'Running Playwright evidence.'
   });
-  await runEvidence(env, repoBoard, task, repo, runId, sleepFn);
+  await runEvidence(env, env.BOARD_INDEX.getByName('agentboard') as DurableObjectStub<BoardIndexDO>, repoBoard, task, repo, runId, sleepFn);
 }
 
 async function lookupPreviewUrl(repo: Repo, headSha: string, pat: string, previewCheckName?: string) {
-  const response = await githubRequest(repo.slug, `/commits/${headSha}/check-runs`, pat);
+  const response = await githubRequest(repo, `/commits/${headSha}/check-runs`, pat);
   const payload = await response.json() as {
     check_runs?: Array<{
       name?: string;
@@ -414,7 +423,7 @@ function formatPreviewDiscoveryLog(discovery: Awaited<ReturnType<typeof lookupPr
 }
 
 async function createPullRequest(repo: Repo, task: Task, run: Awaited<ReturnType<RepoBoardDO['getRun']>>, pat: string) {
-  const response = await githubRequest(repo.slug, '/pulls', pat, {
+  const response = await githubRequest(repo, '/pulls', pat, {
     method: 'POST',
     body: JSON.stringify({
       title: task.title,
@@ -445,18 +454,18 @@ async function upsertRunComment(repo: Repo, task: Task, run: Awaited<ReturnType<
     run.artifactManifest?.video ? `Video: ${run.artifactManifest.video.key}` : undefined
   ].filter(Boolean).join('\n');
 
-  const commentsResponse = await githubRequest(repo.slug, `/issues/${run.prNumber}/comments`, pat);
+  const commentsResponse = await githubRequest(repo, `/issues/${run.prNumber}/comments`, pat);
   const comments = await commentsResponse.json() as Array<{ id: number; body?: string }>;
   const existing = comments.find((comment) => comment.body?.includes(marker));
   if (existing) {
-    await githubRequest(repo.slug, `/issues/comments/${existing.id}`, pat, { method: 'PATCH', body: JSON.stringify({ body }) });
+    await githubRequest(repo, `/issues/comments/${existing.id}`, pat, { method: 'PATCH', body: JSON.stringify({ body }) });
     return;
   }
-  await githubRequest(repo.slug, `/issues/${run.prNumber}/comments`, pat, { method: 'POST', body: JSON.stringify({ body }) });
+  await githubRequest(repo, `/issues/${run.prNumber}/comments`, pat, { method: 'POST', body: JSON.stringify({ body }) });
 }
 
-async function githubRequest(slug: string, path: string, pat: string, init?: RequestInit) {
-  const response = await fetch(`https://api.github.com/repos/${slug}${path}`, {
+async function githubRequest(repo: Repo, path: string, pat: string, init?: RequestInit) {
+  const response = await fetch(`${buildGithubApiBaseUrl(repo)}/repos/${repo.slug}${path}`, {
     ...init,
     headers: {
       Accept: 'application/vnd.github+json',
@@ -485,10 +494,19 @@ function buildPullRequestBody(task: Task, run: Awaited<ReturnType<RepoBoardDO['g
   ].join('\n');
 }
 
-async function getGithubPat(env: Stage3Env) {
+async function getGithubPat(env: Stage3Env, board: DurableObjectStub<BoardIndexDO>, repo: Repo) {
+  if (repo.scmProvider && repo.scmProvider !== 'github') {
+    throw new NonRetryableError(`SCM provider ${repo.scmProvider} is not supported by the GitHub adapter yet.`);
+  }
+
+  const registryToken = await board.getScmCredentialSecret('github', getRepoHost(repo));
+  if (registryToken) {
+    return registryToken;
+  }
+
   const pat = await env.SECRETS_KV?.get('github_pat');
   if (!pat) {
-    throw new NonRetryableError('Missing `github_pat` in KV or `SECRETS_KV` binding is not configured.');
+    throw new NonRetryableError('Missing GitHub credential for this host. Configure the SCM credential registry or `github_pat` in KV.');
   }
   return pat;
 }
@@ -1236,8 +1254,8 @@ async function runCodexProcessWithLogs(
   return result;
 }
 
-function buildGithubCloneUrl(slug: string, pat: string) {
-  return `https://x-access-token:${pat}@github.com/${slug}.git`;
+function buildGithubCloneUrl(repo: Repo, pat: string) {
+  return buildGithubGitUrl(repo, pat);
 }
 
 function buildCodexPrompt(task: Task, repo: Repo, run: Awaited<ReturnType<RepoBoardDO['getRun']>>) {

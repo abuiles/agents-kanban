@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { CreateRepoInput, CreateTaskInput } from '../domain/api';
-import type { CodexModel, CodexReasoningEffort, Repo, TaskContextLink, TaskDependency, TaskStatus } from '../domain/types';
+import type { CodexModel, CodexReasoningEffort, Repo, ScmProvider, TaskContextLink, TaskDependency, TaskStatus } from '../domain/types';
 
 const CODEX_MODELS: Array<{ value: CodexModel; label: string }> = [
   { value: 'gpt-5.1-codex-mini', label: 'gpt-5.1-codex-mini (default)' },
@@ -48,12 +48,18 @@ export function RepoForm({
   submitLabel?: string;
 }) {
   const initialSlug = initialValues?.slug ?? '';
+  const initialScmProvider = initialValues?.scmProvider ?? 'github';
+  const initialScmBaseUrl = initialValues?.scmBaseUrl ?? 'https://github.com';
+  const initialProjectPath = initialValues?.projectPath ?? initialSlug;
   const initialDefaultBranch = initialValues?.defaultBranch ?? 'main';
   const initialBaselineUrl = initialValues?.baselineUrl ?? '';
   const initialPreviewCheckName = initialValues?.previewCheckName ?? '';
   const initialCodexAuthBundleR2Key = initialValues?.codexAuthBundleR2Key ?? '';
 
   const [slug, setSlug] = useState(initialSlug);
+  const [scmProvider, setScmProvider] = useState<ScmProvider>(initialScmProvider);
+  const [scmBaseUrl, setScmBaseUrl] = useState(initialScmBaseUrl);
+  const [projectPath, setProjectPath] = useState(initialProjectPath);
   const [defaultBranch, setDefaultBranch] = useState(initialDefaultBranch);
   const [baselineUrl, setBaselineUrl] = useState(initialBaselineUrl);
   const [previewCheckName, setPreviewCheckName] = useState(initialPreviewCheckName);
@@ -61,11 +67,14 @@ export function RepoForm({
 
   useEffect(() => {
     setSlug(initialSlug);
+    setScmProvider(initialScmProvider);
+    setScmBaseUrl(initialScmBaseUrl);
+    setProjectPath(initialProjectPath);
     setDefaultBranch(initialDefaultBranch);
     setBaselineUrl(initialBaselineUrl);
     setPreviewCheckName(initialPreviewCheckName);
     setCodexAuthBundleR2Key(initialCodexAuthBundleR2Key);
-  }, [initialSlug, initialDefaultBranch, initialBaselineUrl, initialPreviewCheckName, initialCodexAuthBundleR2Key]);
+  }, [initialSlug, initialScmProvider, initialScmBaseUrl, initialProjectPath, initialDefaultBranch, initialBaselineUrl, initialPreviewCheckName, initialCodexAuthBundleR2Key]);
 
   return (
     <form
@@ -73,7 +82,10 @@ export function RepoForm({
       onSubmit={async (event) => {
         event.preventDefault();
         await onSubmit({
-          slug,
+          slug: projectPath || slug,
+          scmProvider,
+          scmBaseUrl,
+          projectPath: projectPath || slug,
           defaultBranch,
           baselineUrl,
           enabled: true,
@@ -81,15 +93,36 @@ export function RepoForm({
           codexAuthBundleR2Key: codexAuthBundleR2Key || undefined
         });
         setSlug('');
+        setScmProvider('github');
+        setScmBaseUrl('https://github.com');
+        setProjectPath('');
         setDefaultBranch('main');
         setBaselineUrl('');
         setPreviewCheckName('');
         setCodexAuthBundleR2Key('');
       }}
     >
-      <div className="grid gap-4 md:grid-cols-2">
-        <FieldShell label="Repo slug" hint="Use the GitHub owner/name format.">
-          <input className={inputClass()} value={slug} onChange={(event) => setSlug(event.target.value)} placeholder="owner/name" required />
+      <div className="grid gap-4 md:grid-cols-3">
+        <FieldShell label="SCM provider">
+          <select className={inputClass()} value={scmProvider} onChange={(event) => setScmProvider(event.target.value as ScmProvider)}>
+            <option value="github">GitHub</option>
+            <option value="gitlab">GitLab</option>
+          </select>
+        </FieldShell>
+        <FieldShell label="SCM base URL" hint="Host base URL used for API and git operations.">
+          <input className={inputClass()} value={scmBaseUrl} onChange={(event) => setScmBaseUrl(event.target.value)} placeholder="https://github.com" required />
+        </FieldShell>
+        <FieldShell label="Project path" hint="Use the provider project path like owner/name or group/subgroup/repo.">
+          <input
+            className={inputClass()}
+            value={projectPath}
+            onChange={(event) => {
+              setProjectPath(event.target.value);
+              setSlug(event.target.value);
+            }}
+            placeholder="owner/name"
+            required
+          />
         </FieldShell>
         <FieldShell label="Default branch">
           <input className={inputClass()} value={defaultBranch} onChange={(event) => setDefaultBranch(event.target.value)} required />

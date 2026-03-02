@@ -192,14 +192,15 @@ export class RepoBoardDO extends DurableObject<Env> {
     if (!task) {
       throw notFound(`Task ${taskId} not found.`, { taskId });
     }
+    const runIds = new Set(this.state.runs.filter((run) => run.taskId === taskId).map((run) => run.runId));
 
     this.state = {
       ...this.state,
       tasks: this.state.tasks.filter((candidate) => candidate.taskId !== taskId),
       runs: this.state.runs.filter((run) => run.taskId !== taskId),
-      logs: this.state.logs.filter((log) => log.taskId !== taskId),
+      logs: this.state.logs.filter((log) => !runIds.has(log.runId)),
       events: this.state.events.filter((event) => event.taskId !== taskId),
-      commands: this.state.commands.filter((command) => command.taskId !== taskId)
+      commands: this.state.commands.filter((command) => !runIds.has(command.runId))
     };
     await this.persist();
     await this.emit({ type: 'task.deleted', payload: { taskId } }, task.repoId);

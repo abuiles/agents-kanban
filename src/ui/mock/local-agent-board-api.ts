@@ -1,9 +1,10 @@
-import type { AgentBoardApi, CreateRepoInput, CreateTaskInput, RequestRunChangesInput, UpdateRepoInput, UpdateTaskInput } from '../domain/api';
-import type { AgentRun, Repo, RunCommand, RunEvent, RunLogEntry, Task, TaskDetail, TerminalBootstrap } from '../domain/types';
+import type { AgentBoardApi, CreateRepoInput, CreateTaskInput, RequestRunChangesInput, UpdateRepoInput, UpdateTaskInput, UpsertScmCredentialInput } from '../domain/api';
+import type { AgentRun, Repo, RunCommand, RunEvent, RunLogEntry, ScmCredential, Task, TaskDetail, TerminalBootstrap } from '../domain/types';
 import { getTaskDetail, getTasksForRepo } from '../domain/selectors';
 import { LocalBoardStore } from '../store/local-board-store';
 import { parseImportedBoard } from '../store/import-export';
 import { RunSimulator } from './run-simulator';
+import { normalizeCredentialHost, normalizeRepo } from '../../shared/scm';
 
 function nowIso() {
   return new Date().toISOString();
@@ -15,6 +16,7 @@ function randomId(prefix: string) {
 
 export class LocalAgentBoardApi implements AgentBoardApi {
   private readonly simulator: RunSimulator;
+  private readonly scmCredentials = new Map<string, ScmCredential & { token: string }>();
 
   constructor(private readonly store: LocalBoardStore) {
     this.simulator = new RunSimulator(store);
@@ -31,15 +33,21 @@ export class LocalAgentBoardApi implements AgentBoardApi {
 
   async createRepo(input: CreateRepoInput): Promise<Repo> {
     const timestamp = nowIso();
-    const repo: Repo = {
+    const repo: Repo = normalizeRepo({
       repoId: randomId('repo'),
-      slug: input.slug,
+      slug: input.slug ?? input.projectPath ?? '',
+      scmProvider: input.scmProvider,
+      scmBaseUrl: input.scmBaseUrl,
+      projectPath: input.projectPath,
       defaultBranch: input.defaultBranch ?? 'main',
       baselineUrl: input.baselineUrl,
       enabled: input.enabled ?? true,
+      previewProvider: 'cloudflare',
+      previewCheckName: input.previewCheckName,
+      codexAuthBundleR2Key: input.codexAuthBundleR2Key,
       createdAt: timestamp,
       updatedAt: timestamp
-    };
+    });
 
     this.store.update((snapshot) => ({ ...snapshot, repos: [repo, ...snapshot.repos] }));
     return repo;
@@ -58,7 +66,13 @@ export class LocalAgentBoardApi implements AgentBoardApi {
           return repo;
         }
 
-        updatedRepo = { ...repo, ...patch, updatedAt: nowIso() };
+        updatedRepo = normalizeRepo({
+          ...repo,
+          ...patch,
+          slug: patch.slug ?? patch.projectPath ?? repo.slug,
+          projectPath: patch.projectPath ?? patch.slug ?? repo.projectPath,
+          updatedAt: nowIso()
+        });
         return updatedRepo;
       })
     }));
@@ -68,6 +82,41 @@ export class LocalAgentBoardApi implements AgentBoardApi {
     }
 
     return updatedRepo;
+  }
+
+  async listScmCredentials(): Promise<ScmCredential[]> {
+    return [...this.scmCredentials.values()]
+      .sort((left, right) => left.credentialId.localeCompare(right.credentialId))
+      .map(({ token: _token, ...credential }) => credential);
+  }
+
+  async getScmCredential(scmProvider: UpsertScmCredentialInput['scmProvider'], host: string): Promise<ScmCredential | undefined> {
+    const credential = this.scmCredentials.get(`${scmProvider}:${normalizeCredentialHost(host)}`);
+    if (!credential) {
+      return undefined;
+    }
+
+    const { token: _token, ...publicCredential } = credential;
+    return publicCredential;
+  }
+
+  async upsertScmCredential(input: UpsertScmCredentialInput): Promise<ScmCredential> {
+    const now = nowIso();
+    const key = `${input.scmProvider}:${normalizeCredentialHost(input.host)}`;
+    const existing = this.scmCredentials.get(key);
+    const credential = {
+      credentialId: key,
+      scmProvider: input.scmProvider,
+      host: normalizeCredentialHost(input.host),
+      label: input.label,
+      hasSecret: true,
+      token: input.token,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now
+    };
+    this.scmCredentials.set(key, credential);
+    const { token: _token, ...publicCredential } = credential;
+    return publicCredential;
   }
 
   async createTask(input: CreateTaskInput): Promise<Task> {

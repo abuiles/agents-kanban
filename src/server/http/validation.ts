@@ -1,5 +1,6 @@
-import type { CreateRepoInput, CreateTaskInput, UpdateRepoInput, UpdateTaskInput } from '../../ui/domain/api';
+import type { CreateRepoInput, CreateTaskInput, UpdateRepoInput, UpdateTaskInput, UpsertScmCredentialInput } from '../../ui/domain/api';
 import { badRequest } from './errors';
+import { SCM_PROVIDERS } from '../../shared/scm';
 
 const CODEX_MODELS = new Set(['gpt-5.1-codex-mini', 'gpt-5.3-codex', 'gpt-5.3-codex-spark'] as const);
 const CODEX_REASONING_EFFORTS = new Set(['low', 'medium', 'high'] as const);
@@ -218,8 +219,20 @@ export function parseCreateRepoInput(body: unknown): CreateRepoInput {
     throw badRequest('Invalid repo payload.');
   }
 
+  const slug = readTrimmedString(body.slug, 'slug', false);
+  const projectPath = readTrimmedString(body.projectPath, 'projectPath', false);
+  if (!slug && !projectPath) {
+    throw badRequest('Invalid repo payload: slug or projectPath is required.');
+  }
+  if (slug && projectPath && slug !== projectPath) {
+    throw badRequest('Invalid repo payload: slug and projectPath must match when both are provided.');
+  }
+
   return {
-    slug: readTrimmedString(body.slug, 'slug')!,
+    slug: slug ?? projectPath,
+    scmProvider: readEnumValue(body.scmProvider, 'scmProvider', SCM_PROVIDERS, false),
+    scmBaseUrl: readTrimmedString(body.scmBaseUrl, 'scmBaseUrl', false),
+    projectPath: projectPath ?? slug,
     defaultBranch: readTrimmedString(body.defaultBranch, 'defaultBranch', false),
     baselineUrl: readTrimmedString(body.baselineUrl, 'baselineUrl')!,
     enabled: readBoolean(body.enabled, 'enabled', false),
@@ -235,12 +248,31 @@ export function parseUpdateRepoInput(body: unknown): UpdateRepoInput {
 
   const patch: UpdateRepoInput = {};
   if (hasOwn(body, 'slug')) patch.slug = readTrimmedString(body.slug, 'slug', false);
+  if (hasOwn(body, 'scmProvider')) patch.scmProvider = readEnumValue(body.scmProvider, 'scmProvider', SCM_PROVIDERS, false);
+  if (hasOwn(body, 'scmBaseUrl')) patch.scmBaseUrl = readTrimmedString(body.scmBaseUrl, 'scmBaseUrl', false);
+  if (hasOwn(body, 'projectPath')) patch.projectPath = readTrimmedString(body.projectPath, 'projectPath', false);
+  if (patch.slug && patch.projectPath && patch.slug !== patch.projectPath) {
+    throw badRequest('Invalid repo patch payload: slug and projectPath must match when both are provided.');
+  }
   if (hasOwn(body, 'defaultBranch')) patch.defaultBranch = readTrimmedString(body.defaultBranch, 'defaultBranch', false);
   if (hasOwn(body, 'baselineUrl')) patch.baselineUrl = readTrimmedString(body.baselineUrl, 'baselineUrl', false);
   if (hasOwn(body, 'enabled')) patch.enabled = readBoolean(body.enabled, 'enabled', false);
   if (hasOwn(body, 'previewCheckName')) patch.previewCheckName = readTrimmedString(body.previewCheckName, 'previewCheckName', false);
   if (hasOwn(body, 'codexAuthBundleR2Key')) patch.codexAuthBundleR2Key = readTrimmedString(body.codexAuthBundleR2Key, 'codexAuthBundleR2Key', false);
   return patch;
+}
+
+export function parseUpsertScmCredentialInput(body: unknown): UpsertScmCredentialInput {
+  if (!isRecord(body)) {
+    throw badRequest('Invalid SCM credential payload.');
+  }
+
+  return {
+    scmProvider: readEnumValue(body.scmProvider, 'scmProvider', SCM_PROVIDERS)!,
+    host: readTrimmedString(body.host, 'host')!,
+    label: readTrimmedString(body.label, 'label', false),
+    token: readTrimmedString(body.token, 'token')!
+  };
 }
 
 export function parseCreateTaskInput(body: unknown): CreateTaskInput {
