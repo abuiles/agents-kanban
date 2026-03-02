@@ -1,7 +1,7 @@
 import type { CreateRepoInput, UpdateRepoInput, UpsertScmCredentialInput } from '../../ui/domain/api';
-import type { BoardSnapshotV1, Repo, ScmCredential, ScmProvider, Tenant, TenantMember, TenantSeatSummary } from '../../ui/domain/types';
+import type { BoardSnapshotV1, Repo, ScmCredential, ScmProvider, Tenant, TenantMember, TenantSeatSummary, User, UserSession } from '../../ui/domain/types';
 import { DurableObject } from 'cloudflare:workers';
-import { conflict, forbidden, notFound } from '../http/errors';
+import { badRequest, conflict, forbidden, notFound, unauthorized } from '../http/errors';
 import { createRepoId } from '../shared/ids';
 import type { BoardEvent } from '../shared/events';
 import { stringifyBoardEvent } from '../shared/events';
@@ -13,11 +13,18 @@ const REPOS_STORAGE_KEY = 'board-index-repos';
 const SCM_CREDENTIALS_STORAGE_KEY = 'board-index-scm-credentials';
 const TENANTS_STORAGE_KEY = 'board-index-tenants';
 const TENANT_MEMBERSHIPS_STORAGE_KEY = 'board-index-tenant-memberships';
+const USERS_STORAGE_KEY = 'board-index-users';
+const USER_SESSIONS_STORAGE_KEY = 'board-index-user-sessions';
 const DEFAULT_SEAT_LIMIT = 5;
 const SYSTEM_USER_ID = 'user_system';
+const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 30;
 
 type StoredScmCredential = ScmCredential & {
   token: string;
+};
+
+type StoredUser = User & {
+  passwordHash: string;
 };
 
 type TenantRecordInput = {
@@ -39,6 +46,8 @@ export class BoardIndexDO extends DurableObject<Env> {
   private scmCredentials: StoredScmCredential[] = [];
   private tenants: Tenant[] = [];
   private tenantMemberships: TenantMember[] = [];
+  private users: StoredUser[] = [];
+  private userSessions: UserSession[] = [];
   private ready: Promise<void>;
 
   constructor(ctx: DurableObjectState, env: Env) {
@@ -48,11 +57,16 @@ export class BoardIndexDO extends DurableObject<Env> {
       const storedScmCredentials = (await this.ctx.storage.get<StoredScmCredential[]>(SCM_CREDENTIALS_STORAGE_KEY)) ?? [];
       const storedTenants = (await this.ctx.storage.get<Tenant[]>(TENANTS_STORAGE_KEY)) ?? [];
       const storedTenantMemberships = (await this.ctx.storage.get<TenantMember[]>(TENANT_MEMBERSHIPS_STORAGE_KEY)) ?? [];
+      const storedUsers = (await this.ctx.storage.get<StoredUser[]>(USERS_STORAGE_KEY)) ?? [];
+      const storedSessions = (await this.ctx.storage.get<UserSession[]>(USER_SESSIONS_STORAGE_KEY)) ?? [];
       this.repos = storedRepos.map((repo) => normalizeRepo(repo));
       this.scmCredentials = storedScmCredentials.map((credential) => normalizeStoredScmCredential(credential));
       this.tenants = storedTenants.map((tenant) => normalizeTenantRecord(tenant));
       this.tenantMemberships = storedTenantMemberships.map((membership) => normalizeTenantMemberRecord(membership));
+      this.users = storedUsers.map((user) => normalizeStoredUserRecord(user));
+      this.userSessions = storedSessions.map((session) => normalizeUserSessionRecord(session));
       this.ensureBootstrapTenantAndOwner();
+      this.pruneExpiredSessions();
       await this.persist();
     });
   }
@@ -177,6 +191,154 @@ export class BoardIndexDO extends DurableObject<Env> {
       ownerMembership,
       seatSummary: await this.getTenantSeatSummary(tenant.id)
     };
+  }
+
+  async signup(input: {
+    email: string;
+    password: string;
+    displayName?: string;
+    tenant: TenantRecordInput;
+  }) {
+    await this.ready;
+    const email = normalizeEmail(input.email);
+    if (this.users.some((candidate) => normalizeEmail(candidate.email) === email)) {
+      throw conflict(`User with email ${email} already exists.`);
+    }
+
+    const now = new Date().toISOString();
+    const user: StoredUser = normalizeStoredUserRecord({
+      id: createUserId(email),
+      email,
+      displayName: input.displayName?.trim() || undefined,
+      passwordHash: await hashSecret(input.password),
+      createdAt: now,
+      updatedAt: now
+    });
+
+    this.users = [...this.users, user];
+    await this.persist();
+    const { tenant } = await this.createTenant(input.tenant, user.id);
+    const { session, token } = await this.createSession(user.id, tenant.id);
+    const memberships = await this.listUserMemberships(user.id);
+    return {
+      user: stripUserSecret(user),
+      session,
+      token,
+      activeTenantId: session.activeTenantId,
+      memberships
+    };
+  }
+
+  async login(input: { email: string; password: string; tenantId?: string }) {
+    await this.ready;
+    const email = normalizeEmail(input.email);
+    const user = this.users.find((candidate) => normalizeEmail(candidate.email) === email);
+    if (!user) {
+      throw unauthorized('Invalid email or password.');
+    }
+
+    const passwordHash = await hashSecret(input.password);
+    if (passwordHash !== user.passwordHash) {
+      throw unauthorized('Invalid email or password.');
+    }
+
+    const memberships = await this.listUserMemberships(user.id);
+    const activeMemberships = memberships.filter((membership) => membership.seatState === 'active');
+    if (!activeMemberships.length) {
+      throw forbidden(`User ${user.id} does not have an active seat in any tenant.`);
+    }
+    const requestedTenantId = input.tenantId ? normalizeTenantId(input.tenantId) : undefined;
+    const activeTenantId = requestedTenantId ?? activeMemberships[0].tenantId;
+    if (!activeMemberships.some((membership) => membership.tenantId === activeTenantId)) {
+      throw forbidden(`User ${user.id} does not have an active seat in tenant ${activeTenantId}.`);
+    }
+
+    const { session, token } = await this.createSession(user.id, activeTenantId);
+    return {
+      user: stripUserSecret(user),
+      session,
+      token,
+      activeTenantId: session.activeTenantId,
+      memberships
+    };
+  }
+
+  async resolveSessionByToken(token: string): Promise<{
+    user: User;
+    session: UserSession;
+    memberships: TenantMember[];
+  }> {
+    await this.ready;
+    this.pruneExpiredSessions();
+    const tokenHash = await hashSecret(token);
+    const session = this.userSessions.find((candidate) => candidate.tokenHash === tokenHash);
+    if (!session) {
+      throw unauthorized('Invalid or expired auth session.');
+    }
+    const user = this.users.find((candidate) => candidate.id === session.userId);
+    if (!user) {
+      throw unauthorized('Auth session user no longer exists.');
+    }
+    const memberships = await this.listUserMemberships(user.id);
+    const hasActiveTenantAccess = memberships.some((membership) => membership.tenantId === session.activeTenantId && membership.seatState === 'active');
+    if (!hasActiveTenantAccess) {
+      throw forbidden(`User ${session.userId} does not have an active seat in tenant ${session.activeTenantId}.`);
+    }
+
+    const touchedSession = {
+      ...session,
+      lastSeenAt: new Date().toISOString()
+    };
+    this.userSessions = this.userSessions.map((candidate) => (candidate.id === touchedSession.id ? touchedSession : candidate));
+    await this.persist();
+    return {
+      user: stripUserSecret(user),
+      session: touchedSession,
+      memberships
+    };
+  }
+
+  async setSessionActiveTenant(sessionId: string, tenantId: string): Promise<UserSession> {
+    await this.ready;
+    const normalizedTenantId = normalizeTenantId(tenantId);
+    const session = this.userSessions.find((candidate) => candidate.id === sessionId);
+    if (!session) {
+      throw unauthorized('Invalid or expired auth session.');
+    }
+    const membership = await this.getTenantMembership(normalizedTenantId, session.userId);
+    if (!membership || membership.seatState !== 'active') {
+      throw forbidden(`User ${session.userId} does not have an active seat in tenant ${normalizedTenantId}.`);
+    }
+
+    const nextSession = normalizeUserSessionRecord({
+      ...session,
+      tenantId: normalizedTenantId,
+      activeTenantId: normalizedTenantId,
+      lastSeenAt: new Date().toISOString()
+    });
+    this.userSessions = this.userSessions.map((candidate) => (candidate.id === sessionId ? nextSession : candidate));
+    await this.persist();
+    return nextSession;
+  }
+
+  async logout(sessionId: string): Promise<{ ok: true }> {
+    await this.ready;
+    this.userSessions = this.userSessions.filter((session) => session.id !== sessionId);
+    await this.persist();
+    return { ok: true };
+  }
+
+  async getUserById(userId: string): Promise<User | undefined> {
+    await this.ready;
+    const user = this.users.find((candidate) => candidate.id === userId);
+    return user ? stripUserSecret(user) : undefined;
+  }
+
+  async listUserMemberships(userId: string): Promise<TenantMember[]> {
+    await this.ready;
+    return [...this.tenantMemberships]
+      .filter((membership) => membership.userId === userId)
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
   }
 
   async createTenantMember(tenantId: string, input: TenantMemberRecordInput, actorUserId: string): Promise<{ member: TenantMember; seatSummary: TenantSeatSummary }> {
@@ -465,10 +627,25 @@ export class BoardIndexDO extends DurableObject<Env> {
     await this.ctx.storage.put(SCM_CREDENTIALS_STORAGE_KEY, this.scmCredentials);
     await this.ctx.storage.put(TENANTS_STORAGE_KEY, this.tenants);
     await this.ctx.storage.put(TENANT_MEMBERSHIPS_STORAGE_KEY, this.tenantMemberships);
+    await this.ctx.storage.put(USERS_STORAGE_KEY, this.users);
+    await this.ctx.storage.put(USER_SESSIONS_STORAGE_KEY, this.userSessions);
   }
 
   private ensureBootstrapTenantAndOwner() {
     const now = new Date().toISOString();
+    if (!this.users.some((user) => user.id === SYSTEM_USER_ID)) {
+      this.users = [
+        normalizeStoredUserRecord({
+          id: SYSTEM_USER_ID,
+          email: 'system@minions.local',
+          displayName: 'System User',
+          passwordHash: 'system',
+          createdAt: now,
+          updatedAt: now
+        }),
+        ...this.users
+      ];
+    }
     if (!this.tenants.some((tenant) => tenant.id === DEFAULT_TENANT_ID)) {
       this.tenants = [
         normalizeTenantRecord({
@@ -520,6 +697,28 @@ export class BoardIndexDO extends DurableObject<Env> {
     if (seatsUsed >= tenant.seatLimit) {
       throw conflict(`Tenant ${tenantId} has no available seats.`);
     }
+  }
+
+  private pruneExpiredSessions() {
+    const now = Date.now();
+    this.userSessions = this.userSessions.filter((session) => Date.parse(session.expiresAt) > now);
+  }
+
+  private async createSession(userId: string, activeTenantId: string): Promise<{ session: UserSession; token: string }> {
+    const now = Date.now();
+    const token = createAuthToken();
+    const session = normalizeUserSessionRecord({
+      id: `sess_${crypto.randomUUID()}`,
+      userId,
+      tenantId: activeTenantId,
+      activeTenantId,
+      tokenHash: await hashSecret(token),
+      expiresAt: new Date(now + SESSION_TTL_MS).toISOString(),
+      lastSeenAt: new Date(now).toISOString()
+    });
+    this.userSessions = [...this.userSessions, session];
+    await this.persist();
+    return { session, token };
   }
 }
 
@@ -622,4 +821,60 @@ function normalizeTenantMemberRecord(member: TenantMember): TenantMember {
     role: member.role === 'owner' ? 'owner' : 'member',
     seatState: member.seatState === 'invited' || member.seatState === 'revoked' ? member.seatState : 'active'
   };
+}
+
+function normalizeStoredUserRecord(user: StoredUser): StoredUser {
+  return {
+    ...user,
+    id: user.id.trim(),
+    email: normalizeEmail(user.email),
+    displayName: user.displayName?.trim() || undefined,
+    passwordHash: user.passwordHash.trim()
+  };
+}
+
+function normalizeUserSessionRecord(session: UserSession): UserSession {
+  return {
+    ...session,
+    id: session.id.trim(),
+    userId: session.userId.trim(),
+    tenantId: normalizeTenantId(session.tenantId),
+    activeTenantId: normalizeTenantId(session.activeTenantId),
+    tokenHash: session.tokenHash.trim()
+  };
+}
+
+function stripUserSecret(user: StoredUser): User {
+  return {
+    id: user.id,
+    email: user.email,
+    displayName: user.displayName,
+    createdAt: user.createdAt,
+    updatedAt: user.updatedAt
+  };
+}
+
+function normalizeEmail(value: string) {
+  const email = value.trim().toLowerCase();
+  if (!email || !email.includes('@')) {
+    throw badRequest('Invalid email.');
+  }
+  return email;
+}
+
+function createUserId(email: string): string {
+  const base = email.split('@')[0].replace(/[^a-z0-9_-]/g, '-').replace(/-+/g, '-').replace(/^-+|-+$/g, '') || 'user';
+  return `${base}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function createAuthToken() {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+async function hashSecret(input: string): Promise<string> {
+  const payload = new TextEncoder().encode(input);
+  const digest = await crypto.subtle.digest('SHA-256', payload);
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
 }

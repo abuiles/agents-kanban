@@ -3,10 +3,13 @@ import type { CreateTaskInput } from '../ui/domain/api';
 import { badRequest, forbidden, notFound, unauthorized } from './http/errors';
 import { handleError, json } from './http/response';
 import {
+  parseAuthLoginInput,
+  parseAuthSignupInput,
   parseCreateRepoInput,
   parseCreateTaskInput,
   parseCreateTenantInput,
   parseCreateTenantMemberInput,
+  parseSetActiveTenantInput,
   parseUpdateRepoInput,
   parseUpdateTaskInput,
   parseUpdateTenantMemberInput,
@@ -24,9 +27,87 @@ const BOARD_OBJECT_NAME = 'agentboard';
 export async function handleApiRequest(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   const url = new URL(request.url);
   const board = env.BOARD_INDEX.getByName(BOARD_OBJECT_NAME);
-  const requestContext = resolveRequestTenantContext(request);
 
   try {
+    if (url.pathname === '/api/auth/signup' && request.method === 'POST') {
+      const input = parseAuthSignupInput(await readJson(request));
+      const result = await board.signup({
+        email: input.email,
+        password: input.password,
+        displayName: input.displayName,
+        tenant: {
+          name: input.tenantName,
+          slug: input.tenantSlug,
+          domain: input.tenantDomain,
+          seatLimit: input.seatLimit,
+          defaultSeatLimit: input.defaultSeatLimit
+        }
+      });
+      const response = json({
+        user: result.user,
+        session: result.session,
+        activeTenantId: result.activeTenantId,
+        memberships: result.memberships,
+        token: result.token
+      }, { status: 201 });
+      response.headers.append('Set-Cookie', buildSessionCookie(result.token));
+      return response;
+    }
+
+    if (url.pathname === '/api/auth/login' && request.method === 'POST') {
+      const input = parseAuthLoginInput(await readJson(request));
+      const result = await board.login(input);
+      const response = json({
+        user: result.user,
+        session: result.session,
+        activeTenantId: result.activeTenantId,
+        memberships: result.memberships,
+        token: result.token
+      });
+      response.headers.append('Set-Cookie', buildSessionCookie(result.token));
+      return response;
+    }
+
+    if (url.pathname === '/api/auth/logout' && request.method === 'POST') {
+      const requestContext = await resolveRequestTenantContext(board, request);
+      if (requestContext.sessionId) {
+        await board.logout(requestContext.sessionId);
+      }
+      const response = json({ ok: true });
+      response.headers.append('Set-Cookie', clearSessionCookie());
+      return response;
+    }
+
+    const requestContext = await resolveRequestTenantContext(board, request);
+
+    if (url.pathname === '/api/me' && request.method === 'GET') {
+      const user = await board.getUserById(requestContext.userId);
+      if (!user) {
+        throw unauthorized(`User ${requestContext.userId} not found.`);
+      }
+      const memberships = await board.listUserMemberships(user.id);
+      const tenants = await board.listTenantsForUser(user.id);
+      return json({
+        user,
+        memberships,
+        tenants,
+        activeTenantId: requestContext.activeTenantId
+      });
+    }
+
+    if (url.pathname === '/api/me/tenant-context' && request.method === 'POST') {
+      if (!requestContext.sessionId) {
+        throw unauthorized('Tenant context switching requires an auth session.');
+      }
+      const { tenantId } = parseSetActiveTenantInput(await readJson(request));
+      const session = await board.setSessionActiveTenant(requestContext.sessionId, tenantId);
+      const response = json({ activeTenantId: session.activeTenantId, session });
+      if (requestContext.sessionToken) {
+        response.headers.append('Set-Cookie', buildSessionCookie(requestContext.sessionToken));
+      }
+      return response;
+    }
+
     if (url.pathname === '/api/tenants' && request.method === 'GET') {
       return json(await board.listTenantsForUser(requestContext.userId));
     }
@@ -470,9 +551,25 @@ async function resolveRepoId(entityId: string, inferred: string | undefined, fal
 type RequestTenantContext = {
   userId: string;
   activeTenantId: string;
+  sessionId?: string;
+  sessionToken?: string;
 };
 
-function resolveRequestTenantContext(request: Request): RequestTenantContext {
+async function resolveRequestTenantContext(
+  board: DurableObjectStub<import('./durable/board-index').BoardIndexDO>,
+  request: Request
+): Promise<RequestTenantContext> {
+  const sessionToken = readSessionToken(request);
+  if (sessionToken) {
+    const resolved = await board.resolveSessionByToken(sessionToken);
+    return {
+      userId: resolved.user.id,
+      activeTenantId: normalizeTenantId(resolved.session.activeTenantId),
+      sessionId: resolved.session.id,
+      sessionToken
+    };
+  }
+
   const userId = request.headers.get('x-user-id')?.trim() ?? 'user_system';
   const activeTenantId = normalizeTenantId(request.headers.get('x-tenant-id') ?? DEFAULT_TENANT_ID);
   return {
@@ -516,7 +613,45 @@ async function assertRepoAccess(
   const repo = await board.getRepo(repoId);
   await requireActiveTenantAccess(board, context, repo.tenantId);
   if (repo.tenantId !== context.activeTenantId) {
-    throw forbidden(`Repo ${repoId} belongs to tenant ${repo.tenantId}, not ${context.activeTenantId}.`);
+    throw forbidden(`Cross-tenant access denied: repo ${repoId} belongs to tenant ${repo.tenantId}, active tenant is ${context.activeTenantId}.`);
   }
   return repo;
+}
+
+function readSessionToken(request: Request): string | undefined {
+  const authorization = request.headers.get('authorization')?.trim();
+  if (authorization?.toLowerCase().startsWith('bearer ')) {
+    const token = authorization.slice(7).trim();
+    if (token) {
+      return token;
+    }
+  }
+
+  const headerToken = request.headers.get('x-session-token')?.trim();
+  if (headerToken) {
+    return headerToken;
+  }
+
+  const cookies = request.headers.get('cookie');
+  if (!cookies) {
+    return undefined;
+  }
+
+  for (const part of cookies.split(';')) {
+    const [rawName, ...rawValue] = part.trim().split('=');
+    if (rawName === 'minions_session') {
+      const token = rawValue.join('=').trim();
+      return token || undefined;
+    }
+  }
+
+  return undefined;
+}
+
+function buildSessionCookie(token: string) {
+  return `minions_session=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000`;
+}
+
+function clearSessionCookie() {
+  return 'minions_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0';
 }
