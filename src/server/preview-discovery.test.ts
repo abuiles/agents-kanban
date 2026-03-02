@@ -55,6 +55,24 @@ Preview Alias URL: https://abuiles-patch-1-minions-demo.abuiles.workers.dev
     expect(previewUrl).toBe('https://commit-minions-demo.abuiles.workers.dev');
   });
 
+  it('uses previewConfig.checkName via compatibility mapping', () => {
+    const previewUrl = discoverPreviewUrl(buildRepo({
+      previewAdapter: 'cloudflare_checks',
+      previewConfig: { checkName: 'Workers Builds: minions-demo' },
+      previewCheckName: undefined
+    }), [
+      {
+        name: 'Workers Builds: minions-demo',
+        app: { slug: 'cloudflare-workers-and-pages' },
+        output: {
+          summary: 'Preview URL: https://commit-minions-demo.abuiles.workers.dev'
+        }
+      }
+    ]);
+
+    expect(previewUrl).toBe('https://commit-minions-demo.abuiles.workers.dev');
+  });
+
   it('falls back to Cloudflare heuristics when the configured check name does not match', () => {
     const previewUrl = discoverPreviewUrl(buildRepo({ previewCheckName: 'Cloudflare Pages' }), [
       {

@@ -45,6 +45,8 @@ export class LocalAgentBoardApi implements AgentBoardApi {
       enabled: input.enabled ?? true,
       previewMode: input.previewMode ?? 'auto',
       evidenceMode: input.evidenceMode ?? 'auto',
+      previewAdapter: input.previewAdapter,
+      previewConfig: input.previewConfig,
       previewProvider: input.previewProvider ?? 'cloudflare',
       previewCheckName: input.previewCheckName,
       codexAuthBundleR2Key: input.codexAuthBundleR2Key,

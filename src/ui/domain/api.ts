@@ -27,6 +27,8 @@ export type CreateRepoInput = {
   enabled?: boolean;
   previewMode?: Repo['previewMode'];
   evidenceMode?: Repo['evidenceMode'];
+  previewAdapter?: Repo['previewAdapter'];
+  previewConfig?: Repo['previewConfig'];
   previewProvider?: Repo['previewProvider'];
   previewCheckName?: string;
   codexAuthBundleR2Key?: string;

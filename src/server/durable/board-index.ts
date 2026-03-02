@@ -271,6 +271,8 @@ function buildRepoRecord(input: CreateRepoInput | Repo): Repo {
     githubAuthMode: 'githubAuthMode' in input ? input.githubAuthMode : undefined,
     previewMode: 'previewMode' in input ? input.previewMode : 'auto',
     evidenceMode: 'evidenceMode' in input ? input.evidenceMode : 'auto',
+    previewAdapter: 'previewAdapter' in input ? input.previewAdapter : undefined,
+    previewConfig: 'previewConfig' in input ? input.previewConfig : undefined,
     previewProvider: 'previewProvider' in input ? input.previewProvider : 'cloudflare',
     previewCheckName: input.previewCheckName,
     previewUrlPattern: 'previewUrlPattern' in input ? input.previewUrlPattern : undefined,
