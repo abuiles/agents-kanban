@@ -242,6 +242,7 @@ fi
 
 type ManagedExecResult = {
   success: boolean;
+  stdout?: string;
   stderr?: string;
   stoppedForTakeover?: boolean;
 };
@@ -429,6 +430,7 @@ async function runCodexProcessWithLogs(context: Parameters<LlmAdapter['run']>[0]
 
   return {
     success,
+    stdout,
     stderr,
     stoppedForTakeover
   };

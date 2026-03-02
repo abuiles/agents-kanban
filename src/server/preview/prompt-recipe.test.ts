@@ -1,14 +1,13 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
+  buildPromptRecipeExecutionRequest,
   PROMPT_RECIPE_PREVIEW_TIMEOUT_MS,
   inspectPromptRecipeConfiguration,
   promptRecipePreviewAdapter,
   resolvePromptRecipeExecution,
   validatePromptRecipePreviewOutput
 } from './prompt-recipe';
-import type { Repo, Task, AgentRun } from '../../ui/domain/types';
-import type { PreviewAdapterContext } from './adapter';
-import type { LlmAdapter, LlmPromptExecutionResult } from '../llm/adapter';
+import type { Repo } from '../../ui/domain/types';
 
 function buildRepo(overrides: Partial<Repo> = {}): Repo {
   return {
@@ -23,87 +22,9 @@ function buildRepo(overrides: Partial<Repo> = {}): Repo {
   };
 }
 
-function buildTask(overrides: Partial<Task> = {}): Task {
-  return {
-    taskId: 'task_1',
-    repoId: 'repo_1',
-    title: 'Resolve preview',
-    taskPrompt: 'Resolve preview',
-    acceptanceCriteria: [],
-    context: { links: [] },
-    status: 'REVIEW',
-    createdAt: '2026-03-02T00:00:00.000Z',
-    updatedAt: '2026-03-02T00:00:00.000Z',
-    ...overrides
-  };
-}
-
-function buildRun(overrides: Partial<AgentRun> = {}): AgentRun {
-  return {
-    runId: 'run_1',
-    taskId: 'task_1',
-    repoId: 'repo_1',
-    status: 'WAITING_PREVIEW',
-    branchName: 'agent/task_1/run_1',
-    previewStatus: 'DISCOVERING',
-    evidenceStatus: 'NOT_STARTED',
-    errors: [],
-    startedAt: '2026-03-02T00:00:00.000Z',
-    timeline: [],
-    simulationProfile: 'happy_path',
-    pendingEvents: [],
-    executionSummary: {},
-    ...overrides
-  };
-}
-
-function buildContext(
-  result: LlmPromptExecutionResult,
-  overrides: Partial<PreviewAdapterContext> = {}
-): PreviewAdapterContext {
-  const adapter: LlmAdapter = {
-    kind: 'codex',
-    capabilities: {
-      supportsResume: true,
-      supportsTakeover: true
-    },
-    ensureInstalled: vi.fn(),
-    restoreAuth: vi.fn(),
-    logDiagnostics: vi.fn(),
-    run: vi.fn(),
-    runPrompt: vi.fn()
-  };
-
-  return {
-    repo: buildRepo({
-      previewAdapter: 'prompt_recipe',
-      previewConfig: { promptRecipe: 'Read the checks and return the preview URL.' }
-    }),
-    task: buildTask(),
-    run: buildRun(),
-    checks: [{
-      name: 'Workers Builds: minions-demo',
-      status: 'completed',
-      conclusion: 'success',
-      summary: 'Preview URL: https://preview.example.com',
-      rawSource: 'github_check_run'
-    }],
-    llm: {
-      adapter,
-      runtimeContext: {} as never,
-      model: 'gpt-5.3-codex',
-      reasoningEffort: 'medium',
-      cwd: '/workspace/repo',
-      sleepFn: vi.fn(),
-      runPrompt: vi.fn().mockResolvedValue(result)
-    },
-    ...overrides
-  };
-}
-
 describe('validatePromptRecipePreviewOutput', () => {
   it('accepts strict JSON with only previewUrl', () => {
-    expect(validatePromptRecipePreviewOutput('{"previewUrl":"https://preview.example.com"}')).toEqual({
+    expect(validatePromptRecipePreviewOutput('{\"previewUrl\":\"https://preview.example.com\"}')).toEqual({
       ok: true,
       payload: { previewUrl: 'https://preview.example.com' },
       diagnostics: [
@@ -131,14 +52,14 @@ describe('validatePromptRecipePreviewOutput', () => {
     });
   });
 
-  it('rejects extra keys deterministically', () => {
-    expect(validatePromptRecipePreviewOutput('{"previewUrl":"http://preview.example.com","note":"extra"}')).toEqual({
+  it('rejects extra keys and invalid URLs deterministically', () => {
+    expect(validatePromptRecipePreviewOutput('{\"previewUrl\":\"http://preview.example.com\",\"note\":\"extra\"}')).toEqual({
       ok: false,
       diagnostics: [
         {
           code: 'PROMPT_RECIPE_INVALID_KEYS',
           level: 'error',
-          message: 'Prompt recipe output must contain exactly one key: "previewUrl".',
+          message: 'Prompt recipe output must contain exactly one key: \"previewUrl\".',
           metadata: { keyCount: 2, outputPresent: true }
         }
       ]
@@ -151,7 +72,7 @@ describe('resolvePromptRecipeExecution', () => {
     expect(resolvePromptRecipeExecution({
       status: 'success',
       elapsedMs: 350,
-      rawOutput: '{"previewUrl":"https://preview.example.com"}'
+      rawOutput: '{\"previewUrl\":\"https://preview.example.com\"}'
     })).toEqual({
       status: 'ready',
       adapter: 'prompt_recipe',
@@ -197,6 +118,35 @@ describe('resolvePromptRecipeExecution', () => {
       ]
     });
   });
+
+  it('surfaces malformed output with validation diagnostics', () => {
+    expect(resolvePromptRecipeExecution({
+      status: 'success',
+      elapsedMs: 1200,
+      rawOutput: '{\"previewUrl\":\"http://preview.example.com\",\"extra\":true}'
+    })).toEqual({
+      status: 'failed',
+      adapter: 'prompt_recipe',
+      explanation: 'Prompt-recipe preview resolution returned output that failed strict validation.',
+      diagnostics: [
+        {
+          code: 'PROMPT_RECIPE_VALIDATION_FAILED',
+          level: 'error',
+          message: 'Prompt recipe output failed strict preview validation.',
+          metadata: {
+            elapsedMs: 1200,
+            rawOutputPresent: true
+          }
+        },
+        {
+          code: 'PROMPT_RECIPE_INVALID_KEYS',
+          level: 'error',
+          message: 'Prompt recipe output must contain exactly one key: \"previewUrl\".',
+          metadata: { keyCount: 2, outputPresent: true }
+        }
+      ]
+    });
+  });
 });
 
 describe('inspectPromptRecipeConfiguration', () => {
@@ -222,21 +172,21 @@ describe('inspectPromptRecipeConfiguration', () => {
     });
   });
 
-  it('reports a configured recipe as pending executor work', () => {
+  it('defines the contract seam without wiring the runtime yet', () => {
     expect(inspectPromptRecipeConfiguration(buildRepo({
       previewAdapter: 'prompt_recipe',
       previewConfig: { promptRecipe: 'read checks and emit strict JSON' }
     }))).toEqual({
       compatibility: { checks: [] },
       resolution: {
-        status: 'pending',
+        status: 'failed',
         adapter: 'prompt_recipe',
-        explanation: 'Prompt-recipe preview resolution is configured and waiting for executor context.',
+        explanation: 'Prompt-recipe preview resolution requires a generic LLM runtime.',
         diagnostics: [
           {
-            code: 'PROMPT_RECIPE_CONFIG_READY',
-            level: 'info',
-            message: 'Prompt-recipe preview resolution has a configured prompt recipe.',
+            code: 'PROMPT_RECIPE_RUNTIME_UNAVAILABLE',
+            level: 'error',
+            message: 'Prompt-recipe preview runtime is unavailable for this resolution attempt.',
             metadata: {
               hasPromptRecipe: true,
               timeoutMs: PROMPT_RECIPE_PREVIEW_TIMEOUT_MS
@@ -248,67 +198,151 @@ describe('inspectPromptRecipeConfiguration', () => {
   });
 });
 
-describe('promptRecipePreviewAdapter', () => {
-  it('resolves a validated preview URL through the executor seam', async () => {
-    const context = buildContext({
-      status: 'success',
-      elapsedMs: 420,
-      rawOutput: '{"previewUrl":"https://preview.example.com"}'
+describe('buildPromptRecipeExecutionRequest', () => {
+  it('builds a narrow generic LLM request from repo, run, and normalized checks', () => {
+    const request = buildPromptRecipeExecutionRequest({
+      repo: buildRepo({
+        scmProvider: 'gitlab',
+        scmBaseUrl: 'https://gitlab.example.com',
+        projectPath: 'group/minions-demo',
+        previewAdapter: 'prompt_recipe',
+        previewConfig: { promptRecipe: 'Find the one usable preview URL from the statuses.' }
+      }),
+      task: {
+        taskId: 'task_1',
+        repoId: 'repo_1',
+        title: 'Resolve preview',
+        taskPrompt: 'Find the preview URL.',
+        acceptanceCriteria: ['one preview'],
+        context: { links: [] },
+        status: 'ACTIVE',
+        createdAt: '2026-03-02T00:00:00.000Z',
+        updatedAt: '2026-03-02T00:00:00.000Z'
+      },
+      run: {
+        runId: 'run_1',
+        taskId: 'task_1',
+        repoId: 'repo_1',
+        status: 'WAITING_PREVIEW',
+        branchName: 'feature/preview',
+        headSha: 'a'.repeat(40),
+        reviewUrl: 'https://gitlab.example.com/group/minions-demo/-/merge_requests/7',
+        reviewNumber: 7,
+        reviewProvider: 'gitlab',
+        previewStatus: 'DISCOVERING',
+        evidenceStatus: 'NOT_STARTED',
+        errors: [],
+        startedAt: '2026-03-02T00:00:00.000Z',
+        simulationProfile: 'happy_path',
+        timeline: [],
+        pendingEvents: []
+      },
+      checks: [
+        {
+          name: 'workers-preview',
+          detailsUrl: 'https://preview.example.workers.dev',
+          summary: 'Preview URL: https://preview.example.workers.dev',
+          rawSource: 'gitlab_status'
+        }
+      ],
+      promptRecipeRuntime: {
+        cwd: '/workspace/preview',
+        model: 'gpt-5.3-codex',
+        reasoningEffort: 'medium',
+        execute: async () => ({ status: 'success', elapsedMs: 1, rawOutput: '{"previewUrl":"https://preview.example.workers.dev"}' })
+      }
     });
 
-    const result = await promptRecipePreviewAdapter.resolve(context);
-
-    expect(result.resolution.status).toBe('ready');
-    expect(result.resolution.previewUrl).toBe('https://preview.example.com');
-    expect(result.resolution.diagnostics.map((diagnostic) => diagnostic.code)).toEqual([
-      'PROMPT_RECIPE_EXECUTOR_SELECTED',
-      'PROMPT_RECIPE_EXECUTION_SUCCEEDED',
-      'PROMPT_RECIPE_OUTPUT_VALID'
-    ]);
-    expect(context.llm?.runPrompt).toHaveBeenCalledOnce();
+    expect(request.cwd).toBe('/workspace/preview');
+    expect(request.model).toBe('gpt-5.3-codex');
+    expect(request.reasoningEffort).toBe('medium');
+    expect(request.prompt).toContain('Find the one usable preview URL from the statuses.');
+    expect(request.prompt).toContain('"reviewProvider": "gitlab"');
+    expect(request.prompt).toContain('"rawSource": "gitlab_status"');
+    expect(request.prompt).toContain('Return strict JSON matching { "previewUrl": "https://..." }.');
   });
+});
 
-  it('fails clearly when runtime context is unavailable', async () => {
-    const result = await promptRecipePreviewAdapter.resolve(buildContext(
-      {
-        status: 'success',
-        elapsedMs: 420,
-        rawOutput: '{"previewUrl":"https://preview.example.com"}'
+describe('promptRecipePreviewAdapter', () => {
+  it('resolves preview URLs through the generic LLM seam', async () => {
+    let capturedPrompt = '';
+    const result = await promptRecipePreviewAdapter.resolve({
+      repo: buildRepo({
+        previewAdapter: 'prompt_recipe',
+        previewConfig: { promptRecipe: 'Use the checks to find the preview URL.' }
+      }),
+      task: {
+        taskId: 'task_1',
+        repoId: 'repo_1',
+        title: 'Resolve preview',
+        taskPrompt: 'Find the preview URL.',
+        acceptanceCriteria: ['one preview'],
+        context: { links: [] },
+        status: 'ACTIVE',
+        createdAt: '2026-03-02T00:00:00.000Z',
+        updatedAt: '2026-03-02T00:00:00.000Z'
       },
-      { llm: undefined }
-    ));
+      run: {
+        runId: 'run_1',
+        taskId: 'task_1',
+        repoId: 'repo_1',
+        status: 'WAITING_PREVIEW',
+        branchName: 'feature/preview',
+        headSha: 'a'.repeat(40),
+        reviewUrl: 'https://github.com/abuiles/minions-demo/pull/7',
+        reviewNumber: 7,
+        reviewProvider: 'github',
+        previewStatus: 'DISCOVERING',
+        evidenceStatus: 'NOT_STARTED',
+        errors: [],
+        startedAt: '2026-03-02T00:00:00.000Z',
+        simulationProfile: 'happy_path',
+        timeline: [],
+        pendingEvents: []
+      },
+      checks: [
+        {
+          name: 'Workers Builds: minions-demo',
+          summary: 'Preview Alias URL: https://preview.example.workers.dev',
+          rawSource: 'github_check_run'
+        }
+      ],
+      promptRecipeRuntime: {
+        cwd: '/workspace/preview',
+        model: 'gpt-5.3-codex',
+        reasoningEffort: 'medium',
+        async execute(request) {
+          capturedPrompt = request.prompt;
+          return {
+            status: 'success',
+            elapsedMs: 320,
+            rawOutput: '{"previewUrl":"https://preview.example.workers.dev"}'
+          };
+        }
+      }
+    });
 
+    expect(capturedPrompt).toContain('Use the checks to find the preview URL.');
+    expect(result.compatibility).toEqual({ checks: [] });
     expect(result.resolution).toEqual({
-      status: 'failed',
+      status: 'ready',
       adapter: 'prompt_recipe',
-      explanation: 'Prompt-recipe preview resolution requires task, run, and executor context.',
+      previewUrl: 'https://preview.example.workers.dev',
+      explanation: 'Prompt-recipe preview resolution returned a validated preview URL.',
       diagnostics: [
         {
-          code: 'PROMPT_RECIPE_RUNTIME_CONTEXT_MISSING',
-          level: 'error',
-          message: 'Prompt-recipe preview resolution could not access the selected executor context.',
-          metadata: {
-            hasTask: true,
-            hasRun: true,
-            hasLlmContext: false
-          }
+          code: 'PROMPT_RECIPE_EXECUTION_SUCCEEDED',
+          level: 'info',
+          message: 'Prompt-recipe preview resolution produced a validated preview URL.',
+          metadata: { elapsedMs: 320 }
+        },
+        {
+          code: 'PROMPT_RECIPE_OUTPUT_VALID',
+          level: 'info',
+          message: 'Prompt recipe output passed strict preview validation.',
+          metadata: { outputPresent: true }
         }
       ]
     });
-  });
-
-  it('surfaces malformed output with validation diagnostics', async () => {
-    const result = await promptRecipePreviewAdapter.resolve(buildContext({
-      status: 'success',
-      elapsedMs: 1200,
-      rawOutput: '{"previewUrl":"http://preview.example.com","extra":true}'
-    }));
-
-    expect(result.resolution.status).toBe('failed');
-    expect(result.resolution.diagnostics.map((diagnostic) => diagnostic.code)).toEqual([
-      'PROMPT_RECIPE_EXECUTOR_SELECTED',
-      'PROMPT_RECIPE_VALIDATION_FAILED',
-      'PROMPT_RECIPE_INVALID_KEYS'
-    ]);
   });
 });
