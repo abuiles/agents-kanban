@@ -899,7 +899,7 @@ export async function releasePlatformSupportSession(env: Env, token: string, adm
   await ensureSchema(db);
   const tokenHash = await hashSecret(token);
   const row = await db.prepare(
-    "SELECT * FROM platform_support_sessions WHERE token_hash = ? AND released_at IS NULL AND expires_at > ? LIMIT 1"
+    "SELECT * FROM platform_support_sessions WHERE token_hash = ? AND reason <> 'platform-auth' AND released_at IS NULL AND expires_at > ? LIMIT 1"
   ).bind(tokenHash, new Date().toISOString()).first<Record<string, unknown>>();
   if (!row) {
     throw unauthorized('Invalid or expired support session.');

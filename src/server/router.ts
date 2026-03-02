@@ -91,7 +91,11 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
 
     if (url.pathname === '/api/platform/support/release-tenant' && request.method === 'POST') {
       const platformContext = await resolvePlatformAdminContext(env, board, request);
-      const released = await tenantAuthDb.releasePlatformSupportSession(env, platformContext.platformSupportToken, platformContext.platformAdminId);
+      const supportToken = readPlatformSupportToken(request);
+      if (!supportToken) {
+        throw unauthorized('Missing support session token.');
+      }
+      const released = await tenantAuthDb.releasePlatformSupportSession(env, supportToken, platformContext.platformAdminId);
       return json(released);
     }
 
@@ -661,7 +665,6 @@ type RequestTenantContextOptions = {
 
 type PlatformAdminContext = {
   platformAdminId: string;
-  platformSupportToken: string;
 };
 
 async function resolveRequestTenantContext(
@@ -716,8 +719,7 @@ async function resolvePlatformAdminContext(
   }
   const resolved = await tenantAuthDb.resolvePlatformAdminByToken(env, token);
   return {
-    platformAdminId: resolved.admin.id,
-    platformSupportToken: token
+    platformAdminId: resolved.admin.id
   };
 }
 
@@ -730,6 +732,12 @@ async function requireActiveTenantAccess(
   const normalizedTenantId = normalizeTenantId(tenantId);
   if (!context.userId) {
     throw unauthorized('Missing user identity.');
+  }
+  if (context.supportSessionId) {
+    if (context.activeTenantId !== normalizedTenantId) {
+      throw forbidden(`Support session only grants access to active tenant ${context.activeTenantId}.`);
+    }
+    return;
   }
   const hasAccess = await tenantAuthDb.hasActiveTenantAccess(env, normalizedTenantId, context.userId);
   if (!hasAccess) {
