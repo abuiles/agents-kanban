@@ -13,6 +13,14 @@ function createExecutionContext(): ExecutionContext {
 }
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await apiResponse(path, init);
+  if (!response.ok) {
+    throw new Error(`API ${init?.method ?? 'GET'} ${path} failed with status ${response.status}.`);
+  }
+  return await response.json() as T;
+}
+
+async function apiResponse(path: string, init?: RequestInit): Promise<Response> {
   const request = new Request(`https://minions.example.test${path}`, {
     ...init,
     headers: {
@@ -20,11 +28,7 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
       ...(init?.headers ?? {})
     }
   });
-  const response = await worker.fetch(request, env, createExecutionContext());
-  if (!response.ok) {
-    throw new Error(`API ${init?.method ?? 'GET'} ${path} failed with status ${response.status}.`);
-  }
-  return await response.json() as T;
+  return worker.fetch(request, env, createExecutionContext());
 }
 
 function taskInput(repoId: string, title: string, patch: Partial<JsonValue> = {}) {
@@ -209,5 +213,38 @@ describe('Stage 3.5 LLM adapter dogfood API coverage', () => {
       llmSupportsResume: false
     });
     expect(takenOver.operatorSession?.llmResumeCommand).toBeUndefined();
+  });
+
+  it('rejects cross-tenant terminal and artifact reads', async () => {
+    const repo = await api<Repo>('/api/repos', {
+      method: 'POST',
+      body: JSON.stringify({
+        tenantId: 'tenant_acme',
+        slug: 'acme/minions-tenant-checks',
+        baselineUrl: 'https://tenant-checks.example.com',
+        defaultBranch: 'main'
+      })
+    });
+    const task = await api<Task>('/api/tasks', {
+      method: 'POST',
+      body: JSON.stringify(taskInput(repo.repoId, 'Tenant access checks'))
+    });
+    const repoBoard = env.REPO_BOARD.getByName(repo.repoId);
+    const run = await repoBoard.startRun(task.taskId);
+    await repoBoard.transitionRun(run.runId, {
+      status: 'RUNNING_CODEX',
+      sandboxId: run.runId
+    });
+    await repoBoard.storeArtifactManifest(run.runId);
+
+    const terminalResponse = await apiResponse(`/api/runs/${encodeURIComponent(run.runId)}/terminal`, {
+      headers: { 'X-Tenant-Id': 'tenant_other' }
+    });
+    const artifactResponse = await apiResponse(`/api/runs/${encodeURIComponent(run.runId)}/artifacts`, {
+      headers: { 'X-Tenant-Id': 'tenant_other' }
+    });
+
+    expect(terminalResponse.status).toBe(404);
+    expect(artifactResponse.status).toBe(404);
   });
 });

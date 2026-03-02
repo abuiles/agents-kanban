@@ -810,7 +810,7 @@ export class RepoBoardDO extends DurableObject<Env> {
       delete this.localJobs[runId];
       await this.persistLocalJobs();
       try {
-        await executeRunJob(this.env, { repoId: run.repoId, taskId: run.taskId, runId, mode }, sleepForAlarm);
+        await executeRunJob(this.env, { tenantId: run.tenantId ?? DEFAULT_TENANT_ID, repoId: run.repoId, taskId: run.taskId, runId, mode }, sleepForAlarm);
       } catch (error) {
         console.error('Local alarm run execution failed', { runId, error });
       }
@@ -1086,7 +1086,6 @@ function nextStatusChanged(previous: AgentRun, next: AgentRun, note?: string) {
 function isTerminalRunStatus(status: AgentRun['status']) {
   return status === 'DONE' || status === 'FAILED';
 }
-
 
 function getOperatorSessionName(run: AgentRun) {
   if (!run.operatorSession?.sessionName || run.operatorSession.sessionName === 'operator') {

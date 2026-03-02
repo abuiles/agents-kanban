@@ -300,6 +300,7 @@ export type ArtifactManifest = {
   trace?: ArtifactPointer;
   video?: ArtifactPointer;
   metadata: {
+    tenantId?: string;
     generatedAt: string;
     environmentId: string;
     simulatorVersion?: string;

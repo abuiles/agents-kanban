@@ -10,6 +10,7 @@ import type {
   TaskStatus
 } from '../../ui/domain/types';
 import { getBaselineUrl } from '../../ui/domain/selectors';
+import { normalizeTenantId } from '../../shared/tenant';
 
 const OFFSETS: Record<Exclude<RunStatus, 'FAILED'>, number> = {
   QUEUED: 0,
@@ -161,7 +162,7 @@ export function deriveTaskStatus(currentStatus: TaskStatus, runStatus: RunStatus
 }
 
 export function buildArtifactManifest(run: AgentRun, task: Task, repo: Repo | undefined): ArtifactManifest {
-  const baseKey = `runs/${run.runId}`;
+  const baseKey = `tenants/${normalizeTenantId(run.tenantId)}/runs/${run.runId}`;
   return {
     logs: { key: `${baseKey}/logs.txt`, label: 'Mock logs' },
     before: {
@@ -185,6 +186,7 @@ export function buildArtifactManifest(run: AgentRun, task: Task, repo: Repo | un
       url: `https://artifacts.example.invalid/${baseKey}/video.mp4`
     },
     metadata: {
+      tenantId: normalizeTenantId(run.tenantId),
       generatedAt: new Date().toISOString(),
       simulatorVersion: 'stage-2',
       environmentId: 'worker-mock-executor'
