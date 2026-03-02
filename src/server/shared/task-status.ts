@@ -1,4 +1,5 @@
 import type { AgentRun, TaskStatus } from '../../ui/domain/types';
+import { hasRunReview } from '../../shared/scm';
 
 export function deriveTaskStatusFromRun(run: AgentRun, current: TaskStatus): TaskStatus {
   if (current === 'DONE' && !isExecutionPhase(run.status)) {
@@ -9,7 +10,7 @@ export function deriveTaskStatusFromRun(run: AgentRun, current: TaskStatus): Tas
     return 'REVIEW';
   }
   if (run.status === 'FAILED') {
-    return run.prUrl ? 'REVIEW' : 'FAILED';
+    return hasRunReview(run) ? 'REVIEW' : 'FAILED';
   }
   if (isExecutionPhase(run.status)) {
     return 'ACTIVE';

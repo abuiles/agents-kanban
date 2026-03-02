@@ -33,6 +33,9 @@ describe('task validation', () => {
           kind: 'dependency_review_head',
           upstreamTaskId: 'task_upstream',
           upstreamRunId: 'run_upstream',
+          upstreamReviewUrl: 'https://gitlab.example.com/group/repo/-/merge_requests/42',
+          upstreamReviewNumber: 42,
+          upstreamReviewProvider: 'gitlab',
           upstreamPrNumber: 42,
           upstreamHeadSha: 'abc123',
           resolvedRef: 'refs/heads/agent/task_upstream/run_upstream',
@@ -46,6 +49,7 @@ describe('task validation', () => {
     expect(parsed.dependencyState?.reasons[0]?.state).toBe('ready');
     expect(parsed.automationState?.autoStartEligible).toBe(true);
     expect(parsed.branchSource?.kind).toBe('dependency_review_head');
+    expect(parsed.branchSource?.upstreamReviewProvider).toBe('gitlab');
   });
 
   it('rejects create payload with multiple primary dependencies', () => {
@@ -90,12 +94,12 @@ describe('task validation', () => {
       parseUpdateTaskInput({
         branchSource: {
           kind: 'dependency_review_head',
-          upstreamPrNumber: 0,
+          upstreamReviewNumber: 0,
           resolvedRef: 'refs/heads/demo',
           resolvedAt: '2026-03-02T00:00:00.000Z'
         }
       })
-    ).toThrow('Invalid branchSource.upstreamPrNumber.');
+    ).toThrow('Invalid branchSource.upstreamReviewNumber.');
   });
 });
 

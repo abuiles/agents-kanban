@@ -17,6 +17,7 @@ export type SimulationProfile = 'happy_path' | 'fail_tests' | 'fail_preview';
 export type CodexModel = 'gpt-5.3-codex' | 'gpt-5.3-codex-spark' | 'gpt-5.1-codex-mini';
 export type CodexReasoningEffort = 'low' | 'medium' | 'high';
 export type ScmProvider = 'github' | 'gitlab';
+export type ReviewProvider = ScmProvider;
 
 export type RunEventType =
   | 'run.status_changed'
@@ -100,6 +101,9 @@ export type TaskBranchSource = {
   kind: 'explicit_source_ref' | 'dependency_review_head' | 'default_branch';
   upstreamTaskId?: string;
   upstreamRunId?: string;
+  upstreamReviewUrl?: string;
+  upstreamReviewNumber?: number;
+  upstreamReviewProvider?: ReviewProvider;
   upstreamPrNumber?: number;
   upstreamHeadSha?: string;
   resolvedRef: string;
@@ -248,6 +252,9 @@ export type AgentRun = {
     requestedAt: string;
   };
   headSha?: string;
+  reviewUrl?: string;
+  reviewNumber?: number;
+  reviewProvider?: ReviewProvider;
   prUrl?: string;
   prNumber?: number;
   previewUrl?: string;
@@ -267,6 +274,9 @@ export type AgentRun = {
   dependencyContext?: {
     sourceTaskId?: string;
     sourceRunId?: string;
+    sourceReviewUrl?: string;
+    sourceReviewNumber?: number;
+    sourceReviewProvider?: ReviewProvider;
     sourcePrNumber?: number;
     sourceHeadSha?: string;
     sourceMode: 'explicit_source_ref' | 'dependency_review_head' | 'default_branch';

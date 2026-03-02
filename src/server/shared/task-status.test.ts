@@ -30,4 +30,8 @@ describe('deriveTaskStatusFromRun', () => {
   it('maps failed runs with a PR back to review', () => {
     expect(deriveTaskStatusFromRun(buildRun('FAILED', { prUrl: 'https://github.com/abuiles/minions-demo/pull/5' }), 'REVIEW')).toBe('REVIEW');
   });
+
+  it('maps failed runs with provider-neutral review metadata back to review', () => {
+    expect(deriveTaskStatusFromRun(buildRun('FAILED', { reviewUrl: 'https://gitlab.example.com/acme/demo/-/merge_requests/5' }), 'REVIEW')).toBe('REVIEW');
+  });
 });

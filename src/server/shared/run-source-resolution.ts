@@ -1,4 +1,5 @@
 import type { AgentRun, Task, TaskBranchSource } from '../../ui/domain/types';
+import { getRunReviewNumber, getRunReviewProvider, getRunReviewUrl, normalizeDependencyReviewMetadata, normalizeTaskBranchSourceReviewMetadata } from '../../shared/scm';
 import { isDependencyMergedToDefaultBranch, isDependencyReviewReady } from './dependency-readiness';
 
 type ResolveRunSourceInput = {
@@ -72,27 +73,34 @@ function resolveDependencyReviewSource(task: Task, tasks: Task[], runs: AgentRun
     return undefined;
   }
 
-  if (!isDependencyReviewReady(upstreamTask, upstreamRun) || !upstreamRun.headSha || !upstreamRun.prNumber) {
+  const reviewNumber = getRunReviewNumber(upstreamRun);
+  if (!isDependencyReviewReady(upstreamTask, upstreamRun) || !upstreamRun.headSha || !reviewNumber) {
     return undefined;
   }
 
   return {
-    branchSource: {
+    branchSource: normalizeTaskBranchSourceReviewMetadata({
       kind: 'dependency_review_head',
       upstreamTaskId: upstreamTask.taskId,
       upstreamRunId: upstreamRun.runId,
-      upstreamPrNumber: upstreamRun.prNumber,
+      upstreamReviewUrl: getRunReviewUrl(upstreamRun),
+      upstreamReviewNumber: reviewNumber,
+      upstreamReviewProvider: getRunReviewProvider(upstreamRun),
+      upstreamPrNumber: reviewNumber,
       upstreamHeadSha: upstreamRun.headSha,
       resolvedRef: upstreamRun.headSha,
       resolvedAt
-    },
-    dependencyContext: {
+    }),
+    dependencyContext: normalizeDependencyReviewMetadata({
       sourceTaskId: upstreamTask.taskId,
       sourceRunId: upstreamRun.runId,
-      sourcePrNumber: upstreamRun.prNumber,
+      sourceReviewUrl: getRunReviewUrl(upstreamRun),
+      sourceReviewNumber: reviewNumber,
+      sourceReviewProvider: getRunReviewProvider(upstreamRun),
+      sourcePrNumber: reviewNumber,
       sourceHeadSha: upstreamRun.headSha,
       sourceMode: 'dependency_review_head'
-    }
+    })
   };
 }
 

@@ -1,4 +1,5 @@
 import type { ArtifactManifest, AgentRun, Repo, RunError, RunLogEntry, RunStatus, Task } from '../../ui/domain/types';
+import { normalizeRunReviewMetadata } from '../../shared/scm';
 
 export type RunJobMode = 'full_run' | 'evidence_only' | 'preview_only';
 
@@ -13,6 +14,9 @@ export type RunTransitionPatch = {
   status?: RunStatus;
   branchName?: string;
   headSha?: string;
+  reviewUrl?: string;
+  reviewNumber?: number;
+  reviewProvider?: AgentRun['reviewProvider'];
   prUrl?: string;
   prNumber?: number;
   previewUrl?: string;
@@ -38,6 +42,9 @@ export type RunTransitionPatch = {
 
 type CreateRealRunOptions = {
   branchName?: string;
+  reviewUrl?: string;
+  reviewNumber?: number;
+  reviewProvider?: AgentRun['reviewProvider'];
   prUrl?: string;
   prNumber?: number;
   baseRunId?: string;
@@ -47,7 +54,7 @@ type CreateRealRunOptions = {
 
 export function createRealRun(task: Task, runId: string, now = new Date(), options?: CreateRealRunOptions): AgentRun {
   const nowIso = now.toISOString();
-  return {
+  return normalizeRunReviewMetadata({
     runId,
     taskId: task.taskId,
     repoId: task.repoId,
@@ -55,6 +62,9 @@ export function createRealRun(task: Task, runId: string, now = new Date(), optio
     branchName: options?.branchName ?? `agent/${task.taskId}/${runId}`,
     baseRunId: options?.baseRunId,
     changeRequest: options?.changeRequest,
+    reviewUrl: options?.reviewUrl,
+    reviewNumber: options?.reviewNumber,
+    reviewProvider: options?.reviewProvider,
     prUrl: options?.prUrl,
     prNumber: options?.prNumber,
     dependencyContext: options?.dependencyContext,
@@ -69,7 +79,7 @@ export function createRealRun(task: Task, runId: string, now = new Date(), optio
     executorType: 'sandbox',
     orchestrationMode: 'workflow',
     executionSummary: {}
-  };
+  });
 }
 
 export function applyRunTransition(run: AgentRun, patch: RunTransitionPatch, nowIso: string): AgentRun {
@@ -78,7 +88,7 @@ export function applyRunTransition(run: AgentRun, patch: RunTransitionPatch, now
     ? [...run.timeline, { status: nextStatus, at: nowIso, note: patch.appendTimelineNote }]
     : run.timeline;
 
-  return {
+  return normalizeRunReviewMetadata({
     ...run,
     ...patch,
     status: nextStatus,
@@ -89,7 +99,7 @@ export function applyRunTransition(run: AgentRun, patch: RunTransitionPatch, now
     artifacts: patch.artifacts ?? run.artifacts,
     errors: run.errors,
     pendingEvents: run.pendingEvents
-  };
+  });
 }
 
 export function appendRunError(run: AgentRun, error: RunError, nowIso: string): AgentRun {
