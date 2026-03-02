@@ -34,6 +34,7 @@ const scmState: {
       }
     | undefined;
 } = { current: undefined };
+const usageLedgerWritesState: { entries: Array<Record<string, unknown>> } = { entries: [] };
 
 vi.mock('@cloudflare/sandbox', () => ({
   getSandbox: () => {
@@ -57,6 +58,12 @@ vi.mock('./scm/registry', () => ({
       throw new Error('SCM adapter was not configured for this test.');
     }
     return scmState.current;
+  }
+}));
+
+vi.mock('./usage-ledger', () => ({
+  writeUsageLedgerEntriesBestEffort: async (_env: Env, entries: Array<Record<string, unknown>>) => {
+    usageLedgerWritesState.entries.push(...entries);
   }
 }));
 
@@ -260,6 +267,7 @@ function createHarness(task: Task, repo: Repo) {
 }
 
 beforeEach(() => {
+  usageLedgerWritesState.entries = [];
   scmState.current = {
     provider: 'github',
     buildCloneUrl: (_repo, credential) => `https://x-access-token:${credential.token}@github.com/abuiles/minions.git`,
@@ -363,5 +371,34 @@ describe('executeRunJob LLM adapter coverage', () => {
     expect(sandboxState.current?.startProcessCommand).toContain('CURSOR_BIN');
     expect(harness.commands.some((command) => command.command.includes('CURSOR_BIN'))).toBe(true);
     expect(harness.logs.some((entry) => entry.message.includes('Cursor CLI was responsible for choosing and running validation commands.'))).toBe(true);
+  });
+
+  it('emits partial usage entries when the run fails', async () => {
+    const task = buildTask({
+      uiMeta: {
+        llmAdapter: 'codex',
+        llmModel: 'gpt-5.3-codex',
+        llmReasoningEffort: 'medium'
+      }
+    });
+    const repo = buildRepo();
+    const harness = createHarness(task, repo);
+
+    sandboxState.current = buildSandbox([
+      { type: 'stderr', data: 'Codex failed with a non-zero exit.\n' },
+      { type: 'exit', exitCode: 1 }
+    ]);
+
+    await expect(
+      executeRunJob(harness.env, { repoId: repo.repoId, taskId: task.taskId, runId: 'run_1', mode: 'full_run' }, async () => {})
+    ).rejects.toThrow();
+
+    expect(usageLedgerWritesState.entries.length).toBeGreaterThan(0);
+    for (const entry of usageLedgerWritesState.entries) {
+      expect(entry.tenantId).toBeTruthy();
+      expect(entry.source).toBeTruthy();
+    }
+    expect(usageLedgerWritesState.entries.some((entry) => entry.category === 'workflow_execution')).toBe(true);
+    expect(usageLedgerWritesState.entries.some((entry) => entry.category === 'workflow_duration_ms')).toBe(true);
   });
 });
