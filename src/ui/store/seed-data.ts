@@ -143,11 +143,11 @@ const tasks: Task[] = [
       'Provider credential ownership explicitly deferred in plan docs',
       'Existing Stage 4 flows preserved'
     ],
-    context: { links: [], notes: 'Use gpt-5.3-codex-spark / medium.' },
+    context: { links: [], notes: 'Use gpt-5.3-codex / medium.' },
     status: 'INBOX',
     createdAt: iso(70),
     updatedAt: iso(70),
-    uiMeta: { codexModel: 'gpt-5.3-codex-spark', codexReasoningEffort: 'medium' }
+    uiMeta: { codexModel: 'gpt-5.3-codex', codexReasoningEffort: 'medium' }
   },
   {
     taskId: 'task_s45_10',
@@ -165,7 +165,7 @@ const tasks: Task[] = [
     status: 'INBOX',
     createdAt: iso(65),
     updatedAt: iso(65),
-    uiMeta: { codexModel: 'gpt-5.3-codex-spark', codexReasoningEffort: 'medium' }
+    uiMeta: { codexModel: 'gpt-5.3-codex', codexReasoningEffort: 'medium' }
   },
   {
     taskId: 'task_s45_20',
@@ -183,7 +183,7 @@ const tasks: Task[] = [
     status: 'INBOX',
     createdAt: iso(60),
     updatedAt: iso(60),
-    uiMeta: { codexModel: 'gpt-5.3-codex-spark', codexReasoningEffort: 'medium' }
+    uiMeta: { codexModel: 'gpt-5.3-codex', codexReasoningEffort: 'medium' }
   },
   {
     taskId: 'task_s45_30',
@@ -204,7 +204,7 @@ const tasks: Task[] = [
     status: 'INBOX',
     createdAt: iso(55),
     updatedAt: iso(55),
-    uiMeta: { codexModel: 'gpt-5.3-codex-spark', codexReasoningEffort: 'medium' }
+    uiMeta: { codexModel: 'gpt-5.3-codex', codexReasoningEffort: 'medium' }
   },
   {
     taskId: 'task_s45_40',
@@ -222,7 +222,7 @@ const tasks: Task[] = [
     status: 'INBOX',
     createdAt: iso(50),
     updatedAt: iso(50),
-    uiMeta: { codexModel: 'gpt-5.3-codex-spark', codexReasoningEffort: 'medium' }
+    uiMeta: { codexModel: 'gpt-5.3-codex', codexReasoningEffort: 'medium' }
   },
   {
     taskId: 'task_s45_50',
@@ -243,7 +243,7 @@ const tasks: Task[] = [
     status: 'INBOX',
     createdAt: iso(45),
     updatedAt: iso(45),
-    uiMeta: { codexModel: 'gpt-5.3-codex-spark', codexReasoningEffort: 'medium' }
+    uiMeta: { codexModel: 'gpt-5.3-codex', codexReasoningEffort: 'medium' }
   },
   {
     taskId: 'task_s45_60',
@@ -264,7 +264,7 @@ const tasks: Task[] = [
     status: 'INBOX',
     createdAt: iso(40),
     updatedAt: iso(40),
-    uiMeta: { codexModel: 'gpt-5.3-codex-spark', codexReasoningEffort: 'medium' }
+    uiMeta: { codexModel: 'gpt-5.3-codex', codexReasoningEffort: 'medium' }
   },
   {
     taskId: 'task_s45_70',
@@ -286,7 +286,7 @@ const tasks: Task[] = [
     status: 'INBOX',
     createdAt: iso(35),
     updatedAt: iso(35),
-    uiMeta: { codexModel: 'gpt-5.3-codex-spark', codexReasoningEffort: 'medium' }
+    uiMeta: { codexModel: 'gpt-5.3-codex', codexReasoningEffort: 'medium' }
   },
   {
     taskId: 'task_s45_80',
@@ -307,7 +307,7 @@ const tasks: Task[] = [
     status: 'INBOX',
     createdAt: iso(30),
     updatedAt: iso(30),
-    uiMeta: { codexModel: 'gpt-5.3-codex-spark', codexReasoningEffort: 'medium' }
+    uiMeta: { codexModel: 'gpt-5.3-codex', codexReasoningEffort: 'medium' }
   }
 ];
 
