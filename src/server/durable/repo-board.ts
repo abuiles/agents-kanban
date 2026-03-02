@@ -13,8 +13,8 @@ import type {
   TerminalBootstrap
 } from '../../ui/domain/types';
 import { DurableObject } from 'cloudflare:workers';
-import { notFound } from '../http/errors';
-import { createRunId, createTaskId } from '../shared/ids';
+import { badRequest, notFound } from '../http/errors';
+import { createRunId, createTaskId, extractRepoIdFromTaskId } from '../shared/ids';
 import type { BoardEvent } from '../shared/events';
 import { stringifyBoardEvent } from '../shared/events';
 import { EMPTY_REPO_BOARD_STATE, type RepoBoardState } from '../shared/state';
@@ -92,12 +92,17 @@ export class RepoBoardDO extends DurableObject<Env> {
   async createTask(input: CreateTaskInput): Promise<Task> {
     await this.ready;
     const now = new Date().toISOString();
+    const taskId = createTaskId(input.repoId);
+    validateDependenciesForTask(input.repoId, taskId, input.dependencies);
     const task: Task = {
-      taskId: createTaskId(input.repoId),
+      taskId,
       repoId: input.repoId,
       title: input.title,
       description: input.description,
       sourceRef: input.sourceRef,
+      dependencies: input.dependencies,
+      automationState: input.automationState,
+      branchSource: input.branchSource,
       taskPrompt: input.taskPrompt,
       acceptanceCriteria: input.acceptanceCriteria,
       context: input.context,
@@ -126,6 +131,10 @@ export class RepoBoardDO extends DurableObject<Env> {
     const existing = this.state.tasks.find((candidate) => candidate.taskId === taskId);
     if (!existing) {
       throw notFound(`Task ${taskId} not found.`, { taskId });
+    }
+
+    if (patch.dependencies) {
+      validateDependenciesForTask(existing.repoId, existing.taskId, patch.dependencies);
     }
 
     const updated: Task = {
@@ -668,6 +677,22 @@ export class RepoBoardDO extends DurableObject<Env> {
       events: [...this.state.events],
       commands: [...this.state.commands]
     };
+  }
+}
+
+function validateDependenciesForTask(repoId: string, taskId: string, dependencies: Task['dependencies']) {
+  if (!dependencies) {
+    return;
+  }
+
+  for (const dependency of dependencies) {
+    if (dependency.upstreamTaskId === taskId) {
+      throw badRequest('Invalid dependencies: task cannot depend on itself.');
+    }
+
+    if (extractRepoIdFromTaskId(dependency.upstreamTaskId) !== repoId) {
+      throw badRequest('Invalid dependencies: upstreamTaskId must reference a task in the same repo.');
+    }
   }
 }
 
