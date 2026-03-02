@@ -1,5 +1,9 @@
 # AgentsKanban Stage 6 (Control)
 
+**Status:** ⚠️ Partial
+
+Core cancel endpoint and run stop behavior exist, but guided mode and richer cancellation state tracking remain unimplemented.
+
 ## Goal
 
 Stage 6 gives operators basic control over active runs and repo execution behavior.

@@ -1,5 +1,7 @@
 # AgentsKanban Stage 3 (Run)
 
+**Status:** ✅ Implemented
+
 ## Goal
 
 Stage 3 replaces the Stage 2 mock executor with real execution.

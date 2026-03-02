@@ -1,5 +1,7 @@
 # AgentsKanban Stage 3.1 (Dependency Fanout)
 
+**Status:** ✅ Implemented
+
 ## Goal
 
 Stage 3.1 teaches AgentsKanban how to chain related tasks inside the same repo.

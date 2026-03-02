@@ -1,5 +1,7 @@
 # AgentsKanban Stage 5 (Explain)
 
+**Status:** ⏳ Pending
+
 ## Goal
 
 Stage 5 makes it obvious what ran and why.

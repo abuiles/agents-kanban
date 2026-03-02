@@ -1,5 +1,7 @@
 # AgentsKanban Stage 2 (Walk)
 
+**Status:** ✅ Implemented
+
 ## Goal
 
 Stage 2 turns AgentsKanban into a real server-backed application:

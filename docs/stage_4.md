@@ -1,5 +1,7 @@
 # AgentsKanban Stage 4 (Observe & Attach)
 
+**Status:** ✅ Implemented (run visibility/commands/session attach core covered)
+
 ## Goal
 
 Stage 4 turns AgentsKanban into a live operator surface for active runs.

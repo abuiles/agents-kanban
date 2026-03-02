@@ -1,5 +1,7 @@
 # AgentsKanban Stage 7 (Scale)
 
+**Status:** ⏳ Pending
+
 ## Goal
 
 Stage 7 makes AgentsKanban behave coherently across many repos and concurrent runs.
