@@ -21,13 +21,13 @@ describe('preview registry compatibility', () => {
     expect(getPreviewAdapter(buildRepo()).kind).toBe('cloudflare_checks');
   });
 
-  it('keeps cloudflare checks behavior while prompt recipe is not extracted yet', () => {
+  it('resolves prompt recipe repos to the prompt recipe adapter contract', () => {
     const repo = buildRepo({
       previewAdapter: 'prompt_recipe',
       previewConfig: { promptRecipe: 'derive preview URL from CI logs' }
     });
 
-    expect(resolvePreviewAdapterKind(repo)).toBe('cloudflare_checks');
-    expect(getPreviewAdapter(repo).kind).toBe('cloudflare_checks');
+    expect(resolvePreviewAdapterKind(repo)).toBe('prompt_recipe');
+    expect(getPreviewAdapter(repo).kind).toBe('prompt_recipe');
   });
 });

@@ -1,14 +1,14 @@
 import type { Repo, Task, AgentRun, PreviewAdapterKind } from '../../ui/domain/types';
-
-export type PreviewCheck = {
-  name?: string;
-  detailsUrl?: string;
-  htmlUrl?: string;
-  summary?: string;
-  appSlug?: string;
-};
+import type { ScmCommitCheck } from '../scm/adapter';
 
 export type PreviewDiscoverySource = 'summary' | 'details_url' | 'html_url';
+
+export type PreviewDiagnostic = {
+  code: string;
+  level: 'info' | 'error';
+  message: string;
+  metadata?: Record<string, string | number | boolean>;
+};
 
 export type PreviewDiscoveryResult = {
   previewUrl?: string;
@@ -18,6 +18,9 @@ export type PreviewDiscoveryResult = {
   checks: Array<{
     name?: string;
     appSlug?: string;
+    rawSource?: ScmCommitCheck['rawSource'];
+    status?: ScmCommitCheck['status'];
+    conclusion?: ScmCommitCheck['conclusion'];
     score: number;
     matchedAdapter?: string;
     extracted: boolean;
@@ -25,17 +28,18 @@ export type PreviewDiscoveryResult = {
 };
 
 export type PreviewResolution = {
+  status: 'ready' | 'pending' | 'failed' | 'timed_out';
   previewUrl?: string;
   adapter: PreviewAdapterKind;
   explanation: string;
-  diagnostics: Array<Record<string, string | number | boolean>>;
+  diagnostics: PreviewDiagnostic[];
 };
 
 export type PreviewAdapterContext = {
   repo: Repo;
   task?: Task;
   run?: AgentRun;
-  checks: PreviewCheck[];
+  checks: ScmCommitCheck[];
 };
 
 export type PreviewAdapterResult = {

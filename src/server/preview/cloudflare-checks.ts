@@ -1,5 +1,6 @@
 import { normalizeRepoPreviewConfig, resolvePreviewCheckName } from '../../shared/preview';
-import type { PreviewAdapter, PreviewCheck, PreviewDiscoveryResult } from './adapter';
+import type { ScmCommitCheck } from '../scm/adapter';
+import type { PreviewAdapter, PreviewDiscoveryResult } from './adapter';
 
 const URL_LABEL_PATTERNS = [
   /Preview Alias URL:\s*(https:\/\/[^\s]+)/i,
@@ -10,8 +11,8 @@ const URL_LABEL_PATTERNS = [
 
 type PreviewDiscoveryAdapter = {
   name: string;
-  supports: (repo: Parameters<typeof normalizeRepoPreviewConfig>[0], check: PreviewCheck) => boolean;
-  extractPreviewUrl: (repo: Parameters<typeof normalizeRepoPreviewConfig>[0], check: PreviewCheck) => { url?: string; source?: PreviewDiscoveryResult['source'] };
+  supports: (repo: Parameters<typeof normalizeRepoPreviewConfig>[0], check: ScmCommitCheck) => boolean;
+  extractPreviewUrl: (repo: Parameters<typeof normalizeRepoPreviewConfig>[0], check: ScmCommitCheck) => { url?: string; source?: PreviewDiscoveryResult['source'] };
 };
 
 const adapters: PreviewDiscoveryAdapter[] = [
@@ -68,10 +69,18 @@ export const cloudflareChecksPreviewAdapter: PreviewAdapter = {
     return {
       compatibility,
       resolution: {
+        status: compatibility.previewUrl ? 'ready' : 'pending',
         previewUrl: compatibility.previewUrl,
         adapter: 'cloudflare_checks',
         explanation,
-        diagnostics
+        diagnostics: diagnostics.map((diagnostic) => ({
+          code: diagnostic.extracted ? 'CLOUDFLARE_CHECK_MATCHED' : 'CLOUDFLARE_CHECK_SCANNED',
+          level: diagnostic.extracted ? 'info' : 'error',
+          message: diagnostic.extracted
+            ? `Discovered preview URL from ${diagnostic.name}.`
+            : `Scanned ${diagnostic.name} but found no preview URL.`,
+          metadata: diagnostic
+        }))
       }
     };
   }
@@ -79,7 +88,7 @@ export const cloudflareChecksPreviewAdapter: PreviewAdapter = {
 
 export function inspectCloudflarePreviewDiscovery(
   repo: Parameters<typeof normalizeRepoPreviewConfig>[0],
-  checks: PreviewCheck[]
+  checks: ScmCommitCheck[]
 ): PreviewDiscoveryResult {
   const normalizedRepo = normalizeRepoPreviewConfig(repo);
   const orderedChecks = [...checks].sort((left, right) => scoreCheckRun(normalizedRepo, right) - scoreCheckRun(normalizedRepo, left));
@@ -92,6 +101,9 @@ export function inspectCloudflarePreviewDiscovery(
       compatibilityChecks.push({
         name: check.name,
         appSlug: check.appSlug,
+        rawSource: check.rawSource,
+        status: check.status,
+        conclusion: check.conclusion,
         score,
         extracted: false
       });
@@ -102,6 +114,9 @@ export function inspectCloudflarePreviewDiscovery(
     compatibilityChecks.push({
       name: check.name,
       appSlug: check.appSlug,
+      rawSource: check.rawSource,
+      status: check.status,
+      conclusion: check.conclusion,
       score,
       matchedAdapter: adapter.name,
       extracted: Boolean(extraction.url)
@@ -122,12 +137,12 @@ export function inspectCloudflarePreviewDiscovery(
 
 export function discoverCloudflarePreviewUrl(
   repo: Parameters<typeof normalizeRepoPreviewConfig>[0],
-  checks: PreviewCheck[]
+  checks: ScmCommitCheck[]
 ) {
   return inspectCloudflarePreviewDiscovery(repo, checks).previewUrl;
 }
 
-function scoreCheckRun(repo: Parameters<typeof normalizeRepoPreviewConfig>[0], check: PreviewCheck) {
+function scoreCheckRun(repo: Parameters<typeof normalizeRepoPreviewConfig>[0], check: ScmCommitCheck) {
   let score = 0;
   const previewCheckName = resolvePreviewCheckName(repo);
 
@@ -150,7 +165,7 @@ function scoreCheckRun(repo: Parameters<typeof normalizeRepoPreviewConfig>[0], c
   return score;
 }
 
-function firstDirectPreviewUrl(check: PreviewCheck) {
+function firstDirectPreviewUrl(check: ScmCommitCheck) {
   if (isPreviewUrl(check.detailsUrl)) {
     return { url: check.detailsUrl, source: 'details_url' as const };
   }
