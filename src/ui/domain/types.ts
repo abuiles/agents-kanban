@@ -13,6 +13,8 @@ export type RunStatus =
   | 'FAILED';
 
 export type SimulationProfile = 'happy_path' | 'fail_tests' | 'fail_preview';
+export type CodexModel = 'gpt-5.3-codex' | 'gpt-5.1-codex-mini';
+export type CodexReasoningEffort = 'low' | 'medium' | 'high';
 
 export type Repo = {
   repoId: string;
@@ -42,6 +44,8 @@ export type TaskContext = {
 
 export type TaskUiMeta = {
   simulationProfile?: SimulationProfile;
+  codexModel?: CodexModel;
+  codexReasoningEffort?: CodexReasoningEffort;
 };
 
 export type Task = {
@@ -67,7 +71,7 @@ export type ArtifactPointer = {
 };
 
 export type ArtifactManifest = {
-  logs: { key: string; label: string };
+  logs: { key: string; label: string; url?: string };
   before?: ArtifactPointer;
   after?: ArtifactPointer;
   trace?: ArtifactPointer;

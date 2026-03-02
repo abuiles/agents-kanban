@@ -91,7 +91,11 @@ export class RepoBoardDO extends DurableObject<Env> {
       status: input.status ?? 'INBOX',
       createdAt: now,
       updatedAt: now,
-      uiMeta: { simulationProfile: input.simulationProfile ?? 'happy_path' }
+      uiMeta: {
+        simulationProfile: input.simulationProfile ?? 'happy_path',
+        codexModel: input.codexModel ?? 'gpt-5.1-codex-mini',
+        codexReasoningEffort: input.codexReasoningEffort ?? 'medium'
+      }
     };
 
     this.state = {
@@ -116,7 +120,9 @@ export class RepoBoardDO extends DurableObject<Env> {
       context: patch.context ?? existing.context,
       acceptanceCriteria: patch.acceptanceCriteria ?? existing.acceptanceCriteria,
       uiMeta: {
-        simulationProfile: patch.simulationProfile ?? existing.uiMeta?.simulationProfile ?? 'happy_path'
+        simulationProfile: patch.simulationProfile ?? existing.uiMeta?.simulationProfile ?? 'happy_path',
+        codexModel: patch.codexModel ?? existing.uiMeta?.codexModel ?? 'gpt-5.1-codex-mini',
+        codexReasoningEffort: patch.codexReasoningEffort ?? existing.uiMeta?.codexReasoningEffort ?? 'medium'
       },
       updatedAt: new Date().toISOString()
     };

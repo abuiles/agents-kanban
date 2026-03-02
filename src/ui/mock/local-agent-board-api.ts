@@ -84,7 +84,11 @@ export class LocalAgentBoardApi implements AgentBoardApi {
       status: input.status ?? 'INBOX',
       createdAt: timestamp,
       updatedAt: timestamp,
-      uiMeta: { simulationProfile: input.simulationProfile ?? 'happy_path' }
+      uiMeta: {
+        simulationProfile: input.simulationProfile ?? 'happy_path',
+        codexModel: input.codexModel ?? 'gpt-5.1-codex-mini',
+        codexReasoningEffort: input.codexReasoningEffort ?? 'medium'
+      }
     };
 
     this.store.update((snapshot) => ({
@@ -124,7 +128,9 @@ export class LocalAgentBoardApi implements AgentBoardApi {
           context: patch.context ?? task.context,
           acceptanceCriteria: patch.acceptanceCriteria ?? task.acceptanceCriteria,
           uiMeta: {
-            simulationProfile: patch.simulationProfile ?? task.uiMeta?.simulationProfile ?? 'happy_path'
+            simulationProfile: patch.simulationProfile ?? task.uiMeta?.simulationProfile ?? 'happy_path',
+            codexModel: patch.codexModel ?? task.uiMeta?.codexModel ?? 'gpt-5.1-codex-mini',
+            codexReasoningEffort: patch.codexReasoningEffort ?? task.uiMeta?.codexReasoningEffort ?? 'medium'
           },
           updatedAt: nowIso()
         };

@@ -1,4 +1,4 @@
-import type { AgentRun, BoardSnapshotV1, Repo, RunLogEntry, SimulationProfile, Task, TaskDetail, TaskStatus } from './types';
+import type { AgentRun, BoardSnapshotV1, CodexModel, CodexReasoningEffort, Repo, RunLogEntry, SimulationProfile, Task, TaskDetail, TaskStatus } from './types';
 
 export type CreateRepoInput = {
   slug: string;
@@ -21,6 +21,8 @@ export type CreateTaskInput = {
   baselineUrlOverride?: string;
   status?: TaskStatus;
   simulationProfile?: SimulationProfile;
+  codexModel?: CodexModel;
+  codexReasoningEffort?: CodexReasoningEffort;
 };
 
 export type UpdateTaskInput = Partial<Omit<CreateTaskInput, 'repoId'>> & {

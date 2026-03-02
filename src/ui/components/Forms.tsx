@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { CreateRepoInput, CreateTaskInput } from '../domain/api';
-import type { Repo, TaskContextLink, TaskStatus } from '../domain/types';
+import type { CodexModel, CodexReasoningEffort, Repo, TaskContextLink, TaskStatus } from '../domain/types';
 
 function FieldShell({ label, children, hint }: { label: string; children: React.ReactNode; hint?: string }) {
   return (
@@ -144,6 +144,8 @@ export function TaskForm({
   const [links, setLinks] = useState('');
   const [status, setStatus] = useState<TaskStatus>(initialStatus);
   const [baselineUrlOverride, setBaselineUrlOverride] = useState('');
+  const [codexModel, setCodexModel] = useState<CodexModel>('gpt-5.1-codex-mini');
+  const [codexReasoningEffort, setCodexReasoningEffort] = useState<CodexReasoningEffort>('medium');
 
   useEffect(() => {
     if (!repos.length) {
@@ -174,7 +176,9 @@ export function TaskForm({
           context: { links: parseLinks(links), notes },
           status,
           baselineUrlOverride: baselineUrlOverride || undefined,
-          simulationProfile: 'happy_path'
+          simulationProfile: 'happy_path',
+          codexModel,
+          codexReasoningEffort
         });
         setTitle('');
         setDescription('');
@@ -184,6 +188,8 @@ export function TaskForm({
         setLinks('');
         setStatus(initialStatus);
         setBaselineUrlOverride('');
+        setCodexModel('gpt-5.1-codex-mini');
+        setCodexReasoningEffort('medium');
       }}
     >
       <div className="grid gap-4 md:grid-cols-2">
@@ -236,6 +242,25 @@ export function TaskForm({
         </FieldShell>
         <FieldShell label="Baseline override">
           <input className={inputClass()} value={baselineUrlOverride} onChange={(event) => setBaselineUrlOverride(event.target.value)} placeholder="https://staging.example.com" />
+        </FieldShell>
+      </div>
+      <div className="grid gap-4 md:grid-cols-2">
+        <FieldShell label="Codex model" hint="Per-task execution model.">
+          <select className={inputClass()} value={codexModel} onChange={(event) => setCodexModel(event.target.value as CodexModel)}>
+            <option value="gpt-5.1-codex-mini">gpt-5.1-codex-mini (default)</option>
+            <option value="gpt-5.3-codex">gpt-5.3-codex</option>
+          </select>
+        </FieldShell>
+        <FieldShell label="Reasoning effort" hint="Passed to Codex as model reasoning effort.">
+          <select
+            className={inputClass()}
+            value={codexReasoningEffort}
+            onChange={(event) => setCodexReasoningEffort(event.target.value as CodexReasoningEffort)}
+          >
+            <option value="low">low</option>
+            <option value="medium">medium (default)</option>
+            <option value="high">high</option>
+          </select>
         </FieldShell>
       </div>
       <PrimaryButton disabled={!repos.length}>Create task</PrimaryButton>

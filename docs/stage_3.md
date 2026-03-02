@@ -279,6 +279,7 @@ Keep these endpoints and their semantics:
 - `POST /api/tasks/:taskId/run`
 - `GET /api/runs/:runId`
 - `POST /api/runs/:runId/retry`
+- `POST /api/runs/:runId/preview`
 - `POST /api/runs/:runId/evidence`
 - `GET /api/runs/:runId/logs?tail=N`
 
@@ -295,6 +296,317 @@ Optional but planned:
   - webhook acceleration for preview detection later
 
 Keep debug/admin routes separate under `/api/debug/*` if they still exist, but they are not part of the product execution path.
+
+## Request and response payloads
+
+The API is intended to be agent-friendly.
+
+Rules:
+
+- all write endpoints accept `application/json`
+- write endpoints return the created or updated resource
+- action endpoints like `run`, `retry`, `preview`, and `evidence` return the current `AgentRun`
+- errors return a consistent JSON object
+
+### Error shape
+
+```json
+{
+  "code": "BAD_REQUEST",
+  "message": "Invalid task payload.",
+  "retryable": false,
+  "taskId": "task_optional",
+  "runId": "run_optional"
+}
+```
+
+### `GET /api/board?repoId=all|<repoId>`
+
+Response shape:
+
+```json
+{
+  "repos": [],
+  "tasks": [],
+  "runs": [],
+  "logs": []
+}
+```
+
+This is the best single endpoint for an agent to hydrate the current board state.
+
+### `POST /api/repos`
+
+Request:
+
+```json
+{
+  "slug": "abuiles/minions-demo",
+  "defaultBranch": "main",
+  "baselineUrl": "https://minions-demo.abuiles.workers.dev/",
+  "enabled": true,
+  "previewCheckName": "Workers Builds: minions-demo",
+  "codexAuthBundleR2Key": "auth/codex-auth.tgz"
+}
+```
+
+Response:
+
+```json
+{
+  "repoId": "repo_abuiles_minions_demo",
+  "slug": "abuiles/minions-demo",
+  "defaultBranch": "main",
+  "baselineUrl": "https://minions-demo.abuiles.workers.dev/",
+  "enabled": true,
+  "previewCheckName": "Workers Builds: minions-demo",
+  "codexAuthBundleR2Key": "auth/codex-auth.tgz",
+  "createdAt": "2026-03-02T00:00:00.000Z",
+  "updatedAt": "2026-03-02T00:00:00.000Z"
+}
+```
+
+### `PATCH /api/repos/:repoId`
+
+Request body is partial.
+
+Example:
+
+```json
+{
+  "baselineUrl": "https://minions-demo.abuiles.workers.dev/",
+  "previewCheckName": "Workers Builds: minions-demo"
+}
+```
+
+Response is the updated `Repo`.
+
+### `POST /api/tasks`
+
+Request:
+
+```json
+{
+  "repoId": "repo_abuiles_minions_demo",
+  "title": "Build simple snake game on index",
+  "description": "Create a dummy and simple snake game on the index page.",
+  "taskPrompt": "Create a dummy and simple snake game on the index page. Keep it lightweight and easy to review.",
+  "acceptanceCriteria": [
+    "A playable snake game is visible on the index page.",
+    "The implementation is intentionally simple.",
+    "No unnecessary dependencies are introduced."
+  ],
+  "context": {
+    "links": [
+      {
+        "id": "link_homepage",
+        "label": "Preview",
+        "url": "https://minions-demo.abuiles.workers.dev/"
+      }
+    ],
+    "notes": "Keep this one intentionally small."
+  },
+  "baselineUrlOverride": "https://minions-demo.abuiles.workers.dev/",
+  "status": "INBOX",
+  "simulationProfile": "happy_path",
+  "codexModel": "gpt-5.1-codex-mini",
+  "codexReasoningEffort": "medium"
+}
+```
+
+Response:
+
+```json
+{
+  "taskId": "task_repo_abuiles_minions_demo_x1u43w0q",
+  "repoId": "repo_abuiles_minions_demo",
+  "title": "Build simple snake game on index",
+  "description": "Create a dummy and simple snake game on the index page.",
+  "taskPrompt": "Create a dummy and simple snake game on the index page. Keep it lightweight and easy to review.",
+  "acceptanceCriteria": [
+    "A playable snake game is visible on the index page.",
+    "The implementation is intentionally simple.",
+    "No unnecessary dependencies are introduced."
+  ],
+  "context": {
+    "links": [
+      {
+        "id": "link_homepage",
+        "label": "Preview",
+        "url": "https://minions-demo.abuiles.workers.dev/"
+      }
+    ],
+    "notes": "Keep this one intentionally small."
+  },
+  "baselineUrlOverride": "https://minions-demo.abuiles.workers.dev/",
+  "status": "INBOX",
+  "createdAt": "2026-03-02T00:00:00.000Z",
+  "updatedAt": "2026-03-02T00:00:00.000Z",
+  "uiMeta": {
+    "simulationProfile": "happy_path",
+    "codexModel": "gpt-5.1-codex-mini",
+    "codexReasoningEffort": "medium"
+  }
+}
+```
+
+### `PATCH /api/tasks/:taskId`
+
+Request body is partial.
+
+Example:
+
+```json
+{
+  "status": "ACTIVE"
+}
+```
+
+Response is the updated `Task`.
+
+### `GET /api/tasks/:taskId`
+
+Response:
+
+```json
+{
+  "task": {},
+  "repo": {},
+  "runs": [],
+  "latestRun": {}
+}
+```
+
+This is the best endpoint for an agent that wants the full execution context for one task.
+
+### `POST /api/tasks/:taskId/run`
+
+Request body:
+
+```json
+{}
+```
+
+Response is the new or existing `AgentRun`.
+
+### `POST /api/runs/:runId/retry`
+
+Request body:
+
+```json
+{}
+```
+
+Behavior:
+
+- creates or resumes a full run for the task
+- returns the active `AgentRun`
+
+### `POST /api/runs/:runId/preview`
+
+Request body:
+
+```json
+{}
+```
+
+Behavior:
+
+- forces preview discovery again for the existing PR/run
+- clears the current `previewUrl`
+- returns the updated `AgentRun`
+
+### `POST /api/runs/:runId/evidence`
+
+Request body:
+
+```json
+{}
+```
+
+Behavior:
+
+- reruns evidence if a preview already exists
+- otherwise falls back to preview discovery first
+- returns the updated `AgentRun`
+
+### `GET /api/runs/:runId`
+
+Response is the current `AgentRun`.
+
+Important fields agents should watch:
+
+- `status`
+- `previewStatus`
+- `evidenceStatus`
+- `prUrl`
+- `previewUrl`
+- `headSha`
+- `workflowInstanceId`
+- `artifactManifest`
+- `errors`
+
+### `GET /api/runs/:runId/logs?tail=N`
+
+Response:
+
+```json
+[
+  {
+    "id": "run_repo_abuiles_minions_demo_x_created_abc123",
+    "runId": "run_repo_abuiles_minions_demo_x",
+    "createdAt": "2026-03-02T00:00:00.000Z",
+    "level": "info",
+    "message": "Preview discovery attempt 1/12.",
+    "phase": "preview",
+    "metadata": {
+      "headSha": "04c8e944e2f097c2c0b7aa977f9c0797c15a864e"
+    }
+  }
+]
+```
+
+### `GET /api/runs/:runId/artifacts`
+
+Response:
+
+```json
+{
+  "logs": {
+    "key": "runs/run_repo_abuiles_minions_demo_x/logs/executor.txt",
+    "label": "Executor logs"
+  },
+  "before": {
+    "key": "runs/run_repo_abuiles_minions_demo_x/evidence/before.png",
+    "label": "Before screenshot",
+    "url": "https://minions-demo.abuiles.workers.dev/"
+  },
+  "after": {
+    "key": "runs/run_repo_abuiles_minions_demo_x/evidence/after.png",
+    "label": "After screenshot",
+    "url": "https://preview.example.workers.dev/"
+  },
+  "trace": {
+    "key": "runs/run_repo_abuiles_minions_demo_x/evidence/trace.zip",
+    "label": "Playwright trace",
+    "url": "r2://runs/run_repo_abuiles_minions_demo_x/evidence/trace.zip"
+  },
+  "video": {
+    "key": "runs/run_repo_abuiles_minions_demo_x/evidence/video.mp4",
+    "label": "Playwright video",
+    "url": "r2://runs/run_repo_abuiles_minions_demo_x/evidence/video.mp4"
+  },
+  "metadata": {
+    "generatedAt": "2026-03-02T00:00:00.000Z",
+    "environmentId": "repo-board-do-id",
+    "workflowInstanceId": "preview-only-run_repo_abuiles_minions_demo_x-20260302010101",
+    "sandboxId": "run_repo_abuiles_minions_demo_x",
+    "evidenceSandboxId": "run_repo_abuiles_minions_demo_x-evidence",
+    "previewUrl": "https://preview.example.workers.dev/",
+    "baselineUrl": "https://minions-demo.abuiles.workers.dev/"
+  }
+}
+```
 
 ## Public type/interface changes
 

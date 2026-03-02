@@ -1,5 +1,6 @@
 import type { AgentRun, Repo, RunLogEntry, TaskDetail } from '../domain/types';
 import { getBaselineUrl } from '../domain/selectors';
+import { useState } from 'react';
 
 function formatTimestamp(value?: string) {
   if (!value) {
@@ -75,7 +76,13 @@ function ArtifactLinks({ run }: { run?: AgentRun }) {
         <div key={link.label} className="flex items-start justify-between gap-4 rounded-lg border border-slate-800 bg-slate-900/70 px-3 py-2 text-sm">
           <span className="text-slate-400">{link.label}</span>
           {link.href ? (
-            <a href={link.href} title={link.value} className="break-all text-right text-cyan-300 hover:text-cyan-200">
+            <a
+              href={link.href}
+              title={link.value}
+              target="_blank"
+              rel="noreferrer"
+              className="break-all text-right text-cyan-300 hover:text-cyan-200"
+            >
               {compactUrl(link.value)}
             </a>
           ) : (
@@ -100,6 +107,8 @@ export function DetailPanel({
   onRetryPreview: (runId: string) => void;
   onRetryEvidence: (runId: string) => void;
 }) {
+  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle');
+
   if (!detail) {
     return (
       <aside className="rounded-2xl border border-slate-800/80 bg-slate-950/70 p-6 shadow-[0_16px_44px_rgba(2,6,23,0.38)]">
@@ -116,6 +125,30 @@ export function DetailPanel({
 
   const { task, repo, latestRun } = detail;
   const baselineUrl = getBaselineUrl(task, repo as Repo);
+  const canCopyLogs = logs.length > 0;
+  const codexModel = task.uiMeta?.codexModel ?? 'gpt-5.1-codex-mini';
+  const codexReasoningEffort = task.uiMeta?.codexReasoningEffort ?? 'medium';
+
+  async function copyLogs() {
+    if (!canCopyLogs) {
+      return;
+    }
+
+    const payload = logs
+      .map((log) => [`[${formatTimestamp(log.createdAt)}]`, log.level.toUpperCase(), log.phase ? `(${log.phase})` : undefined, log.message]
+        .filter(Boolean)
+        .join(' '))
+      .join('\n\n');
+
+    try {
+      await navigator.clipboard.writeText(payload);
+      setCopyState('copied');
+      window.setTimeout(() => setCopyState('idle'), 2_000);
+    } catch {
+      setCopyState('failed');
+      window.setTimeout(() => setCopyState('idle'), 2_000);
+    }
+  }
 
   return (
     <aside className="space-y-4 rounded-2xl border border-slate-800/80 bg-slate-950/70 p-4 shadow-[0_16px_44px_rgba(2,6,23,0.38)] xl:sticky xl:top-4 xl:max-h-[calc(100vh-2rem)] xl:overflow-auto">
@@ -183,14 +216,26 @@ export function DetailPanel({
               </div>
               <div className="rounded-lg border border-slate-800 bg-slate-900/70 px-3 py-2">
                 <div className="text-[11px] uppercase tracking-[0.16em] text-slate-500">Baseline</div>
-                <a href={baselineUrl} title={baselineUrl} className="mt-1 block break-all text-xs text-cyan-300 hover:text-cyan-200">
+                <a
+                  href={baselineUrl}
+                  title={baselineUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="mt-1 block break-all text-xs text-cyan-300 hover:text-cyan-200"
+                >
                   {compactUrl(baselineUrl)}
                 </a>
               </div>
               <div className="rounded-lg border border-slate-800 bg-slate-900/70 px-3 py-2">
                 <div className="text-[11px] uppercase tracking-[0.16em] text-slate-500">PR</div>
                 {latestRun.prUrl ? (
-                  <a href={latestRun.prUrl} title={latestRun.prUrl} className="mt-1 block break-all text-xs text-cyan-300 hover:text-cyan-200">
+                  <a
+                    href={latestRun.prUrl}
+                    title={latestRun.prUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="mt-1 block break-all text-xs text-cyan-300 hover:text-cyan-200"
+                  >
                     {compactUrl(latestRun.prUrl)}
                   </a>
                 ) : (
@@ -200,7 +245,13 @@ export function DetailPanel({
               <div className="rounded-lg border border-slate-800 bg-slate-900/70 px-3 py-2">
                 <div className="text-[11px] uppercase tracking-[0.16em] text-slate-500">Preview</div>
                 {latestRun.previewUrl ? (
-                  <a href={latestRun.previewUrl} title={latestRun.previewUrl} className="mt-1 block break-all text-xs text-cyan-300 hover:text-cyan-200">
+                  <a
+                    href={latestRun.previewUrl}
+                    title={latestRun.previewUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="mt-1 block break-all text-xs text-cyan-300 hover:text-cyan-200"
+                  >
                     {compactUrl(latestRun.previewUrl)}
                   </a>
                 ) : (
@@ -244,6 +295,19 @@ export function DetailPanel({
           Task brief
         </summary>
         <div className="mt-4 grid gap-4 xl:grid-cols-1">
+          <PanelSection title="Execution">
+            <div className="grid gap-2 sm:grid-cols-2">
+              <div className="rounded-lg border border-slate-800 bg-slate-900/70 px-3 py-2">
+                <div className="text-[11px] uppercase tracking-[0.16em] text-slate-500">Model</div>
+                <code className="mt-1 block break-all text-xs text-slate-200">{codexModel}</code>
+              </div>
+              <div className="rounded-lg border border-slate-800 bg-slate-900/70 px-3 py-2">
+                <div className="text-[11px] uppercase tracking-[0.16em] text-slate-500">Reasoning</div>
+                <code className="mt-1 block break-all text-xs text-slate-200">{codexReasoningEffort}</code>
+              </div>
+            </div>
+          </PanelSection>
+
           <PanelSection title="Prompt">
             <p className="text-sm leading-6 text-slate-300">{task.taskPrompt}</p>
           </PanelSection>
@@ -264,7 +328,13 @@ export function DetailPanel({
               {task.context.links.length ? (
                 <div className="space-y-2">
                   {task.context.links.map((link) => (
-                    <a key={link.id} href={link.url} className="block rounded-lg border border-slate-800 bg-slate-900/70 px-3 py-2 text-cyan-300 hover:text-cyan-200">
+                    <a
+                      key={link.id}
+                      href={link.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="block rounded-lg border border-slate-800 bg-slate-900/70 px-3 py-2 text-cyan-300 hover:text-cyan-200"
+                    >
                       {link.label}
                     </a>
                   ))}
@@ -278,7 +348,22 @@ export function DetailPanel({
         </div>
       </details>
 
-      <PanelSection title="Logs" aside={<span className="text-xs text-slate-500">{logs.length} lines</span>}>
+      <PanelSection
+        title="Logs"
+        aside={
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-slate-500">{logs.length} lines</span>
+            <button
+              type="button"
+              onClick={() => void copyLogs()}
+              disabled={!canCopyLogs}
+              className="inline-flex h-8 items-center rounded-lg border border-slate-700 bg-slate-900 px-3 text-xs font-medium text-slate-200 transition hover:border-slate-500 disabled:cursor-not-allowed disabled:border-slate-800 disabled:bg-slate-950 disabled:text-slate-500"
+            >
+              {copyState === 'copied' ? 'Copied' : copyState === 'failed' ? 'Copy failed' : 'Copy logs'}
+            </button>
+          </div>
+        }
+      >
         <div className="max-h-72 space-y-2 overflow-auto rounded-xl border border-slate-900 bg-[#040812] p-3 font-mono text-xs">
           {logs.length ? (
             logs.map((log) => (

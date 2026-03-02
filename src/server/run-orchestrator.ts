@@ -42,6 +42,8 @@ export async function executeRunJob(env: Env, params: RunJobParams, sleepFn: Sle
   const detail = await repoBoard.getTask(params.taskId);
   const run = await repoBoard.getRun(params.runId);
   const repo = await board.getRepo(params.repoId);
+  const codexModel = detail.task.uiMeta?.codexModel ?? 'gpt-5.1-codex-mini';
+  const codexReasoningEffort = detail.task.uiMeta?.codexReasoningEffort ?? 'medium';
 
   if (params.mode === 'evidence_only') {
     return runEvidence(env as Stage3Env, repoBoard, detail.task, repo, params.runId, sleepFn);
@@ -78,7 +80,7 @@ export async function executeRunJob(env: Env, params: RunJobParams, sleepFn: Sle
     const prompt = buildCodexPrompt(detail.task, repo);
     await sandbox.writeFile('/workspace/task.txt', prompt);
     await sandbox.exec("bash -lc 'command -v codex >/dev/null 2>&1 || npm install -g @openai/codex'");
-    await logCodexCliDiagnostics(sandbox, params.runId, repoBoard);
+    await logCodexCliDiagnostics(sandbox, params.runId, repoBoard, codexModel, codexReasoningEffort);
     const codexResult = await execStreamWithLogs(
       sandbox,
       repoBoard,
@@ -87,7 +89,7 @@ export async function executeRunJob(env: Env, params: RunJobParams, sleepFn: Sle
       `bash -lc ${shellQuote(`set -euo pipefail
 export HOME="\${HOME:-/root}"
 cd /workspace/repo
-cat /workspace/task.txt | codex exec -m gpt-5.1-codex-mini --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check -C /workspace/repo --json -
+cat /workspace/task.txt | codex exec -m ${codexModel} -c model_reasoning_effort="${codexReasoningEffort}" --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check -C /workspace/repo --json -
 `)}`
     );
     if (!codexResult.success) {
@@ -110,14 +112,57 @@ cat /workspace/task.txt | codex exec -m gpt-5.1-codex-mini --dangerously-bypass-
   try {
     const statusResult = await sandbox.exec('cd /workspace/repo && git status --short');
     await appendCommandLogs(repoBoard, params.runId, 'push', statusResult.stdout, statusResult.stderr);
-    if (!statusResult.stdout.trim()) {
+    const hasWorkingTreeChanges = Boolean(statusResult.stdout.trim());
+    const baseHeadResult = await sandbox.exec(`cd /workspace/repo && git rev-parse origin/${shellEscape(repo.defaultBranch)}`);
+    await appendCommandLogs(repoBoard, params.runId, 'push', baseHeadResult.stdout, baseHeadResult.stderr);
+    if (!baseHeadResult.success) {
+      throw new Error(baseHeadResult.stderr || `Failed to resolve origin/${repo.defaultBranch}.`);
+    }
+
+    const currentHeadResult = await sandbox.exec('cd /workspace/repo && git rev-parse HEAD');
+    await appendCommandLogs(repoBoard, params.runId, 'push', currentHeadResult.stdout, currentHeadResult.stderr);
+    if (!currentHeadResult.success) {
+      throw new Error(currentHeadResult.stderr || 'Failed to resolve HEAD.');
+    }
+
+    const hasLocalCommit = currentHeadResult.stdout.trim() !== baseHeadResult.stdout.trim();
+    if (!hasWorkingTreeChanges && !hasLocalCommit) {
       await failRun(repoBoard, params.runId, 'NO_CHANGES', 'push', 'Codex finished without producing a diff.', false);
       return;
     }
 
-    const commitMessage = `AgentBoard: ${detail.task.title}`;
-    await sandbox.exec(`cd /workspace/repo && git add -A && git commit -m ${shellQuote(commitMessage)} && git push origin ${shellEscape(run.branchName)}`);
+    let commitMessage: string;
+    if (hasWorkingTreeChanges) {
+      commitMessage = `AgentBoard: ${detail.task.title}`;
+      const commitResult = await sandbox.exec(
+        `cd /workspace/repo && git add -A && git commit -m ${shellQuote(commitMessage)} && git push origin ${shellEscape(run.branchName)}`
+      );
+      await appendCommandLogs(repoBoard, params.runId, 'push', commitResult.stdout, commitResult.stderr);
+      if (!commitResult.success) {
+        throw new Error(commitResult.stderr || 'Commit and push failed.');
+      }
+    } else {
+      const commitMessageResult = await sandbox.exec('cd /workspace/repo && git log -1 --pretty=%s');
+      await appendCommandLogs(repoBoard, params.runId, 'push', commitMessageResult.stdout, commitMessageResult.stderr);
+      if (!commitMessageResult.success) {
+        throw new Error(commitMessageResult.stderr || 'Failed to read the existing commit message.');
+      }
+      commitMessage = commitMessageResult.stdout.trim() || `AgentBoard: ${detail.task.title}`;
+      await repoBoard.appendRunLogs(params.runId, [
+        buildRunLog(params.runId, 'Detected an existing local commit from Codex; pushing it without creating another commit.', 'push')
+      ]);
+      const pushResult = await sandbox.exec(`cd /workspace/repo && git push origin ${shellEscape(run.branchName)}`);
+      await appendCommandLogs(repoBoard, params.runId, 'push', pushResult.stdout, pushResult.stderr);
+      if (!pushResult.success) {
+        throw new Error(pushResult.stderr || 'Push failed.');
+      }
+    }
+
     const shaResult = await sandbox.exec('cd /workspace/repo && git rev-parse HEAD');
+    await appendCommandLogs(repoBoard, params.runId, 'push', shaResult.stdout, shaResult.stderr);
+    if (!shaResult.success) {
+      throw new Error(shaResult.stderr || 'Failed to resolve the pushed commit SHA.');
+    }
     await repoBoard.transitionRun(params.runId, {
       commitSha: shaResult.stdout.trim(),
       commitMessage,
@@ -162,6 +207,17 @@ async function runEvidence(env: Stage3Env, repoBoard: DurableObjectStub<RepoBoar
 
   try {
     await sandbox.exec('mkdir -p /workspace/evidence');
+    await repoBoard.appendRunLogs(runId, [buildRunLog(runId, 'Installing Playwright Chromium for evidence capture.', 'evidence')]);
+    const install = await sandbox.exec(
+      `bash -lc ${shellQuote(`set -euo pipefail
+export HOME="\${HOME:-/root}"
+npx -y playwright install chromium
+`)}`
+    );
+    await appendCommandLogs(repoBoard, runId, 'evidence', install.stdout, install.stderr);
+    if (!install.success) {
+      throw new Error(install.stderr || 'Playwright browser install failed.');
+    }
     const before = await sandbox.exec(`npx -y playwright screenshot ${shellEscape(baselineUrl)} /workspace/evidence/before.png`);
     const after = await sandbox.exec(`npx -y playwright screenshot ${shellEscape(previewUrl)} /workspace/evidence/after.png`);
     await appendCommandLogs(repoBoard, runId, 'evidence', before.stdout + after.stdout, before.stderr + after.stderr);
@@ -464,12 +520,19 @@ node /workspace/codex-auth-diagnostics.mjs
   }
 }
 
-async function logCodexCliDiagnostics(sandbox: ReturnType<typeof getSandbox>, runId: string, repoBoard: DurableObjectStub<RepoBoardDO>) {
+async function logCodexCliDiagnostics(
+  sandbox: ReturnType<typeof getSandbox>,
+  runId: string,
+  repoBoard: DurableObjectStub<RepoBoardDO>,
+  codexModel: string,
+  codexReasoningEffort: string
+) {
   const diagnostics = await sandbox.exec(
     `bash -lc ${shellQuote(`set -euo pipefail
 command -v codex
 codex --version
-printf 'Codex model: gpt-5.1-codex-mini\\n'
+printf 'Codex model: ${codexModel}\\n'
+printf 'Codex reasoning effort: ${codexReasoningEffort}\\n'
 `)}`
   );
   await appendCommandLogs(repoBoard, runId, 'codex', diagnostics.stdout, diagnostics.stderr);
@@ -614,7 +677,8 @@ function buildCodexPrompt(task: Task, repo: Repo) {
     'Requirements:',
     '- Make the requested code changes in this repository.',
     '- Decide which install/build/test commands are appropriate and run them as needed.',
-    '- Leave the repository in a committed, push-ready state if you make changes.',
+    '- Do not run `git commit`, `git push`, `git rebase`, or create pull requests. The outer system handles all git history and GitHub operations.',
+    '- Leave your code changes uncommitted in the working tree after you finish.',
     '- If no changes are necessary, exit cleanly and let the outer system decide what to do.'
   ].filter(Boolean).join('\n');
 }

@@ -134,7 +134,9 @@ export function parseCreateTaskInput(body: unknown): CreateTaskInput {
     context: readContext(body.context)!,
     baselineUrlOverride: readString(body.baselineUrlOverride, 'baselineUrlOverride', false),
     status: readString(body.status, 'status', false) as CreateTaskInput['status'],
-    simulationProfile: readString(body.simulationProfile, 'simulationProfile', false) as CreateTaskInput['simulationProfile']
+    simulationProfile: readString(body.simulationProfile, 'simulationProfile', false) as CreateTaskInput['simulationProfile'],
+    codexModel: readString(body.codexModel, 'codexModel', false) as CreateTaskInput['codexModel'],
+    codexReasoningEffort: readString(body.codexReasoningEffort, 'codexReasoningEffort', false) as CreateTaskInput['codexReasoningEffort']
   };
 }
 
@@ -153,6 +155,8 @@ export function parseUpdateTaskInput(body: unknown): UpdateTaskInput {
   if (hasOwn(body, 'baselineUrlOverride')) patch.baselineUrlOverride = readString(body.baselineUrlOverride, 'baselineUrlOverride', false);
   if (hasOwn(body, 'status')) patch.status = readString(body.status, 'status', false) as UpdateTaskInput['status'];
   if (hasOwn(body, 'simulationProfile')) patch.simulationProfile = readString(body.simulationProfile, 'simulationProfile', false) as UpdateTaskInput['simulationProfile'];
+  if (hasOwn(body, 'codexModel')) patch.codexModel = readString(body.codexModel, 'codexModel', false) as UpdateTaskInput['codexModel'];
+  if (hasOwn(body, 'codexReasoningEffort')) patch.codexReasoningEffort = readString(body.codexReasoningEffort, 'codexReasoningEffort', false) as UpdateTaskInput['codexReasoningEffort'];
   if (hasOwn(body, 'runId')) patch.runId = readString(body.runId, 'runId', false);
   return patch;
 }
