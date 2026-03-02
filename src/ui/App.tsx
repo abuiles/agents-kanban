@@ -280,6 +280,9 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
           <RepoForm
             initialValues={{
               slug: repoToEdit.slug,
+              scmProvider: repoToEdit.scmProvider,
+              scmBaseUrl: repoToEdit.scmBaseUrl,
+              projectPath: repoToEdit.projectPath,
               defaultBranch: repoToEdit.defaultBranch,
               baselineUrl: repoToEdit.baselineUrl,
               previewCheckName: repoToEdit.previewCheckName,

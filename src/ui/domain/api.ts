@@ -7,6 +7,7 @@ import type {
   RunCommand,
   RunEvent,
   RunLogEntry,
+  ScmCredential,
   SimulationProfile,
   Task,
   TaskDetail,
@@ -15,7 +16,10 @@ import type {
 } from './types';
 
 export type CreateRepoInput = {
-  slug: string;
+  slug?: string;
+  scmProvider?: Repo['scmProvider'];
+  scmBaseUrl?: string;
+  projectPath?: string;
   defaultBranch?: string;
   baselineUrl: string;
   enabled?: boolean;
@@ -27,6 +31,13 @@ export type CreateRepoInput = {
 };
 
 export type UpdateRepoInput = Partial<CreateRepoInput>;
+
+export type UpsertScmCredentialInput = {
+  scmProvider: NonNullable<Repo['scmProvider']>;
+  host: string;
+  label?: string;
+  token: string;
+};
 
 export type CreateTaskInput = {
   repoId: string;
@@ -63,6 +74,9 @@ export interface AgentBoardApi {
   createRepo(input: CreateRepoInput): Promise<Repo>;
   listRepos(): Promise<Repo[]>;
   updateRepo(repoId: string, patch: UpdateRepoInput): Promise<Repo>;
+  listScmCredentials(): Promise<ScmCredential[]>;
+  getScmCredential(scmProvider: UpsertScmCredentialInput['scmProvider'], host: string): Promise<ScmCredential | undefined>;
+  upsertScmCredential(input: UpsertScmCredentialInput): Promise<ScmCredential>;
   createTask(input: CreateTaskInput): Promise<Task>;
   listTasks(filter?: { repoId?: string }): Promise<Task[]>;
   getTask(taskId: string): Promise<TaskDetail>;

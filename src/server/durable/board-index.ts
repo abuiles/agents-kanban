@@ -1,22 +1,32 @@
-import type { CreateRepoInput, UpdateRepoInput } from '../../ui/domain/api';
-import type { BoardSnapshotV1, Repo } from '../../ui/domain/types';
+import type { CreateRepoInput, UpdateRepoInput, UpsertScmCredentialInput } from '../../ui/domain/api';
+import type { BoardSnapshotV1, Repo, ScmCredential, ScmProvider } from '../../ui/domain/types';
 import { DurableObject } from 'cloudflare:workers';
 import { conflict, notFound } from '../http/errors';
 import { createRepoId } from '../shared/ids';
 import type { BoardEvent } from '../shared/events';
 import { stringifyBoardEvent } from '../shared/events';
 import { buildBoardSnapshot, type BoardSyncResponse } from '../shared/state';
+import { buildRepoScmKey, getRepoHost, getRepoProjectPath, normalizeCredentialHost, normalizeRepo } from '../../shared/scm';
 
-const STORAGE_KEY = 'board-index-repos';
+const REPOS_STORAGE_KEY = 'board-index-repos';
+const SCM_CREDENTIALS_STORAGE_KEY = 'board-index-scm-credentials';
+
+type StoredScmCredential = ScmCredential & {
+  token: string;
+};
 
 export class BoardIndexDO extends DurableObject<Env> {
   private repos: Repo[] = [];
+  private scmCredentials: StoredScmCredential[] = [];
   private ready: Promise<void>;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     this.ready = this.ctx.blockConcurrencyWhile(async () => {
-      this.repos = (await this.ctx.storage.get<Repo[]>(STORAGE_KEY)) ?? [];
+      const storedRepos = (await this.ctx.storage.get<Repo[]>(REPOS_STORAGE_KEY)) ?? [];
+      const storedScmCredentials = (await this.ctx.storage.get<StoredScmCredential[]>(SCM_CREDENTIALS_STORAGE_KEY)) ?? [];
+      this.repos = storedRepos.map((repo) => normalizeRepo(repo));
+      this.scmCredentials = storedScmCredentials.map((credential) => normalizeStoredScmCredential(credential));
     });
   }
 
@@ -47,25 +57,16 @@ export class BoardIndexDO extends DurableObject<Env> {
 
   async createRepo(input: CreateRepoInput) {
     await this.ready;
-    if (this.repos.some((repo) => repo.slug === input.slug)) {
-      throw conflict(`Repo ${input.slug} already exists.`);
+    const candidate = buildRepoRecord(input);
+    if (this.repos.some((repo) => buildRepoScmKey(repo) === buildRepoScmKey(candidate))) {
+      throw conflict(`Repo ${candidate.slug} already exists.`);
     }
 
-    const now = new Date().toISOString();
-    const repo: Repo = {
-      repoId: createRepoId(input.slug),
-      slug: input.slug,
-      defaultBranch: input.defaultBranch ?? 'main',
-      baselineUrl: input.baselineUrl,
-      enabled: input.enabled ?? true,
-      githubAuthMode: 'kv_pat',
-      previewMode: input.previewMode ?? 'auto',
-      evidenceMode: input.evidenceMode ?? 'auto',
-      previewProvider: input.previewProvider ?? 'cloudflare',
-      previewCheckName: input.previewCheckName,
-      codexAuthBundleR2Key: input.codexAuthBundleR2Key,
-      createdAt: now,
-      updatedAt: now
+    const repo = {
+      ...candidate,
+      repoId: createRepoIdentity(candidate),
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
     };
 
     this.repos = [repo, ...this.repos];
@@ -77,15 +78,68 @@ export class BoardIndexDO extends DurableObject<Env> {
   async updateRepo(repoId: string, patch: UpdateRepoInput) {
     await this.ready;
     const existing = await this.getRepo(repoId);
-    if (patch.slug && patch.slug !== existing.slug && this.repos.some((repo) => repo.slug === patch.slug)) {
-      throw conflict(`Repo ${patch.slug} already exists.`);
+    const updated = buildRepoRecord({ ...existing, ...patch, repoId: existing.repoId, createdAt: existing.createdAt, updatedAt: existing.updatedAt });
+    if (
+      this.repos.some((repo) => repo.repoId !== repoId && buildRepoScmKey(repo) === buildRepoScmKey(updated))
+    ) {
+      throw conflict(`Repo ${updated.slug} already exists.`);
     }
 
-    const updated: Repo = { ...existing, ...patch, updatedAt: new Date().toISOString() };
-    this.repos = this.repos.map((repo) => (repo.repoId === repoId ? updated : repo));
+    this.repos = this.repos.map((repo) =>
+      repo.repoId === repoId
+        ? {
+            ...updated,
+            repoId,
+            createdAt: existing.createdAt,
+            updatedAt: new Date().toISOString()
+          }
+        : repo
+    );
     await this.persist();
-    await this.broadcast({ type: 'repo.updated', payload: { repo: updated } }, repoId);
-    return updated;
+    const finalRepo = this.repos.find((repo) => repo.repoId === repoId) ?? existing;
+    await this.broadcast({ type: 'repo.updated', payload: { repo: finalRepo } }, repoId);
+    return finalRepo;
+  }
+
+  async listScmCredentials(): Promise<ScmCredential[]> {
+    await this.ready;
+    return [...this.scmCredentials]
+      .sort((left, right) => left.credentialId.localeCompare(right.credentialId))
+      .map(stripScmCredentialSecret);
+  }
+
+  async getScmCredential(scmProvider: ScmProvider, host: string): Promise<ScmCredential | undefined> {
+    await this.ready;
+    const credential = this.scmCredentials.find((candidate) => candidate.credentialId === buildScmCredentialId(scmProvider, host));
+    return credential ? stripScmCredentialSecret(credential) : undefined;
+  }
+
+  async getScmCredentialSecret(scmProvider: ScmProvider, host: string): Promise<string | undefined> {
+    await this.ready;
+    return this.scmCredentials.find((candidate) => candidate.credentialId === buildScmCredentialId(scmProvider, host))?.token;
+  }
+
+  async upsertScmCredential(input: UpsertScmCredentialInput): Promise<ScmCredential> {
+    await this.ready;
+    const now = new Date().toISOString();
+    const credentialId = buildScmCredentialId(input.scmProvider, input.host);
+    const existing = this.scmCredentials.find((candidate) => candidate.credentialId === credentialId);
+    const credential: StoredScmCredential = normalizeStoredScmCredential({
+      credentialId,
+      scmProvider: input.scmProvider,
+      host: input.host,
+      label: input.label,
+      hasSecret: true,
+      token: input.token,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now
+    });
+
+    this.scmCredentials = existing
+      ? this.scmCredentials.map((candidate) => (candidate.credentialId === credentialId ? credential : candidate))
+      : [...this.scmCredentials, credential];
+    await this.persist();
+    return stripScmCredentialSecret(credential);
   }
 
   async getBoardSync(repoId?: string): Promise<BoardSyncResponse> {
@@ -116,7 +170,7 @@ export class BoardIndexDO extends DurableObject<Env> {
   async importBoard(snapshot: BoardSnapshotV1) {
     await this.ready;
     const previousRepoIds = new Set(this.repos.map((repo) => repo.repoId));
-    this.repos = snapshot.repos.map((repo) => ({ ...repo }));
+    this.repos = snapshot.repos.map((repo) => normalizeRepo(repo));
     await this.persist();
 
     const nextRepoIds = new Set(snapshot.repos.map((repo) => repo.repoId));
@@ -194,6 +248,63 @@ export class BoardIndexDO extends DurableObject<Env> {
   }
 
   private async persist() {
-    await this.ctx.storage.put(STORAGE_KEY, this.repos);
+    await this.ctx.storage.put(REPOS_STORAGE_KEY, this.repos);
+    await this.ctx.storage.put(SCM_CREDENTIALS_STORAGE_KEY, this.scmCredentials);
   }
+}
+
+function buildRepoRecord(input: CreateRepoInput | Repo): Repo {
+  const normalized = normalizeRepo({
+    ...input,
+    repoId: 'repoId' in input ? input.repoId : '',
+    defaultBranch: input.defaultBranch ?? 'main',
+    baselineUrl: input.baselineUrl,
+    enabled: input.enabled ?? true,
+    githubAuthMode: 'githubAuthMode' in input ? input.githubAuthMode : undefined,
+    previewMode: 'previewMode' in input ? input.previewMode : 'auto',
+    evidenceMode: 'evidenceMode' in input ? input.evidenceMode : 'auto',
+    previewProvider: 'previewProvider' in input ? input.previewProvider : 'cloudflare',
+    previewCheckName: input.previewCheckName,
+    previewUrlPattern: 'previewUrlPattern' in input ? input.previewUrlPattern : undefined,
+    codexAuthBundleR2Key: input.codexAuthBundleR2Key,
+    createdAt: 'createdAt' in input ? input.createdAt : '',
+    updatedAt: 'updatedAt' in input ? input.updatedAt : ''
+  });
+
+  return normalized;
+}
+
+function createRepoIdentity(repo: Repo): string {
+  const host = getRepoHost(repo);
+  const projectPath = getRepoProjectPath(repo);
+  if (repo.scmProvider === 'github' && host === 'github.com') {
+    return createRepoId(projectPath);
+  }
+
+  return createRepoId(`${repo.scmProvider}_${host}_${projectPath}`);
+}
+
+function buildScmCredentialId(scmProvider: ScmProvider, host: string) {
+  return `${scmProvider}:${normalizeCredentialHost(host)}`;
+}
+
+function normalizeStoredScmCredential(credential: StoredScmCredential): StoredScmCredential {
+  return {
+    ...credential,
+    credentialId: buildScmCredentialId(credential.scmProvider, credential.host),
+    host: normalizeCredentialHost(credential.host),
+    hasSecret: Boolean(credential.token)
+  };
+}
+
+function stripScmCredentialSecret(credential: StoredScmCredential): ScmCredential {
+  return {
+    credentialId: credential.credentialId,
+    scmProvider: credential.scmProvider,
+    host: credential.host,
+    label: credential.label,
+    hasSecret: credential.hasSecret,
+    createdAt: credential.createdAt,
+    updatedAt: credential.updatedAt
+  };
 }

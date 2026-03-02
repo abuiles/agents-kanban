@@ -10,6 +10,9 @@ const repos: Repo[] = [
   {
     repoId: 'repo_website',
     slug: 'acme/site-marketing',
+    scmProvider: 'github',
+    scmBaseUrl: 'https://github.com',
+    projectPath: 'acme/site-marketing',
     defaultBranch: 'main',
     baselineUrl: 'https://www.acme.test',
     enabled: true,
@@ -19,6 +22,9 @@ const repos: Repo[] = [
   {
     repoId: 'repo_dashboard',
     slug: 'acme/internal-dashboard',
+    scmProvider: 'github',
+    scmBaseUrl: 'https://github.com',
+    projectPath: 'acme/internal-dashboard',
     defaultBranch: 'main',
     baselineUrl: 'https://dashboard.acme.test',
     enabled: true,
