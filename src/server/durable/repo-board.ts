@@ -774,12 +774,89 @@ export class RepoBoardDO extends DurableObject<Env> {
 
     const excluded = new Set(excludeTaskIds);
     for (const task of tasks) {
+      if (task.repoId !== repoId) {
+        continue;
+      }
       if (excluded.has(task.taskId)) {
         continue;
       }
       await this.emit({ type: 'task.updated', payload: { task } }, repoId);
     }
+
+    await this.autoStartRunnableDependencyTasks(repoId, tasks.map((task) => task.taskId));
   }
+
+  private async autoStartRunnableDependencyTasks(repoId: string, candidateTaskIds: string[]) {
+    if (!candidateTaskIds.length) {
+      return;
+    }
+
+    const candidateIds = new Set(candidateTaskIds);
+    const repo = await this.getRepo(repoId);
+    const nowIso = new Date().toISOString();
+
+    for (const task of this.state.tasks) {
+      if (task.repoId !== repoId || !candidateIds.has(task.taskId) || !isRunnableDependencyAutoStartTask(task)) {
+        continue;
+      }
+
+      const hasActiveRun = this.state.runs.some((run) => run.taskId === task.taskId && !isTerminalRunStatus(run.status));
+      if (hasActiveRun) {
+        continue;
+      }
+
+      const resolvedSource = resolveRunSource({
+        task,
+        tasks: this.state.tasks,
+        runs: this.state.runs,
+        defaultBranch: repo.defaultBranch,
+        resolvedAt: nowIso
+      });
+      if (resolvedSource.dependencyContext.sourceMode !== 'dependency_review_head') {
+        continue;
+      }
+
+      if (task.automationState && !task.automationState.autoStartedAt) {
+        this.state = {
+          ...this.state,
+          tasks: this.state.tasks.map((candidate) =>
+            candidate.taskId === task.taskId
+              ? {
+                  ...candidate,
+                  automationState: {
+                    ...candidate.automationState!,
+                    autoStartedAt: nowIso
+                  },
+                  updatedAt: nowIso
+                }
+              : candidate
+          )
+        };
+      }
+
+      await this.startRun(task.taskId);
+    }
+  }
+}
+
+function isRunnableDependencyAutoStartTask(task: Task) {
+  if (!task.dependencies?.length) {
+    return false;
+  }
+
+  if (task.dependencyState?.blocked !== false) {
+    return false;
+  }
+
+  if (!task.automationState?.autoStartEligible) {
+    return false;
+  }
+
+  if (task.sourceRef?.trim()) {
+    return false;
+  }
+
+  return task.status !== 'ACTIVE' && task.status !== 'REVIEW' && task.status !== 'DONE';
 }
 
 function validateDependenciesForTask(repoId: string, taskId: string, dependencies: Task['dependencies']) {
