@@ -17,8 +17,12 @@ export type RunTransitionPatch = {
   reviewUrl?: string;
   reviewNumber?: number;
   reviewProvider?: AgentRun['reviewProvider'];
+  reviewState?: AgentRun['reviewState'];
+  reviewMergedAt?: AgentRun['reviewMergedAt'];
   prUrl?: string;
   prNumber?: number;
+  landedOnDefaultBranch?: AgentRun['landedOnDefaultBranch'];
+  landedOnDefaultBranchAt?: AgentRun['landedOnDefaultBranchAt'];
   previewUrl?: string;
   previewStatus?: AgentRun['previewStatus'];
   evidenceStatus?: AgentRun['evidenceStatus'];
@@ -45,8 +49,12 @@ type CreateRealRunOptions = {
   reviewUrl?: string;
   reviewNumber?: number;
   reviewProvider?: AgentRun['reviewProvider'];
+  reviewState?: AgentRun['reviewState'];
+  reviewMergedAt?: AgentRun['reviewMergedAt'];
   prUrl?: string;
   prNumber?: number;
+  landedOnDefaultBranch?: AgentRun['landedOnDefaultBranch'];
+  landedOnDefaultBranchAt?: AgentRun['landedOnDefaultBranchAt'];
   baseRunId?: string;
   changeRequest?: AgentRun['changeRequest'];
   dependencyContext?: AgentRun['dependencyContext'];
@@ -65,8 +73,12 @@ export function createRealRun(task: Task, runId: string, now = new Date(), optio
     reviewUrl: options?.reviewUrl,
     reviewNumber: options?.reviewNumber,
     reviewProvider: options?.reviewProvider,
+    reviewState: options?.reviewState,
+    reviewMergedAt: options?.reviewMergedAt,
     prUrl: options?.prUrl,
     prNumber: options?.prNumber,
+    landedOnDefaultBranch: options?.landedOnDefaultBranch,
+    landedOnDefaultBranchAt: options?.landedOnDefaultBranchAt,
     dependencyContext: options?.dependencyContext,
     errors: [],
     startedAt: nowIso,

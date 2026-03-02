@@ -190,4 +190,34 @@ describe('resolveRunSource', () => {
     expect(source.branchSource.resolvedRef).toBe('main');
     expect(source.dependencyContext.sourceMode).toBe('default_branch');
   });
+
+  it('uses default branch after a GitLab MR is merged and landed on the default branch', () => {
+    const upstreamTask = buildTask('task_up', { status: 'DONE' });
+    const downstreamTask = buildTask('task_down', {
+      dependencies: [{ upstreamTaskId: 'task_up', mode: 'review_ready' }]
+    });
+
+    const source = resolveRunSource({
+      task: downstreamTask,
+      tasks: [upstreamTask, downstreamTask],
+      runs: [
+        buildRun('task_up', 'DONE', {
+          headSha: 'b'.repeat(40),
+          reviewUrl: 'https://gitlab.example.com/acme/repo/-/merge_requests/45',
+          reviewNumber: 45,
+          reviewProvider: 'gitlab',
+          reviewState: 'merged',
+          reviewMergedAt: '2026-03-02T00:45:00.000Z',
+          landedOnDefaultBranch: true,
+          landedOnDefaultBranchAt: '2026-03-02T00:50:00.000Z'
+        })
+      ],
+      defaultBranch: 'main',
+      resolvedAt
+    });
+
+    expect(source.branchSource.kind).toBe('default_branch');
+    expect(source.branchSource.resolvedRef).toBe('main');
+    expect(source.dependencyContext.sourceMode).toBe('default_branch');
+  });
 });

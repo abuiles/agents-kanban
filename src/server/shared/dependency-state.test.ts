@@ -110,6 +110,64 @@ describe('refreshDependencyStates', () => {
     });
   });
 
+  it('uses provider-neutral merged review state and default-branch reachability for GitLab fallback readiness', () => {
+    const upstream = buildTask('task_up', { status: 'DONE' });
+    const downstream = buildTask('task_down', {
+      dependencies: [{ upstreamTaskId: 'task_up', mode: 'review_ready' }]
+    });
+
+    const result = refreshDependencyStates(
+      [upstream, downstream],
+      [
+        buildRun('task_up', 'DONE', {
+          reviewUrl: 'https://gitlab.example.com/acme/repo/-/merge_requests/10',
+          reviewNumber: 10,
+          reviewProvider: 'gitlab',
+          reviewState: 'merged',
+          landedOnDefaultBranch: true
+        })
+      ],
+      '2026-03-02T01:20:00.000Z'
+    );
+    const refreshed = result.tasks.find((task) => task.taskId === 'task_down')!;
+
+    expect(refreshed.dependencyState?.blocked).toBe(false);
+    expect(refreshed.dependencyState?.reasons[0]).toMatchObject({
+      upstreamTaskId: 'task_up',
+      state: 'ready',
+      message: 'Upstream task task_up is merged into the default branch.'
+    });
+  });
+
+  it('does not treat merged review state without default-branch reachability as merged-to-default readiness', () => {
+    const upstream = buildTask('task_up', { status: 'DONE' });
+    const downstream = buildTask('task_down', {
+      dependencies: [{ upstreamTaskId: 'task_up', mode: 'review_ready' }]
+    });
+
+    const result = refreshDependencyStates(
+      [upstream, downstream],
+      [
+        buildRun('task_up', 'DONE', {
+          reviewUrl: 'https://gitlab.example.com/acme/repo/-/merge_requests/11',
+          reviewNumber: 11,
+          reviewProvider: 'gitlab',
+          reviewState: 'merged',
+          landedOnDefaultBranch: false
+        })
+      ],
+      '2026-03-02T01:25:00.000Z'
+    );
+    const refreshed = result.tasks.find((task) => task.taskId === 'task_down')!;
+
+    expect(refreshed.dependencyState?.blocked).toBe(false);
+    expect(refreshed.dependencyState?.reasons[0]).toMatchObject({
+      upstreamTaskId: 'task_up',
+      state: 'ready',
+      message: 'Upstream task task_up is review-ready.'
+    });
+  });
+
   it('preserves existing unblockedAt while still unblocked', () => {
     const upstream = buildTask('task_up', { status: 'REVIEW' });
     const downstream = buildTask('task_down', {
