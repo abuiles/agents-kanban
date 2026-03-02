@@ -1,5 +1,4 @@
 import type { Repo, Task, AgentRun, PreviewAdapterKind } from '../../ui/domain/types';
-import type { PreviewDiscoveryResult } from '../preview-discovery';
 
 export type PreviewCheck = {
   name?: string;
@@ -7,6 +6,22 @@ export type PreviewCheck = {
   htmlUrl?: string;
   summary?: string;
   appSlug?: string;
+};
+
+export type PreviewDiscoverySource = 'summary' | 'details_url' | 'html_url';
+
+export type PreviewDiscoveryResult = {
+  previewUrl?: string;
+  adapter?: string;
+  source?: PreviewDiscoverySource;
+  matchedCheck?: string;
+  checks: Array<{
+    name?: string;
+    appSlug?: string;
+    score: number;
+    matchedAdapter?: string;
+    extracted: boolean;
+  }>;
 };
 
 export type PreviewResolution = {
