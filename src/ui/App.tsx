@@ -7,11 +7,12 @@ import { RepoForm, TaskForm } from './components/Forms';
 import { Modal } from './components/Modal';
 import { getTaskDetail, getTasksByColumn, getTasksForRepo } from './domain/selectors';
 import type { RunLogEntry, TaskStatus } from './domain/types';
-import { getLocalAgentBoardApi } from './mock/local-agent-board-api';
+import type { AgentBoardApi } from './domain/api';
+import { getAgentBoardApi } from './api';
 import { downloadJson } from './store/import-export';
 
-export default function App() {
-  const api = useMemo(() => getLocalAgentBoardApi(), []);
+export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
+  const api = useMemo(() => providedApi ?? getAgentBoardApi(), [providedApi]);
   const snapshot = useSyncExternalStore(
     api.subscribe.bind(api),
     () => api.getSnapshot(),

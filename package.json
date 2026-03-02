@@ -12,7 +12,8 @@
     "start": "vite",
     "cf-typegen": "wrangler types",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:workers": "vitest -c vitest.worker.config.ts"
   },
   "devDependencies": {
     "@cloudflare/sandbox": "*",
@@ -32,8 +33,9 @@
     "tailwindcss": "^4.2.1",
     "typescript": "^5.9.3",
     "vite": "^7.3.1",
-    "vitest": "^4.0.18",
-    "wrangler": "^4.69.0"
+    "vitest": "^3.2.4",
+    "wrangler": "^4.69.0",
+    "@cloudflare/vitest-pool-workers": "^0.8.19"
   },
   "author": "",
   "license": "MIT",

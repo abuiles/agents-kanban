@@ -6,6 +6,7 @@ import tailwindcss from '@tailwindcss/vite';
 export default defineConfig({
   plugins: process.env.VITEST ? [tailwindcss(), react()] : [tailwindcss(), cloudflare(), react()],
   test: {
+    include: ['src/ui/**/*.test.ts', 'src/ui/**/*.test.tsx'],
     environment: 'jsdom',
     setupFiles: ['./src/ui/test/setup.ts']
   }

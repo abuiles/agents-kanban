@@ -2,244 +2,154 @@
 
 ## Goal
 
-Replace the Phase 0 local-only store with a real Cloudflare Worker API and Durable Object state, while keeping the same UI, interaction model, and run lifecycle shape.
+Stage 2 turns AgentBoard into a real server-backed application:
 
-## Non-goals
+- Cloudflare Worker hosts the SPA and `/api/*`
+- Durable Objects own repos, tasks, runs, and logs
+- live board and run updates flow over WebSockets
+- the current mock executor still drives run state, but it now runs server-side
 
-- No real Cloudflare Sandbox execution yet
-- No Codex invocation yet
-- No GitHub clone/push or PR creation yet
-- No real preview discovery yet
-- No real Playwright evidence runner yet
+Stage 2 is no longer a spike. It is the first real backend shape that Stage 3 will extend.
 
-## Stage 3 dependencies this phase must preserve
+## Architecture
 
-Stage 2 is the contract-stabilization phase for real execution in Stage 3.
+### Worker routing
+- static assets still serve the SPA
+- product API lives under `/api/*`
+- live updates use `/api/board/ws`
+- old sandbox demo routes moved to `/api/debug/sandbox/*`
 
-These guarantees must hold at the end of Stage 2:
+### Durable Objects
+Use two SQLite-backed Durable Object classes:
 
-- HTTP response shapes stay compatible with the Phase 0 `AgentBoardApi`
-- run lifecycle states and idempotency semantics remain unchanged
-- `Task`, `AgentRun`, `ArtifactManifest`, and log entry shapes are extended additively only
-- run state remains durable and resumable without an open browser tab
-- the UI keeps treating the API as the only source of truth
+- `BoardIndexDO`
+  - owns repo metadata
+  - lists repos
+  - resolves repo routing
+  - exposes board-wide WebSocket fanout
+- `RepoBoardDO`
+  - one object per repo
+  - owns tasks, runs, logs, and mock lifecycle progression
+  - enforces run idempotency
+  - emits repo-scoped update events
 
-Stage 3 will depend on Stage 2 to already provide:
+This follows Cloudflare's current Durable Object guidance to design around the smallest coordination unit instead of a global singleton.
 
-- durable task/run storage
-- durable server-owned lifecycle transitions
-- stable run detail and logs endpoints
-- a clean place to add real executor metadata without redesigning the API
+## Product decisions locked in
 
-## Build target
+- no automatic seed data in real environments
+- WebSockets are the primary live-update transport
+- UI-only state remains local (`selectedRepoId`, `selectedTaskId`, modal state, notices)
+- IDs encode repo ownership so routes can resolve directly:
+  - `task_<repoId>_<unique>`
+  - `run_<repoId>_<unique>`
 
-- React UI remains the same client
-- Worker serves both the SPA and HTTP API
-- One `BoardDO` owns repo/task/run/log state for the spike
-- Mock executor moves from browser timers to Durable Object alarms/timestamps
-- The `AgentBoardApi` interface remains the contract boundary
+## API surface
 
-## API mapping
+### Board
+- `GET /api/board?repoId=all|<repoId>`
+- `GET /api/board/ws?repoId=all|<repoId>`
 
 ### Repos
-- `POST /repos`
-- `GET /repos`
-- `PATCH /repos/:repoId`
+- `POST /api/repos`
+- `GET /api/repos`
+- `PATCH /api/repos/:repoId`
 
 ### Tasks
-- `POST /tasks`
-- `GET /tasks?repoId=`
-- `GET /tasks/:taskId`
-- `PATCH /tasks/:taskId`
+- `POST /api/tasks`
+- `GET /api/tasks?repoId=`
+- `GET /api/tasks/:taskId`
+- `PATCH /api/tasks/:taskId`
 
 ### Runs
-- `POST /tasks/:taskId/run`
-- `GET /runs/:runId`
-- `POST /runs/:runId/retry`
-- `POST /runs/:runId/evidence`
-- `GET /runs/:runId/logs?tail=N`
+- `POST /api/tasks/:taskId/run`
+- `GET /api/runs/:runId`
+- `POST /api/runs/:runId/retry`
+- `POST /api/runs/:runId/evidence`
+- `GET /api/runs/:runId/logs?tail=N`
 
-## State ownership
+### Debug-only
+- `GET /api/debug/export`
+- `POST /api/debug/import`
+- `POST /api/debug/sandbox/run`
+- `POST /api/debug/sandbox/file`
 
-### Server-owned in Stage 2
-- repos
-- tasks
-- runs
-- logs
-- task/run transitions
-- idempotency for `startRun` and evidence retries
+## Live update model
 
-### Client-owned in Stage 2
-- selected task in the open tab
-- selected repo filter in the open tab
-- open/closed modal state
-- drag hover visuals and transient banners
+The client opens a WebSocket to `/api/board/ws`.
 
-## Durable Object shape
+Server events are JSON envelopes:
 
-Use one `BoardDO` first.
+- `board.snapshot`
+- `repo.updated`
+- `task.updated`
+- `run.updated`
+- `run.logs_appended`
+- `server.error`
 
-Responsibilities:
-- persist normalized repos/tasks/runs/logs in DO SQLite storage
-- handle CRUD operations
-- enforce one active run per task
-- progress mock runs on alarms
-- emit consistent state transitions and logs
+Rules:
+- clients receive a snapshot immediately on connect
+- later events are incremental
+- repo DOs forward updates to the board DO for all-repo listeners
+- the Stage 2 socket is read-only; it carries state updates only
 
-Do not split into `TaskDO` or `RunDO` yet.
+## Run lifecycle
 
-## Anticipated Stage 3 metadata
+Public lifecycle remains unchanged:
 
-Stage 2 should structure storage so these real-execution fields can be added without a data-model rewrite:
+1. `QUEUED`
+2. `BOOTSTRAPPING`
+3. `RUNNING_CODEX`
+4. `RUNNING_TESTS`
+5. `PUSHING_BRANCH`
+6. `PR_OPEN`
+7. `WAITING_PREVIEW`
+8. `EVIDENCE_RUNNING`
+9. `DONE` or `FAILED`
 
-### Repo extensions
-- `githubInstallationId?`
-- `previewProvider?: 'cloudflare' | 'unknown'`
-- `previewCheckName?`
-- `codexAuthBundleKey?`
+The current mock engine is shared between the UI test harness and the server implementation, but only the server owns lifecycle progression in Stage 2.
 
-### Task extensions
-- `baselineUrlOverride?` remains supported
-- `acceptanceCriteria` remains first-class and durable
+## Idempotency contract
 
-### Run extensions
-- `sandboxId?`
-- `sandboxSessionId?`
-- `executorType?: 'mock' | 'sandbox'`
-- `pullRequestHeadRef?`
-- `pullRequestHeadSha?`
-- `githubCheckSuiteId?`
-- `previewStatus?: 'UNKNOWN' | 'DISCOVERING' | 'READY' | 'FAILED'`
-- `evidenceStatus?: 'NOT_STARTED' | 'RUNNING' | 'READY' | 'FAILED'`
-- `artifactManifest?` must remain the canonical container for logs/evidence pointers
+These rules are stable and must remain true for Stage 3:
 
-These are additive extensions only; Stage 2 should not require them yet.
+- starting a run for a task with an active non-terminal run returns that run
+- retrying a run creates a new run record
+- retrying evidence does not create a new run or PR
+- `PR_OPEN` moves the task to `REVIEW`
+- `DONE` leaves the task in `REVIEW`
+- `FAILED` moves the task to `FAILED`
 
-## Migration sequence from Phase 0
+## Client boundary
 
-1. Keep domain types stable.
-2. Keep UI components stable.
-3. Add request/response DTO validation in Worker routes.
-4. Add `BoardDO` storage adapters.
-5. Port simulator timing logic from `src/ui/mock/run-simulator.ts` to server-side alarms.
-6. Add `HttpAgentBoardApi` with the same method signatures as `LocalAgentBoardApi`.
-7. Swap app bootstrap to use `HttpAgentBoardApi`.
-8. Keep import/export either as a debug-only feature or remove it from the main toolbar.
+The UI still depends on `AgentBoardApi`.
 
-## Endpoint contract expectations
+Stage 2 swaps in `HttpAgentBoardApi`, which:
+- hydrates from `/api/board`
+- subscribes to `/api/board/ws`
+- keeps local UI preferences in `UiPreferencesStore`
+- composes those two sources into the existing `BoardSnapshotV1`
 
-Responses should stay close to Phase 0 shapes:
-- repo objects unchanged
-- task objects unchanged
-- run objects unchanged
-- log entries unchanged
-- task detail bundles `task`, `repo`, `runs`, `latestRun`
+That keeps the React component tree intact.
 
-This keeps the Phase 1 client swap small.
+## Testing
 
-## Error and idempotency contract
+### UI tests
+Keep the existing jsdom UI tests against the local API injection path.
 
-Stage 3 will rely on these behaviors being explicit and stable:
+### Worker tests
+Add a dedicated Workers Vitest config and cover:
+- route CRUD behavior
+- repo/run orchestration
+- WebSocket handshake
+- server-side run progression
 
-- `POST /tasks/:taskId/run` returns the current non-terminal run if one already exists
-- `POST /runs/:runId/evidence` never creates a new run or PR
-- retrying a run creates a new run record and preserves prior run history
-- terminal failures are represented both in `run.status` and structured log/error data
-- transient infrastructure failures should still leave the run queryable and observable
+## Stage 3 dependencies preserved
 
-Even in Stage 2, return structured error payloads that can survive into Stage 3:
-
-- `code`
-- `message`
-- `retryable`
-- `runId?`
-- `taskId?`
-
-## Server-side mocked executor
-
-Lifecycle remains:
-- `QUEUED`
-- `BOOTSTRAPPING`
-- `RUNNING_CODEX`
-- `RUNNING_TESTS`
-- `PUSHING_BRANCH`
-- `PR_OPEN`
-- `WAITING_PREVIEW`
-- `EVIDENCE_RUNNING`
-- `DONE` or `FAILED`
-
-Behavior remains:
-- `POST /tasks/:taskId/run` is idempotent while a non-terminal run exists
-- evidence retry does not create a new PR
-- `PR_OPEN` moves task to `REVIEW`
-- `FAILED` moves task to `FAILED`
-- `DONE` leaves task in `REVIEW`
-
-## Observability for Stage 2
-
-Add structured Worker logs with:
-- `repoId`
-- `taskId`
-- `runId`
-- current transition
-
-Keep per-run log retrieval via polling first.
-
-## Stage 3 observability contract
-
-Stage 2 should define logs so Stage 3 can enrich, not replace, them.
-
-Each log/event record should be able to grow to include:
-
-- `phase` (`bootstrap`, `codex`, `tests`, `push`, `pr`, `preview`, `evidence`)
-- `level`
-- `message`
-- `timestamp`
-- `repoId`
-- `taskId`
-- `runId`
-- `attempt?`
-- `metadata?`
-
-Stage 2 may keep plain polling, but the UI should consume logs through a single API adapter so Stage 3 can later switch to:
-
-- polling with cursors
-- server-sent events
-- WebSocket or Worker push stream
-
-without redesigning UI components.
-
-## Acceptance criteria
-
-- Same UX as Phase 0
-- State persists server-side across devices and browsers
-- Active runs continue when the UI is closed
-- Dragging into Active still feels idempotent
-- UI swap from local API to HTTP API does not require rewriting board components
-
-## Cut lines if time gets tight
-
-- Poll logs instead of implementing live streaming
-- Keep artifacts mocked as manifest records only
-- Use one global board DO for the spike
-- Leave import/export out of the main nav if it complicates the server-backed model
-
-## Explicit product decisions carried into Stage 3
-
-- Import/export is a Phase 0 convenience feature, not a core Stage 2/Stage 3 workflow
-- It may remain as an admin/debug tool, but it should not shape the server-side domain model
-- The board remains the primary control surface across all stages
-- The task detail view remains the primary place to inspect run status, links, and logs
-- One run still maps to one PR
-- Preview URLs come from deployed PR infrastructure, not directly from the execution sandbox
-
-## Recommended build order
-
-1. Worker route scaffolding and DTO validation
-2. `BoardDO` normalized storage
-3. repo/task CRUD
-4. run start/retry/evidence endpoints
-5. server-side mock scheduler with alarms
-6. `HttpAgentBoardApi`
-7. client adapter swap
-8. regression tests against the preserved UX
+Stage 2 must already provide:
+- durable server-owned run state
+- durable logs
+- stable task/run DTOs
+- stable idempotency behavior
+- a clean place to replace the mock executor with real sandbox execution
+- live transport suitable for operator visibility

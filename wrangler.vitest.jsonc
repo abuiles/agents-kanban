@@ -1,0 +1,25 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "my-sandbox-test",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-03-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "durable_objects": {
+    "bindings": [
+      {
+        "class_name": "BoardIndexDO",
+        "name": "BOARD_INDEX"
+      },
+      {
+        "class_name": "RepoBoardDO",
+        "name": "REPO_BOARD"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "new_sqlite_classes": ["BoardIndexDO", "RepoBoardDO"],
+      "tag": "v1"
+    }
+  ]
+}
