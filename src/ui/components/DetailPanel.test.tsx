@@ -211,6 +211,38 @@ describe('DetailPanel', () => {
     expect(screen.getByText('Mode: dependency_review_head')).toBeInTheDocument();
   });
 
+  it('renders truthful resume capability messaging for Codex and Cursor CLI runs', () => {
+    const codexProps = buildProps();
+    codexProps.detail = {
+      ...codexProps.detail,
+      latestRun: {
+        ...codexProps.detail.latestRun!,
+        llmAdapter: 'codex',
+        llmSupportsResume: true,
+        llmResumeCommand: 'codex resume thread-123',
+        latestCodexResumeCommand: 'codex resume thread-123'
+      }
+    };
+
+    const { rerender } = render(<DetailPanel {...codexProps} />);
+    expect(screen.getByText('codex resume thread-123')).toBeInTheDocument();
+
+    const cursorProps = buildProps();
+    cursorProps.detail = {
+      ...cursorProps.detail,
+      latestRun: {
+        ...cursorProps.detail.latestRun!,
+        llmAdapter: 'cursor_cli',
+        llmSupportsResume: false,
+        llmResumeCommand: undefined,
+        latestCodexResumeCommand: undefined
+      }
+    };
+
+    rerender(<DetailPanel {...cursorProps} />);
+    expect(screen.getByText('Cursor CLI does not advertise resumable takeover for this run.')).toBeInTheDocument();
+  });
+
   it('routes edit task clicks to the edit handler', async () => {
     const user = userEvent.setup();
     const onEditTask = vi.fn();
