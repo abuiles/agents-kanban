@@ -13,6 +13,7 @@ import { getScmAdapter } from './scm/registry';
 import { getScmSourceRefFetchSpec } from './scm/source-ref';
 import { getLlmAdapter, resolveLlmAdapterKind } from './llm/registry';
 import { getPreviewAdapter } from './preview/registry';
+import type { PreviewAdapterResult } from './preview/adapter';
 
 type WorkflowBinding<T> = {
   create(options?: { id?: string; params?: T; retention?: { successRetention?: string | number; errorRetention?: string | number } }): Promise<{ id: string }>;
@@ -365,7 +366,7 @@ async function waitForPreview(
   const attempts = 12;
   const headSha = (await repoBoard.getRun(runId)).headSha;
   if (!headSha) {
-    return undefined;
+    return { status: 'failed' as const, reason: 'missing_head_sha' as const };
   }
 
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
@@ -376,23 +377,27 @@ async function waitForPreview(
         runId,
         formatPreviewDiscoveryLog(discovery),
         'preview',
-        discovery.previewUrl ? 'info' : 'error',
+        discovery.resolution.status === 'ready' ? 'info' : discovery.resolution.status === 'pending' ? 'info' : 'error',
         {
           headSha,
-          matchedCheck: discovery.matchedCheck ?? 'none',
-          adapter: discovery.adapter ?? 'none',
-          source: discovery.source ?? 'none',
-          checkCount: discovery.checks.length
+          adapter: discovery.resolution.adapter,
+          resolutionStatus: discovery.resolution.status,
+          matchedCheck: discovery.compatibility.matchedCheck ?? 'none',
+          source: discovery.compatibility.source ?? 'none',
+          checkCount: discovery.compatibility.checks.length
         }
       )
     ]);
-    if (discovery.previewUrl) {
-      return discovery.previewUrl;
+    if (discovery.resolution.status === 'ready' && discovery.resolution.previewUrl) {
+      return { status: 'ready' as const, previewUrl: discovery.resolution.previewUrl };
+    }
+    if (discovery.resolution.status === 'failed' || discovery.resolution.status === 'timed_out') {
+      return { status: discovery.resolution.status, resolution: discovery.resolution } as const;
     }
     await sleepFn(`preview-${attempt}`, 10_000);
   }
 
-  return undefined;
+  return { status: 'timed_out' as const };
 }
 
 async function discoverPreviewAndRunEvidence(
@@ -410,23 +415,30 @@ async function discoverPreviewAndRunEvidence(
     previewStatus: 'DISCOVERING',
     appendTimelineNote: 'Polling SCM checks for preview URL.'
   });
-  const previewUrl = await waitForPreview(env, repoBoard, repo, runId, sleepFn, scmAdapter, scmCredential);
-  if (!previewUrl) {
+  const preview = await waitForPreview(env, repoBoard, repo, runId, sleepFn, scmAdapter, scmCredential);
+  if (preview.status !== 'ready') {
+    const timeoutMessage = preview.status === 'timed_out'
+      ? 'Preview URL did not appear before timeout. Completing run without preview evidence.'
+      : preview.status === 'failed' && preview.reason === 'missing_head_sha'
+        ? 'Preview discovery could not start because the run head SHA is missing.'
+        : preview.resolution?.explanation ?? 'Preview discovery failed before a usable preview URL was produced.';
     await repoBoard.appendRunLogs(runId, [
-      buildRunLog(runId, 'Preview URL did not appear before timeout. Completing run without preview evidence.', 'preview', 'error')
+      buildRunLog(runId, timeoutMessage, 'preview', 'error')
     ]);
     await repoBoard.transitionRun(runId, {
       status: 'DONE',
       previewStatus: 'FAILED',
       evidenceStatus: 'NOT_STARTED',
       endedAt: new Date().toISOString(),
-      appendTimelineNote: 'Preview URL was not discovered before timeout. Run completed without preview evidence.'
+      appendTimelineNote: preview.status === 'timed_out'
+        ? 'Preview URL was not discovered before timeout. Run completed without preview evidence.'
+        : 'Preview resolution failed. Run completed without preview evidence.'
     });
     return;
   }
 
   await repoBoard.transitionRun(runId, {
-    previewUrl,
+    previewUrl: preview.previewUrl,
     previewStatus: 'READY',
     status: shouldRunEvidence(repo) ? 'EVIDENCE_RUNNING' : 'DONE',
     evidenceStatus: shouldRunEvidence(repo) ? 'RUNNING' : 'NOT_STARTED',
@@ -468,23 +480,20 @@ async function lookupPreviewUrl(
   const previewAdapter = getPreviewAdapter(repo);
   return previewAdapter.resolve({
     repo,
-    checks: checks.map((check) => ({
-      name: check.name,
-      detailsUrl: check.detailsUrl,
-      htmlUrl: check.htmlUrl,
-      summary: check.summary,
-      appSlug: check.appSlug
-    }))
-  }).compatibility;
+    checks
+  });
 }
 
-function formatPreviewDiscoveryLog(discovery: Awaited<ReturnType<typeof lookupPreviewUrl>>) {
-  const checks = discovery.checks.length
-    ? discovery.checks
+function formatPreviewDiscoveryLog(discovery: PreviewAdapterResult) {
+  const checks = discovery.compatibility.checks.length
+    ? discovery.compatibility.checks
         .map((check) => {
           const parts = [
             check.name ?? '(unnamed check)',
             check.appSlug ? `app=${check.appSlug}` : undefined,
+            check.rawSource ? `source=${check.rawSource}` : undefined,
+            check.status ? `status=${check.status}` : undefined,
+            check.conclusion ? `conclusion=${check.conclusion}` : undefined,
             `score=${check.score}`,
             check.matchedAdapter ? `adapter=${check.matchedAdapter}` : undefined,
             check.extracted ? 'preview=found' : 'preview=missing'
@@ -494,11 +503,15 @@ function formatPreviewDiscoveryLog(discovery: Awaited<ReturnType<typeof lookupPr
         .join(' | ')
     : 'no check runs returned';
 
-  if (discovery.previewUrl) {
-    return `Preview discovery matched ${discovery.matchedCheck ?? 'unknown check'} via ${discovery.adapter ?? 'unknown adapter'} from ${discovery.source ?? 'unknown source'}: ${discovery.previewUrl} | checks: ${checks}`;
+  const diagnostics = discovery.resolution.diagnostics.length
+    ? ` | diagnostics: ${discovery.resolution.diagnostics.map((diagnostic) => diagnostic.code).join(', ')}`
+    : '';
+
+  if (discovery.resolution.previewUrl) {
+    return `Preview discovery matched ${discovery.compatibility.matchedCheck ?? 'unknown check'} via ${discovery.compatibility.adapter ?? discovery.resolution.adapter} from ${discovery.compatibility.source ?? 'unknown source'}: ${discovery.resolution.previewUrl} | checks: ${checks}${diagnostics}`;
   }
 
-  return `Preview discovery found no usable preview URL. checks: ${checks}`;
+  return `${discovery.resolution.explanation} | checks: ${checks}${diagnostics}`;
 }
 
 async function getScmCredential(

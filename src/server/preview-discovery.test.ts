@@ -21,16 +21,15 @@ describe('discoverPreviewUrl', () => {
     const previewUrl = discoverPreviewUrl(buildRepo(), [
       {
         name: 'Workers Builds: minions-demo',
-        app: { slug: 'cloudflare-workers-and-pages' },
-        details_url: 'https://dash.cloudflare.com/account/workers/services/view/minions-demo/builds/abc123',
-        html_url: 'https://github.com/abuiles/minions-demo/runs/123',
-        output: {
-          summary: `
+        appSlug: 'cloudflare-workers-and-pages',
+        detailsUrl: 'https://dash.cloudflare.com/account/workers/services/view/minions-demo/builds/abc123',
+        htmlUrl: 'https://github.com/abuiles/minions-demo/runs/123',
+        summary: `
 Build ID: [abc123](https://dash.cloudflare.com/account/workers/services/view/minions-demo/builds/abc123)
 Preview URL: https://b537c13e-minions-demo.abuiles.workers.dev
 Preview Alias URL: https://abuiles-patch-1-minions-demo.abuiles.workers.dev
-`
-        }
+`,
+        rawSource: 'github_check_run'
       }
     ]);
 
@@ -41,14 +40,14 @@ Preview Alias URL: https://abuiles-patch-1-minions-demo.abuiles.workers.dev
     const previewUrl = discoverPreviewUrl(buildRepo({ previewCheckName: 'Workers Builds: minions-demo' }), [
       {
         name: 'Unrelated check',
-        details_url: 'https://unrelated.example.com'
+        detailsUrl: 'https://unrelated.example.com',
+        rawSource: 'github_check_run'
       },
       {
         name: 'Workers Builds: minions-demo',
-        app: { slug: 'cloudflare-workers-and-pages' },
-        output: {
-          summary: 'Preview URL: https://commit-minions-demo.abuiles.workers.dev'
-        }
+        appSlug: 'cloudflare-workers-and-pages',
+        summary: 'Preview URL: https://commit-minions-demo.abuiles.workers.dev',
+        rawSource: 'github_check_run'
       }
     ]);
 
@@ -63,10 +62,9 @@ Preview Alias URL: https://abuiles-patch-1-minions-demo.abuiles.workers.dev
     }), [
       {
         name: 'Workers Builds: minions-demo',
-        app: { slug: 'cloudflare-workers-and-pages' },
-        output: {
-          summary: 'Preview URL: https://commit-minions-demo.abuiles.workers.dev'
-        }
+        appSlug: 'cloudflare-workers-and-pages',
+        summary: 'Preview URL: https://commit-minions-demo.abuiles.workers.dev',
+        rawSource: 'github_check_run'
       }
     ]);
 
@@ -77,11 +75,10 @@ Preview Alias URL: https://abuiles-patch-1-minions-demo.abuiles.workers.dev
     const previewUrl = discoverPreviewUrl(buildRepo({ previewCheckName: 'Cloudflare Pages' }), [
       {
         name: 'Workers Builds: minions-demo',
-        app: { slug: 'cloudflare-workers-and-pages' },
-        details_url: 'https://dash.cloudflare.com/account/workers/services/view/minions-demo/builds/abc123',
-        output: {
-          summary: 'Preview Alias URL: https://abuiles-patch-1-minions-demo.abuiles.workers.dev'
-        }
+        appSlug: 'cloudflare-workers-and-pages',
+        detailsUrl: 'https://dash.cloudflare.com/account/workers/services/view/minions-demo/builds/abc123',
+        summary: 'Preview Alias URL: https://abuiles-patch-1-minions-demo.abuiles.workers.dev',
+        rawSource: 'github_check_run'
       }
     ]);
 
@@ -92,11 +89,10 @@ Preview Alias URL: https://abuiles-patch-1-minions-demo.abuiles.workers.dev
     const previewUrl = discoverPreviewUrl(buildRepo({ previewProvider: undefined, previewCheckName: undefined }), [
       {
         name: 'Workers Builds: minions-demo',
-        app: { slug: 'cloudflare-workers-and-pages' },
-        details_url: 'https://dash.cloudflare.com/account/workers/services/view/minions-demo/builds/abc123',
-        output: {
-          summary: 'Preview Alias URL: https://abuiles-patch-1-minions-demo.abuiles.workers.dev'
-        }
+        appSlug: 'cloudflare-workers-and-pages',
+        detailsUrl: 'https://dash.cloudflare.com/account/workers/services/view/minions-demo/builds/abc123',
+        summary: 'Preview Alias URL: https://abuiles-patch-1-minions-demo.abuiles.workers.dev',
+        rawSource: 'github_check_run'
       }
     ]);
 
@@ -107,21 +103,50 @@ Preview Alias URL: https://abuiles-patch-1-minions-demo.abuiles.workers.dev
     const previewUrl = discoverPreviewUrl(buildRepo({ previewProvider: undefined, previewCheckName: undefined }), [
       {
         name: 'Deploy Preview',
-        details_url: 'https://deploy-preview-42.pages.dev'
+        detailsUrl: 'https://deploy-preview-42.pages.dev',
+        rawSource: 'github_check_run'
       }
     ]);
 
     expect(previewUrl).toBe('https://deploy-preview-42.pages.dev');
   });
 
+  it('extracts previews from normalized GitLab status checks', () => {
+    const previewUrl = discoverPreviewUrl(buildRepo({
+      scmProvider: 'gitlab',
+      scmBaseUrl: 'https://gitlab.example.com',
+      projectPath: 'group/minions-demo',
+      previewCheckName: 'workers-preview'
+    }), [
+      {
+        name: 'pipeline',
+        detailsUrl: 'https://gitlab.example.com/group/minions-demo/-/pipelines/9',
+        htmlUrl: 'https://gitlab.example.com/group/minions-demo/-/pipelines/9',
+        summary: 'ref feature/minions',
+        status: 'completed',
+        conclusion: 'success',
+        rawSource: 'gitlab_pipeline'
+      },
+      {
+        name: 'workers-preview',
+        detailsUrl: 'https://preview-minions-demo.abuiles.workers.dev',
+        htmlUrl: 'https://preview-minions-demo.abuiles.workers.dev',
+        summary: 'Preview URL: https://preview-minions-demo.abuiles.workers.dev',
+        status: 'in_progress',
+        rawSource: 'gitlab_status'
+      }
+    ]);
+
+    expect(previewUrl).toBe('https://preview-minions-demo.abuiles.workers.dev');
+  });
+
   it('returns debug metadata for inspected checks', () => {
     const result = inspectPreviewDiscovery(buildRepo({ previewCheckName: 'Cloudflare Pages' }), [
       {
         name: 'Workers Builds: minions-demo',
-        app: { slug: 'cloudflare-workers-and-pages' },
-        output: {
-          summary: 'Preview Alias URL: https://abuiles-patch-1-minions-demo.abuiles.workers.dev'
-        }
+        appSlug: 'cloudflare-workers-and-pages',
+        summary: 'Preview Alias URL: https://abuiles-patch-1-minions-demo.abuiles.workers.dev',
+        rawSource: 'github_check_run'
       }
     ]);
 
@@ -132,6 +157,7 @@ Preview Alias URL: https://abuiles-patch-1-minions-demo.abuiles.workers.dev
       {
         name: 'Workers Builds: minions-demo',
         appSlug: 'cloudflare-workers-and-pages',
+        rawSource: 'github_check_run',
         score: 35,
         matchedAdapter: 'cloudflare',
         extracted: true
