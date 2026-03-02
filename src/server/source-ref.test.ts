@@ -58,6 +58,27 @@ describe('source-ref', () => {
     });
   });
 
+  it('returns a provider-neutral review-head source ref for GitLab MR URLs', () => {
+    expect(normalizeScmSourceRef('https://gitlab.example.com/group/platform/minions-demo/-/merge_requests/4', {
+      repoId: 'repo_demo',
+      slug: 'group/platform/minions-demo',
+      scmProvider: 'gitlab',
+      scmBaseUrl: 'https://gitlab.example.com',
+      projectPath: 'group/platform/minions-demo',
+      defaultBranch: 'main',
+      baselineUrl: 'https://example.com',
+      enabled: true,
+      createdAt: '2026-03-02T00:00:00.000Z',
+      updatedAt: '2026-03-02T00:00:00.000Z'
+    })).toEqual({
+      kind: 'review_head',
+      value: 'refs/merge-requests/4/head',
+      label: 'MR !4',
+      reviewNumber: 4,
+      reviewProvider: 'gitlab'
+    });
+  });
+
   it('normalizes GitHub branch URLs into fetch specs', () => {
     expect(
       normalizeTaskSourceRef('https://github.com/abuiles/minions-demo/tree/feature/minions', 'abuiles/minions-demo')

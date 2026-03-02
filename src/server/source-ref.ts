@@ -1,5 +1,6 @@
 import type { Repo, Task } from '../ui/domain/types';
 import { githubScmAdapter } from './scm/github';
+import { getScmAdapter } from './scm/registry';
 import type { LegacyNormalizedScmSourceRef, ScmSourceRef } from './scm/source-ref';
 import { toLegacyNormalizedScmSourceRef } from './scm/source-ref';
 
@@ -8,7 +9,7 @@ export function resolveTaskSourceRef(task: Pick<Task, 'sourceRef' | 'title' | 'd
 }
 
 export function normalizeScmSourceRef(sourceRef: string, repo: Repo): ScmSourceRef {
-  return githubScmAdapter.normalizeSourceRef(sourceRef, repo);
+  return getScmAdapter(repo).normalizeSourceRef(sourceRef, repo);
 }
 
 export function normalizeTaskSourceRef(sourceRef: string, expectedRepoSlug: string): LegacyNormalizedScmSourceRef {
