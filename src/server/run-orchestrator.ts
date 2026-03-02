@@ -1,24 +1,17 @@
-import { getSandbox, parseSSEStream, type ExecEvent, type ExecResult, type StreamOptions } from '@cloudflare/sandbox';
+import { getSandbox, type ExecResult } from '@cloudflare/sandbox';
 import type { RepoBoardDO } from './durable/repo-board';
 import type { BoardIndexDO } from './durable/board-index';
 import type { Repo, RunCommand, RunCommandPhase, RunEvent, Task } from '../ui/domain/types';
 import { buildRunLog, type RunJobParams } from './shared/real-run';
 import { NonRetryableError } from 'cloudflare:workflows';
 import { inspectPreviewDiscovery } from './preview-discovery';
-import { LineLogBuffer } from './line-log-buffer';
 import { buildWorkflowInvocationId } from './workflow-id';
 import { shouldRunEvidence, shouldRunPreview } from './shared/repo-execution-policy';
-import {
-  formatCodexRateLimitSnapshot,
-  getCodexCapacityDecision,
-  type CodexRateLimitsResponse
-} from './codex-rate-limit';
 import { getRepoHost } from '../shared/scm';
 import { getRunReviewNumber, getRunReviewUrl } from '../shared/scm';
 import type { ScmAdapter, ScmAdapterCredential } from './scm/adapter';
 import { getScmAdapter } from './scm/registry';
 import { getScmSourceRefFetchSpec } from './scm/source-ref';
-import type { LlmAdapter as LlmExecutorAdapter } from './llm/adapter';
 import { getLlmAdapter, resolveLlmAdapterKind } from './llm/registry';
 
 type WorkflowBinding<T> = {
@@ -33,7 +26,6 @@ type Stage3Env = Env & {
 
 type SleepFn = (name: string, duration: number | `${number} ${string}`) => Promise<void>;
 type RunPhase = NonNullable<ReturnType<typeof buildRunLog>['phase']>;
-const CODEX_STREAM_INACTIVITY_TIMEOUT_MS = 120_000;
 
 export async function scheduleRunJob(env: Env, ctx: ExecutionContext, params: RunJobParams) {
   const stage3Env = env as Stage3Env;
@@ -63,8 +55,8 @@ export async function executeRunJob(env: Env, params: RunJobParams, sleepFn: Sle
   const scmAdapter = getScmAdapter(repo);
   const llmAdapterKind = resolveLlmAdapterKind(detail.task, run.llmAdapter);
   const llmAdapter = getLlmAdapter(llmAdapterKind);
-  const codexModel = detail.task.uiMeta?.codexModel ?? 'gpt-5.1-codex-mini';
-  const codexReasoningEffort = detail.task.uiMeta?.codexReasoningEffort ?? 'medium';
+  const llmModel = detail.task.uiMeta?.llmModel ?? detail.task.uiMeta?.codexModel ?? 'gpt-5.1-codex-mini';
+  const llmReasoningEffort = detail.task.uiMeta?.llmReasoningEffort ?? detail.task.uiMeta?.codexReasoningEffort ?? 'medium';
 
   if (params.mode === 'evidence_only') {
     if (!shouldRunEvidence(repo)) {
@@ -93,10 +85,7 @@ export async function executeRunJob(env: Env, params: RunJobParams, sleepFn: Sle
 
   const scmCredential = await getScmCredential(env as Stage3Env, board, repo, scmAdapter);
   const sandbox = getSandbox(env.Sandbox, params.runId);
-
-  if (llmAdapter.kind !== 'codex') {
-    throw new NonRetryableError(`LLM adapter ${llmAdapter.kind} is registered but not wired into sandbox execution yet.`);
-  }
+  const llmContext = { env, sandbox, repoBoard, runId: params.runId };
 
   await repoBoard.appendRunLogs(params.runId, [buildRunLog(params.runId, `Starting sandbox run for ${repo.slug}.`, 'bootstrap')]);
   await repoBoard.transitionRun(params.runId, {
@@ -110,8 +99,7 @@ export async function executeRunJob(env: Env, params: RunJobParams, sleepFn: Sle
   try {
     await emitCommandLifecycle(repoBoard, params.runId, 'bootstrap', 'mkdir -p /workspace/repo', () => sandbox.exec('mkdir -p /workspace/repo'));
     await repoBoard.appendRunLogs(params.runId, [buildRunLog(params.runId, `${scmAdapter.provider} token suffix: ${scmCredential.token.slice(-4)}`, 'bootstrap')]);
-    await restoreCodexAuth(env as Stage3Env, sandbox, repo, params.runId, repoBoard);
-    await logCodexAuthDiagnostics(sandbox, params.runId, repoBoard);
+    await llmAdapter.restoreAuth({ ...llmContext, repo });
     await sandbox.gitCheckout(scmAdapter.buildCloneUrl(repo, scmCredential), {
       branch: repo.defaultBranch,
       targetDir: '/workspace/repo'
@@ -133,28 +121,19 @@ export async function executeRunJob(env: Env, params: RunJobParams, sleepFn: Sle
 
   try {
     const prompt = buildCodexPrompt(detail.task, repo, run);
-    await sandbox.writeFile('/workspace/task.txt', prompt);
-    await emitCommandLifecycle(
-      repoBoard,
-      params.runId,
-      'codex',
-      "bash -lc 'command -v codex >/dev/null 2>&1 || npm install -g @openai/codex'",
-      () => sandbox.exec("bash -lc 'command -v codex >/dev/null 2>&1 || npm install -g @openai/codex'")
-    );
-    await logCodexCliDiagnostics(sandbox, params.runId, repoBoard, codexModel, codexReasoningEffort);
-    await waitForCodexCapacityIfNeeded(sandbox, repoBoard, params.runId, codexModel, sleepFn);
-    const codexResult = await runCodexProcessWithLogs(
-      sandbox,
-      repoBoard,
-      params.runId,
-      'codex',
-      llmAdapter,
-      `bash -lc ${shellQuote(`set -euo pipefail
-export HOME="\${HOME:-/root}"
-cd /workspace/repo
-cat /workspace/task.txt | codex exec -m ${codexModel} -c model_reasoning_effort="${codexReasoningEffort}" --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check -C /workspace/repo --json -
-`)}`
-    );
+    const request = {
+      repo,
+      task: detail.task,
+      run,
+      cwd: '/workspace/repo',
+      prompt,
+      model: llmModel,
+      reasoningEffort: llmReasoningEffort
+    } as const;
+    await llmAdapter.ensureInstalled(llmContext);
+    await llmAdapter.logDiagnostics(llmContext, request);
+    await llmAdapter.waitForCapacityIfNeeded?.(llmContext, request, sleepFn);
+    const codexResult = await llmAdapter.run(llmContext, request);
     if (codexResult.stoppedForTakeover) {
       await repoBoard.appendRunLogs(params.runId, [
         buildRunLog(params.runId, 'Codex execution stopped after operator takeover. Leaving the sandbox under operator control.', 'codex')
@@ -534,315 +513,6 @@ async function getScmCredential(
   throw new NonRetryableError(`Missing SCM credential for provider ${scmAdapter.provider} host ${getRepoHost(repo)}.`);
 }
 
-function bytesToBase64(buffer: ArrayBuffer) {
-  let binary = '';
-  const bytes = new Uint8Array(buffer);
-  const chunkSize = 0x8000;
-  for (let index = 0; index < bytes.length; index += chunkSize) {
-    const chunk = bytes.subarray(index, index + chunkSize);
-    binary += String.fromCharCode(...chunk);
-  }
-  return btoa(binary);
-}
-
-async function restoreCodexAuth(env: Stage3Env, sandbox: ReturnType<typeof getSandbox>, repo: Repo, runId: string, repoBoard: DurableObjectStub<RepoBoardDO>) {
-  if (!repo.codexAuthBundleR2Key || !env.RUN_ARTIFACTS) {
-    const reason = !repo.codexAuthBundleR2Key
-      ? 'No Codex auth bundle configured for this repo.'
-      : 'RUN_ARTIFACTS binding is not configured.';
-    await repoBoard.appendRunLogs(runId, [buildRunLog(runId, reason, 'bootstrap', 'error')]);
-    throw new NonRetryableError(reason);
-  }
-
-  const object = await env.RUN_ARTIFACTS.get(repo.codexAuthBundleR2Key);
-  if (!object) {
-    await repoBoard.appendRunLogs(runId, [buildRunLog(runId, `Codex auth bundle ${repo.codexAuthBundleR2Key} was not found in R2.`, 'bootstrap', 'error')]);
-    throw new NonRetryableError(`Codex auth bundle ${repo.codexAuthBundleR2Key} was not found in R2.`);
-  }
-
-  const archiveBase64 = bytesToBase64(await object.arrayBuffer());
-  await sandbox.writeFile('/workspace/codex-auth.tgz.b64', archiveBase64);
-  const restoreResult = await sandbox.exec(
-    `bash -lc ${shellQuote(`set -euo pipefail
-export HOME="\${HOME:-/root}"
-base64 -d /workspace/codex-auth.tgz.b64 > /workspace/codex-auth.tgz
-mkdir -p "$HOME"
-tar -xzf /workspace/codex-auth.tgz -C "$HOME"
-test -d "$HOME/.codex"
-ls -1 "$HOME/.codex" | sort | head -n 40
-`)}`
-  );
-  await appendCommandLogs(repoBoard, runId, 'bootstrap', restoreResult.stdout, restoreResult.stderr);
-  if (!restoreResult.success) {
-    throw new NonRetryableError('Codex auth bundle restore failed.');
-  }
-
-  const mcpConfig = await sandbox.exec(
-    `bash -lc ${shellQuote(`set -euo pipefail
-export HOME="\${HOME:-/root}"
-CONFIG_DIR="$HOME/.codex"
-CONFIG_FILE="$CONFIG_DIR/config.toml"
-mkdir -p "$CONFIG_DIR"
-touch "$CONFIG_FILE"
-
-if ! grep -Fq "[mcp_servers.cloudflare-doc-mcp]" "$CONFIG_FILE"; then
-  printf '\n[mcp_servers.cloudflare-doc-mcp]\nurl="https://docs.mcp.cloudflare.com/mcp"\n' >> "$CONFIG_FILE"
-fi
-
-echo "Codex config file: $CONFIG_FILE"
-if grep -Fq "[mcp_servers.cloudflare-doc-mcp]" "$CONFIG_FILE"; then
-  echo "Cloudflare MCP: configured"
-else
-  echo "Cloudflare MCP: missing"
-fi
-`)}`
-  );
-  await appendCommandLogs(repoBoard, runId, 'bootstrap', mcpConfig.stdout, mcpConfig.stderr);
-  if (!mcpConfig.success || !(mcpConfig.stdout ?? '').includes('Cloudflare MCP: configured')) {
-    throw new NonRetryableError('Cloudflare MCP configuration failed in sandbox.');
-  }
-}
-
-async function logCodexAuthDiagnostics(sandbox: ReturnType<typeof getSandbox>, runId: string, repoBoard: DurableObjectStub<RepoBoardDO>) {
-  await sandbox.writeFile(
-    '/workspace/codex-auth-diagnostics.mjs',
-    `import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-
-const home = os.homedir();
-console.log(\`HOME=\${home}\`);
-const codexDir = path.join(home, '.codex');
-if (!fs.existsSync(codexDir) || !fs.statSync(codexDir).isDirectory()) {
-  console.log('Codex dir: missing');
-  process.exit(0);
-}
-
-console.log('Codex dir: present');
-for (const entry of fs.readdirSync(codexDir).sort()) {
-  const fullPath = path.join(codexDir, entry);
-  if (fs.statSync(fullPath).isFile()) {
-    console.log(fullPath);
-  }
-}
-
-const authPath = path.join(codexDir, 'auth.json');
-if (!fs.existsSync(authPath) || !fs.statSync(authPath).isFile()) {
-  console.log('Codex auth file: missing');
-  process.exit(0);
-}
-
-const data = JSON.parse(fs.readFileSync(authPath, 'utf8'));
-console.log(\`Codex auth file: \${authPath}\`);
-const configPath = path.join(codexDir, 'config.toml');
-console.log(\`Codex config file: \${configPath}\`);
-if (fs.existsSync(configPath) && fs.statSync(configPath).isFile()) {
-  const config = fs.readFileSync(configPath, 'utf8');
-  console.log(\`Cloudflare MCP configured: \${config.includes('[mcp_servers.cloudflare-doc-mcp]') ? 'yes' : 'no'}\`);
-} else {
-  console.log('Cloudflare MCP configured: no');
-}
-const apiKey = typeof data.OPENAI_API_KEY === 'string' && data.OPENAI_API_KEY ? data.OPENAI_API_KEY : null;
-console.log(\`Codex OPENAI_API_KEY suffix: \${apiKey ? apiKey.slice(-4) : 'missing'}\`);
-const accessToken = data.tokens && typeof data.tokens.access_token === 'string' && data.tokens.access_token
-  ? data.tokens.access_token
-  : null;
-console.log(\`Codex access_token suffix: \${accessToken ? accessToken.slice(-4) : 'missing'}\`);
-`
-  );
-  const diagnostics = await sandbox.exec(
-    `bash -lc ${shellQuote(`set -euo pipefail
-export HOME="\${HOME:-/root}"
-node /workspace/codex-auth-diagnostics.mjs
-`)}`
-  );
-  await appendCommandLogs(repoBoard, runId, 'bootstrap', diagnostics.stdout, diagnostics.stderr);
-  if (!diagnostics.success) {
-    throw new NonRetryableError('Codex auth diagnostics failed.');
-  }
-  const stdout = diagnostics.stdout ?? '';
-  if (stdout.includes('Codex dir: missing')) {
-    throw new NonRetryableError('Codex auth directory is missing after restore.');
-  }
-  if (stdout.includes('Codex auth file: missing')) {
-    throw new NonRetryableError('Codex auth file is missing after restore.');
-  }
-  if (stdout.includes('Cloudflare MCP configured: no')) {
-    throw new NonRetryableError('Cloudflare MCP is not configured in sandbox codex config.');
-  }
-  if (stdout.includes('Codex OPENAI_API_KEY suffix: missing') && stdout.includes('Codex access_token suffix: missing')) {
-    throw new NonRetryableError('Codex auth file is present but contains no usable credentials.');
-  }
-}
-
-async function logCodexCliDiagnostics(
-  sandbox: ReturnType<typeof getSandbox>,
-  runId: string,
-  repoBoard: DurableObjectStub<RepoBoardDO>,
-  codexModel: string,
-  codexReasoningEffort: string
-) {
-  const diagnostics = await sandbox.exec(
-    `bash -lc ${shellQuote(`set -euo pipefail
-command -v codex
-codex --version
-printf 'Codex model: ${codexModel}\\n'
-printf 'Codex reasoning effort: ${codexReasoningEffort}\\n'
-`)}`
-  );
-  await appendCommandLogs(repoBoard, runId, 'codex', diagnostics.stdout, diagnostics.stderr);
-  if (!diagnostics.success) {
-    throw new NonRetryableError('Codex CLI is not available in the sandbox.');
-  }
-}
-
-async function waitForCodexCapacityIfNeeded(
-  sandbox: ReturnType<typeof getSandbox>,
-  repoBoard: DurableObjectStub<RepoBoardDO>,
-  runId: string,
-  codexModel: string,
-  sleepFn: SleepFn
-) {
-  for (let attempt = 1; attempt <= 4; attempt += 1) {
-    const payload = await readCodexRateLimits(sandbox, repoBoard, runId);
-    if (!payload) {
-      return;
-    }
-
-    const decision = getCodexCapacityDecision(payload, codexModel, Date.now());
-    if (!decision.snapshot) {
-      await repoBoard.appendRunLogs(runId, [
-        buildRunLog(runId, 'Codex usage preflight did not return a usable rate-limit snapshot. Continuing without waiting.', 'codex')
-      ]);
-      return;
-    }
-
-    await repoBoard.appendRunLogs(runId, [
-      buildRunLog(runId, formatCodexRateLimitSnapshot(decision.snapshot), 'codex')
-    ]);
-
-    if (!decision.shouldWait || !decision.waitMs) {
-      return;
-    }
-
-    await repoBoard.transitionRun(runId, {
-      status: 'BOOTSTRAPPING',
-      appendTimelineNote: 'Waiting for Codex rate limits to reset before starting execution.'
-    });
-    await repoBoard.appendRunLogs(runId, [
-      buildRunLog(runId, `${decision.reason} Sleeping until Codex budget resets.`, 'codex', 'error')
-    ]);
-    await sleepFn(`codex-budget-${attempt}`, Math.max(1_000, decision.waitMs));
-    await repoBoard.transitionRun(runId, {
-      status: 'RUNNING_CODEX',
-      appendTimelineNote: 'Codex rate-limit wait completed. Rechecking execution budget.'
-    });
-  }
-}
-
-async function readCodexRateLimits(
-  sandbox: ReturnType<typeof getSandbox>,
-  repoBoard: DurableObjectStub<RepoBoardDO>,
-  runId: string
-): Promise<CodexRateLimitsResponse | undefined> {
-  await sandbox.writeFile(
-    '/workspace/codex-rate-limits.mjs',
-    `import { spawn } from 'node:child_process';
-
-function fail(message) {
-  console.error(message);
-  process.exit(1);
-}
-
-const child = spawn('codex', ['app-server'], {
-  stdio: ['pipe', 'pipe', 'pipe']
-});
-
-let stdoutBuffer = '';
-let stderrBuffer = '';
-let resolved = false;
-
-const timeout = setTimeout(() => {
-  if (!resolved) {
-    child.kill('SIGTERM');
-    fail('Timed out while reading Codex rate limits.');
-  }
-}, 10000);
-
-child.stderr.on('data', (chunk) => {
-  stderrBuffer += chunk.toString();
-});
-
-child.stdout.on('data', (chunk) => {
-  stdoutBuffer += chunk.toString();
-  let newlineIndex;
-  while ((newlineIndex = stdoutBuffer.indexOf('\\n')) >= 0) {
-    const line = stdoutBuffer.slice(0, newlineIndex).trim();
-    stdoutBuffer = stdoutBuffer.slice(newlineIndex + 1);
-    if (!line) continue;
-    const message = JSON.parse(line);
-    if (message.id === 1) {
-      child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'account/rateLimits/read' }) + '\\n');
-      continue;
-    }
-    if (message.id === 2) {
-      resolved = true;
-      clearTimeout(timeout);
-      console.log(JSON.stringify(message.result));
-      child.kill('SIGTERM');
-      return;
-    }
-  }
-});
-
-child.on('exit', (code) => {
-  if (resolved) {
-    return;
-  }
-  clearTimeout(timeout);
-  fail(stderrBuffer.trim() || \`Codex app-server exited before returning rate limits (code \${code ?? 'unknown'}).\`);
-});
-
-child.stdin.write(JSON.stringify({
-  jsonrpc: '2.0',
-  id: 1,
-  method: 'initialize',
-  params: {
-    apiVersion: 2,
-    clientInfo: { name: 'agentboard-rate-limit-probe', version: '1.0.0' }
-  }
-}) + '\\n');
-`
-  );
-  const result = await sandbox.exec(
-    `bash -lc ${shellQuote(`set -euo pipefail
-export HOME="\${HOME:-/root}"
-node /workspace/codex-rate-limits.mjs
-`)}`
-  );
-  if (!result.success) {
-    await appendCommandLogs(repoBoard, runId, 'codex', result.stdout, result.stderr);
-    await repoBoard.appendRunLogs(runId, [
-      buildRunLog(runId, 'Codex usage preflight failed. Continuing without a rate-limit wait.', 'codex', 'error')
-    ]);
-    return undefined;
-  }
-
-  try {
-    return JSON.parse(result.stdout.trim()) as CodexRateLimitsResponse;
-  } catch (error) {
-    await repoBoard.appendRunLogs(runId, [
-      buildRunLog(
-        runId,
-        `Codex usage preflight returned invalid JSON (${error instanceof Error ? error.message : String(error)}). Continuing without a rate-limit wait.`,
-        'codex',
-        'error'
-      )
-    ]);
-    return undefined;
-  }
-}
-
 async function persistArtifactManifest(env: Stage3Env, runId: string, manifest: Awaited<ReturnType<RepoBoardDO['getRunArtifacts']>>) {
   if (!manifest || !env.RUN_ARTIFACTS) {
     return;
@@ -918,384 +588,6 @@ async function emitCommandLifecycle(
     )
   ]);
 
-  return result;
-}
-
-async function execStreamWithLogs(
-  sandbox: ReturnType<typeof getSandbox>,
-  repoBoard: DurableObjectStub<RepoBoardDO>,
-  runId: string,
-  phase: NonNullable<ReturnType<typeof buildRunLog>['phase']>,
-  llmAdapter: LlmExecutorAdapter,
-  command: string,
-  options?: StreamOptions
-): Promise<ExecResult> {
-  const commandId = buildRunCommandId(runId, phase);
-  const run = await repoBoard.getRun(runId);
-  const startedAt = new Date().toISOString();
-  const stdoutBuffer = new LineLogBuffer();
-  const stderrBuffer = new LineLogBuffer();
-  const stdoutChunks: string[] = [];
-  const stderrChunks: string[] = [];
-  let completedAt = Date.now();
-  let exitCode = 1;
-  let streamError: string | undefined;
-  let eventResult: ExecResult | undefined;
-  let appendQueue = Promise.resolve();
-  let latestResumeCommand: string | undefined;
-  let latestThreadId: string | undefined;
-
-  await repoBoard.upsertRunCommands(runId, [{
-    id: commandId,
-    runId,
-    phase: phase as RunCommandPhase,
-    startedAt,
-    status: 'running',
-    command,
-    source: 'system'
-  }]);
-  await repoBoard.appendRunEvents(runId, [
-    buildRunEvent(run, 'workflow', 'command.started', `Started ${phase} command.`, { commandId, phase })
-  ]);
-
-  const enqueueLogs = (logs: Array<{ message: string; level: 'info' | 'error' }>) => {
-    if (!logs.length) {
-      return;
-    }
-
-    appendQueue = appendQueue.then(() =>
-      repoBoard.appendRunLogs(
-        runId,
-        logs.map((log) => buildRunLog(runId, log.message, phase, log.level))
-      )
-    );
-  };
-
-  const stream = await sandbox.execStream(command, options);
-
-  try {
-    for await (const event of parseSSEStream<ExecEvent>(stream)) {
-      switch (event.type) {
-        case 'stdout': {
-          const chunk = event.data ?? '';
-          stdoutChunks.push(chunk);
-          const sessionState = extractLlmSessionState(llmAdapter, chunk, latestThreadId);
-          latestThreadId = sessionState.sessionId ?? latestThreadId;
-          if (sessionState.resumeCommand && sessionState.resumeCommand !== latestResumeCommand) {
-            latestResumeCommand = sessionState.resumeCommand;
-            const latestRun = await repoBoard.getRun(runId);
-            await repoBoard.transitionRun(runId, {
-              llmAdapter: llmAdapter.kind,
-              llmSupportsResume: llmAdapter.capabilities.supportsResume,
-              llmResumeCommand: latestResumeCommand,
-              llmSessionId: latestThreadId,
-              latestCodexResumeCommand: latestResumeCommand
-            });
-            if (latestRun.operatorSession) {
-              await repoBoard.updateOperatorSession(runId, {
-                ...latestRun.operatorSession,
-                llmAdapter: latestRun.operatorSession.llmAdapter ?? latestRun.llmAdapter ?? llmAdapter.kind,
-                llmSupportsResume: latestRun.operatorSession.llmSupportsResume ?? latestRun.llmSupportsResume ?? llmAdapter.capabilities.supportsResume,
-                llmResumeCommand: latestResumeCommand,
-                llmSessionId: latestThreadId,
-                codexResumeCommand: latestResumeCommand,
-                codexThreadId: latestThreadId,
-                takeoverState: latestRun.operatorSession.takeoverState === 'operator_control' ? 'resumable' : latestRun.operatorSession.takeoverState
-              });
-            }
-            await repoBoard.appendRunEvents(runId, [
-              buildRunEvent(
-                await repoBoard.getRun(runId),
-                'system',
-                'codex.resume_available',
-                `${llmAdapter.capabilities.resumeCommandLabel ?? 'Resume command'} is available for this run.`,
-                { command: latestResumeCommand }
-              )
-            ]);
-          }
-          enqueueLogs(stdoutBuffer.push(chunk).map((message) => ({ message, level: 'info' as const })));
-          break;
-        }
-        case 'stderr': {
-          const chunk = event.data ?? '';
-          stderrChunks.push(chunk);
-          enqueueLogs(stderrBuffer.push(chunk).map((message) => ({ message, level: 'error' as const })));
-          break;
-        }
-        case 'complete':
-          completedAt = Date.now();
-          exitCode = event.exitCode ?? exitCode;
-          eventResult = event.result;
-          break;
-        case 'error':
-          completedAt = Date.now();
-          streamError = event.error ?? 'Command stream failed.';
-          break;
-        case 'start':
-          break;
-      }
-    }
-  } finally {
-    enqueueLogs(stdoutBuffer.flush().map((message) => ({ message, level: 'info' as const })));
-    enqueueLogs(stderrBuffer.flush().map((message) => ({ message, level: 'error' as const })));
-    await appendQueue;
-  }
-
-  if (eventResult) {
-    await repoBoard.upsertRunCommands(runId, [{
-      id: commandId,
-      runId,
-      phase: phase as RunCommandPhase,
-      startedAt,
-      completedAt: new Date().toISOString(),
-      exitCode: eventResult.exitCode,
-      status: eventResult.success ? 'completed' : 'failed',
-      command,
-      source: 'system',
-      stdoutPreview: summarizeOutput(eventResult.stdout),
-      stderrPreview: summarizeOutput(eventResult.stderr)
-    }]);
-    await repoBoard.appendRunEvents(runId, [
-      buildRunEvent(await repoBoard.getRun(runId), eventResult.success ? 'workflow' : 'system', 'command.completed', `Completed ${phase} command with exit code ${eventResult.exitCode}.`, {
-        commandId,
-        phase,
-        exitCode: eventResult.exitCode,
-        success: eventResult.success
-      })
-    ]);
-    return eventResult;
-  }
-
-  const stdout = stdoutChunks.join('');
-  const stderr = [stderrChunks.join(''), streamError].filter(Boolean).join(stderrChunks.length ? '\n' : '');
-  const result = {
-    success: !streamError && exitCode === 0,
-    exitCode,
-    stdout,
-    stderr,
-    command,
-    duration: Math.max(0, completedAt - Date.parse(startedAt)),
-    timestamp: startedAt
-  };
-  await repoBoard.upsertRunCommands(runId, [{
-    id: commandId,
-    runId,
-    phase: phase as RunCommandPhase,
-    startedAt,
-    completedAt: new Date().toISOString(),
-    exitCode: result.exitCode,
-    status: result.success ? 'completed' : 'failed',
-    command,
-    source: 'system',
-    stdoutPreview: summarizeOutput(result.stdout),
-    stderrPreview: summarizeOutput(result.stderr)
-  }]);
-  await repoBoard.appendRunEvents(runId, [
-    buildRunEvent(await repoBoard.getRun(runId), result.success ? 'workflow' : 'system', 'command.completed', `Completed ${phase} command with exit code ${result.exitCode}.`, {
-      commandId,
-      phase,
-      exitCode: result.exitCode,
-      success: result.success
-    })
-  ]);
-  return result;
-}
-
-type ManagedExecResult = ExecResult & { stoppedForTakeover?: boolean };
-
-async function runCodexProcessWithLogs(
-  sandbox: ReturnType<typeof getSandbox>,
-  repoBoard: DurableObjectStub<RepoBoardDO>,
-  runId: string,
-  phase: NonNullable<ReturnType<typeof buildRunLog>['phase']>,
-  llmAdapter: LlmExecutorAdapter,
-  command: string
-): Promise<ManagedExecResult> {
-  const commandId = buildRunCommandId(runId, phase);
-  const run = await repoBoard.getRun(runId);
-  const startedAt = new Date().toISOString();
-  const stdoutBuffer = new LineLogBuffer();
-  const stderrBuffer = new LineLogBuffer();
-  const stdoutChunks: string[] = [];
-  const stderrChunks: string[] = [];
-  let completedAt = Date.now();
-  let exitCode = 1;
-  let streamError: string | undefined;
-  let appendQueue = Promise.resolve();
-  let latestResumeCommand: string | undefined;
-  let latestThreadId: string | undefined;
-  let lastStreamEventAt = Date.now();
-
-  await repoBoard.upsertRunCommands(runId, [{
-    id: commandId,
-    runId,
-    phase: phase as RunCommandPhase,
-    startedAt,
-    status: 'running',
-    command,
-    source: 'system'
-  }]);
-  await repoBoard.appendRunEvents(runId, [
-    buildRunEvent(run, 'workflow', 'command.started', `Started ${phase} command.`, { commandId, phase })
-  ]);
-
-  const enqueueLogs = (logs: Array<{ message: string; level: 'info' | 'error' }>) => {
-    if (!logs.length) {
-      return;
-    }
-
-    appendQueue = appendQueue.then(() =>
-      repoBoard.appendRunLogs(
-        runId,
-        logs.map((log) => buildRunLog(runId, log.message, phase, log.level))
-      )
-    );
-  };
-
-  const process = await sandbox.startProcess(command);
-  await repoBoard.transitionRun(runId, { codexProcessId: process.id });
-  const stream = await sandbox.streamProcessLogs(process.id);
-  const iterator = parseSSEStream<Record<string, unknown>>(stream)[Symbol.asyncIterator]();
-
-  try {
-    while (true) {
-      const next = await Promise.race([
-        iterator.next(),
-        new Promise<IteratorResult<Record<string, unknown>>>((_, reject) =>
-          setTimeout(() => reject(new Error('CODEX_STREAM_IDLE_TIMEOUT')), CODEX_STREAM_INACTIVITY_TIMEOUT_MS)
-        )
-      ]);
-      if (next.done) {
-        break;
-      }
-      const event = next.value;
-      lastStreamEventAt = Date.now();
-      const eventType = typeof event.type === 'string' ? event.type : '';
-      switch (eventType) {
-        case 'stdout': {
-          const chunk = typeof event.data === 'string' ? event.data : '';
-          stdoutChunks.push(chunk);
-          const sessionState = extractLlmSessionState(llmAdapter, chunk, latestThreadId);
-          latestThreadId = sessionState.sessionId ?? latestThreadId;
-          if (sessionState.resumeCommand && sessionState.resumeCommand !== latestResumeCommand) {
-            latestResumeCommand = sessionState.resumeCommand;
-            const latestRun = await repoBoard.getRun(runId);
-            await repoBoard.transitionRun(runId, {
-              llmAdapter: llmAdapter.kind,
-              llmSupportsResume: llmAdapter.capabilities.supportsResume,
-              llmResumeCommand: latestResumeCommand,
-              llmSessionId: latestThreadId,
-              latestCodexResumeCommand: latestResumeCommand
-            });
-            if (latestRun.operatorSession) {
-              await repoBoard.updateOperatorSession(runId, {
-                ...latestRun.operatorSession,
-                llmAdapter: latestRun.operatorSession.llmAdapter ?? latestRun.llmAdapter ?? llmAdapter.kind,
-                llmSupportsResume: latestRun.operatorSession.llmSupportsResume ?? latestRun.llmSupportsResume ?? llmAdapter.capabilities.supportsResume,
-                llmResumeCommand: latestResumeCommand,
-                llmSessionId: latestThreadId,
-                codexResumeCommand: latestResumeCommand,
-                codexThreadId: latestThreadId,
-                takeoverState: latestRun.operatorSession.takeoverState === 'operator_control' ? 'resumable' : latestRun.operatorSession.takeoverState
-              });
-            }
-            await repoBoard.appendRunEvents(runId, [
-              buildRunEvent(
-                await repoBoard.getRun(runId),
-                'system',
-                'codex.resume_available',
-                `${llmAdapter.capabilities.resumeCommandLabel ?? 'Resume command'} is available for this run.`,
-                { command: latestResumeCommand }
-              )
-            ]);
-          }
-          enqueueLogs(stdoutBuffer.push(chunk).map((message) => ({ message, level: 'info' as const })));
-          break;
-        }
-        case 'stderr': {
-          const chunk = typeof event.data === 'string' ? event.data : '';
-          stderrChunks.push(chunk);
-          enqueueLogs(stderrBuffer.push(chunk).map((message) => ({ message, level: 'error' as const })));
-          break;
-        }
-        case 'exit':
-        case 'complete':
-          completedAt = Date.now();
-          exitCode = typeof event.exitCode === 'number' ? event.exitCode : exitCode;
-          break;
-        case 'error':
-          completedAt = Date.now();
-          streamError = typeof event.error === 'string' ? event.error : 'Command stream failed.';
-          break;
-      }
-    }
-  } catch (error) {
-    if (error instanceof Error && error.message === 'CODEX_STREAM_IDLE_TIMEOUT') {
-      const idleMs = Date.now() - lastStreamEventAt;
-      streamError = `Codex stream inactivity timeout after ${Math.floor(idleMs / 1000)}s without events.`;
-      try {
-        await sandbox.killProcess(process.id);
-      } catch {
-        // best effort
-      }
-      await repoBoard.appendRunLogs(runId, [
-        buildRunLog(runId, `${streamError} Killed Codex process and failing run for retry.`, phase, 'error')
-      ]);
-    } else {
-      throw error;
-    }
-  } finally {
-    enqueueLogs(stdoutBuffer.flush().map((message) => ({ message, level: 'info' as const })));
-    enqueueLogs(stderrBuffer.flush().map((message) => ({ message, level: 'error' as const })));
-    await appendQueue;
-  }
-
-  const latestRun = await repoBoard.getRun(runId);
-  const stoppedForTakeover = latestRun.status === 'OPERATOR_CONTROLLED';
-  const stdout = stdoutChunks.join('');
-  const stderr = [stderrChunks.join(''), streamError].filter(Boolean).join(stderrChunks.length ? '\n' : '');
-  const result: ManagedExecResult = {
-    success: !streamError && exitCode === 0,
-    exitCode,
-    stdout,
-    stderr,
-    command,
-    duration: Math.max(0, completedAt - Date.parse(startedAt)),
-    timestamp: startedAt,
-    stoppedForTakeover
-  };
-
-  await repoBoard.transitionRun(runId, { codexProcessId: undefined });
-  await repoBoard.upsertRunCommands(runId, [{
-    id: commandId,
-    runId,
-    phase: phase as RunCommandPhase,
-    startedAt,
-    completedAt: new Date().toISOString(),
-    exitCode: result.exitCode,
-    status: result.success || stoppedForTakeover ? 'completed' : 'failed',
-    command,
-    source: 'system',
-    stdoutPreview: summarizeOutput(result.stdout),
-    stderrPreview: summarizeOutput(result.stderr)
-  }]);
-  await repoBoard.appendRunEvents(runId, [
-    buildRunEvent(
-      await repoBoard.getRun(runId),
-      stoppedForTakeover ? 'operator' : result.success ? 'workflow' : 'system',
-      'command.completed',
-      stoppedForTakeover
-        ? `Stopped ${phase} command after operator takeover.`
-        : `Completed ${phase} command with exit code ${result.exitCode}.`,
-      {
-        commandId,
-        phase,
-        exitCode: result.exitCode,
-        success: result.success,
-        stoppedForTakeover
-      }
-    )
-  ]);
   return result;
 }
 
@@ -1445,14 +737,6 @@ function summarizeOutput(output?: string) {
 
   const compact = output.trim().replace(/\s+/g, ' ');
   return compact.length > 240 ? `${compact.slice(0, 237)}...` : compact;
-}
-
-function extractLlmSessionState(llmAdapter: LlmExecutorAdapter, chunk: string, fallbackSessionId?: string) {
-  if (!llmAdapter.capabilities.supportsResume || !llmAdapter.extractSessionState) {
-    return { sessionId: fallbackSessionId, resumeCommand: undefined };
-  }
-  const state = llmAdapter.extractSessionState(chunk, fallbackSessionId);
-  return { sessionId: state.sessionId ?? fallbackSessionId, resumeCommand: state.resumeCommand };
 }
 
 function shellQuote(value: string) {
