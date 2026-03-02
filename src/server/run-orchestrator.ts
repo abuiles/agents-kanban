@@ -412,7 +412,16 @@ async function discoverPreviewAndRunEvidence(
   });
   const previewUrl = await waitForPreview(env, repoBoard, repo, runId, sleepFn, scmAdapter, scmCredential);
   if (!previewUrl) {
-    await failRun(repoBoard, runId, 'PREVIEW_TIMEOUT', 'preview', 'Preview URL did not appear before timeout.', false);
+    await repoBoard.appendRunLogs(runId, [
+      buildRunLog(runId, 'Preview URL did not appear before timeout. Completing run without preview evidence.', 'preview', 'error')
+    ]);
+    await repoBoard.transitionRun(runId, {
+      status: 'DONE',
+      previewStatus: 'FAILED',
+      evidenceStatus: 'NOT_STARTED',
+      endedAt: new Date().toISOString(),
+      appendTimelineNote: 'Preview URL was not discovered before timeout. Run completed without preview evidence.'
+    });
     return;
   }
 
