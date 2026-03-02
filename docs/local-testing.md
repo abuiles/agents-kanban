@@ -104,6 +104,7 @@ These are mandatory for non-mocked runs:
 
 - KV: `SECRETS_KV`
 - R2 bucket: `RUN_ARTIFACTS` (artifacts + optional Codex auth bundle)
+- D1: `TENANT_DB` (tenant/auth/admin persistence)
 - Workflow: `RUN_WORKFLOW`
 - Durable Objects: `BOARD_INDEX`, `REPO_BOARD`, `Sandbox`
 

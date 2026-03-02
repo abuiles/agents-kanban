@@ -79,5 +79,12 @@
       "bucket_name": "my-sandbox-run-artifacts",
       "binding": "RUN_ARTIFACTS"
     }
+  ],
+  "d1_databases": [
+    {
+      "binding": "TENANT_DB",
+      "database_name": "my-sandbox-tenant-db",
+      "database_id": "local-my-sandbox-tenant-db"
+    }
   ]
 }

@@ -9,6 +9,7 @@ This guide explains how tenant management and auth work for API consumers.
 - Tenant ownership controls member management operations.
 - Repo/task/run access is tenant-scoped server-side.
 - Protected APIs require a valid session token (no legacy header fallback path).
+- Tenant/auth/admin records are persisted in D1 (`TENANT_DB` binding).
 
 ## Core Concepts
 

@@ -25,6 +25,7 @@ import { parseBoardSnapshot } from '../ui/store/board-snapshot';
 import { scheduleRunJob } from './run-orchestrator';
 import { getRunUsage, getTenantRunUsage, getTenantUsageSummary } from './usage-reporting';
 import { normalizeTenantId, normalizeTenantIdStrict } from '../shared/tenant';
+import * as tenantAuthDb from './tenant-auth-db';
 
 const BOARD_OBJECT_NAME = 'agentboard';
 
@@ -35,7 +36,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
   try {
     if (url.pathname === '/api/auth/signup' && request.method === 'POST') {
       const input = parseAuthSignupInput(await readJson(request));
-      const result = await board.signup({
+      const result = await tenantAuthDb.signup(env, {
         email: input.email,
         password: input.password,
         displayName: input.displayName,
@@ -60,7 +61,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
 
     if (url.pathname === '/api/auth/login' && request.method === 'POST') {
       const input = parseAuthLoginInput(await readJson(request));
-      const result = await board.login(input);
+      const result = await tenantAuthDb.login(env, input);
       const response = json({
         user: result.user,
         session: result.session,
@@ -73,9 +74,9 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
     }
 
     if (url.pathname === '/api/auth/logout' && request.method === 'POST') {
-      const requestContext = await resolveRequestTenantContext(board, request, { requireSession: true });
+      const requestContext = await resolveRequestTenantContext(env, board, request, { requireSession: true });
       if (requestContext.sessionId) {
-        await board.logout(requestContext.sessionId);
+        await tenantAuthDb.logout(env, requestContext.sessionId);
       }
       const response = json({ ok: true });
       response.headers.append('Set-Cookie', clearSessionCookie());
@@ -84,30 +85,30 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
 
     if (url.pathname === '/api/platform/auth/login' && request.method === 'POST') {
       const input = parsePlatformAuthLoginInput(await readJson(request));
-      const result = await board.platformLogin(input);
+      const result = await tenantAuthDb.platformLogin(env, input);
       return json(result);
     }
 
     if (url.pathname === '/api/platform/support/release-tenant' && request.method === 'POST') {
-      const platformContext = await resolvePlatformAdminContext(board, request);
-      const released = await board.releasePlatformSupportSession(platformContext.platformSupportToken, platformContext.platformAdminId);
+      const platformContext = await resolvePlatformAdminContext(env, board, request);
+      const released = await tenantAuthDb.releasePlatformSupportSession(env, platformContext.platformSupportToken, platformContext.platformAdminId);
       return json(released);
     }
 
     if (url.pathname === '/api/platform/support/sessions' && request.method === 'GET') {
-      const platformContext = await resolvePlatformAdminContext(board, request);
-      return json(await board.listPlatformSupportSessions(platformContext.platformAdminId));
+      const platformContext = await resolvePlatformAdminContext(env, board, request);
+      return json(await tenantAuthDb.listPlatformSupportSessions(env, platformContext.platformAdminId));
     }
 
     if (url.pathname === '/api/platform/audit-log' && request.method === 'GET') {
-      const platformContext = await resolvePlatformAdminContext(board, request);
-      return json(await board.listSecurityAuditLog(platformContext.platformAdminId));
+      const platformContext = await resolvePlatformAdminContext(env, board, request);
+      return json(await tenantAuthDb.listSecurityAuditLog(env, platformContext.platformAdminId));
     }
 
     if (url.pathname === '/api/platform/support/assume-tenant' && request.method === 'POST') {
-      const platformContext = await resolvePlatformAdminContext(board, request);
+      const platformContext = await resolvePlatformAdminContext(env, board, request);
       const input = parsePlatformSupportAssumeTenantInput(await readJson(request));
-      const result = await board.createPlatformSupportSession({
+      const result = await tenantAuthDb.createPlatformSupportSession(env, {
         adminId: platformContext.platformAdminId,
         tenantId: input.tenantId,
         reason: input.reason,
@@ -116,15 +117,15 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
       return json(result, { status: 201 });
     }
 
-    const requestContext = await resolveRequestTenantContext(board, request, { requireSession: true });
+    const requestContext = await resolveRequestTenantContext(env, board, request, { requireSession: true });
 
     if (url.pathname === '/api/me' && request.method === 'GET') {
-      const user = await board.getUserById(requestContext.userId);
+      const user = await tenantAuthDb.getUserById(env, requestContext.userId);
       if (!user) {
         throw unauthorized(`User ${requestContext.userId} not found.`);
       }
-      const memberships = await board.listUserMemberships(user.id);
-      const tenants = await board.listTenantsForUser(user.id);
+      const memberships = await tenantAuthDb.listUserMemberships(env, user.id);
+      const tenants = await tenantAuthDb.listTenantsForUser(env, user.id);
       return json({
         user,
         memberships,
@@ -138,7 +139,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
         throw unauthorized('Tenant context switching requires an auth session.');
       }
       const { tenantId } = parseSetActiveTenantInput(await readJson(request));
-      const session = await board.setSessionActiveTenant(requestContext.sessionId, tenantId);
+      const session = await tenantAuthDb.setSessionActiveTenant(env, requestContext.sessionId, tenantId);
       const response = json({ activeTenantId: session.activeTenantId, session });
       if (requestContext.sessionToken) {
         response.headers.append('Set-Cookie', buildSessionCookie(requestContext.sessionToken));
@@ -147,57 +148,57 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
     }
 
     if (url.pathname === '/api/tenants' && request.method === 'GET') {
-      return json(await board.listTenantsForUser(requestContext.userId));
+      return json(await tenantAuthDb.listTenantsForUser(env, requestContext.userId));
     }
 
     if (url.pathname === '/api/tenants' && request.method === 'POST') {
       const input = parseCreateTenantInput(await readJson(request));
-      return json(await board.createTenant(input, requestContext.userId), { status: 201 });
+      return json(await tenantAuthDb.createTenant(env, input, requestContext.userId), { status: 201 });
     }
 
     const tenantMatch = url.pathname.match(/^\/api\/tenants\/([^/]+)$/);
     if (tenantMatch && request.method === 'GET') {
       const tenantId = decodeURIComponent(tenantMatch[1]);
-      await requireActiveTenantAccess(board, requestContext, tenantId);
-      return json(await board.getTenant(tenantId));
+      await requireActiveTenantAccess(env, board, requestContext, tenantId);
+      return json(await tenantAuthDb.getTenant(env, tenantId));
     }
 
     const tenantMembersMatch = url.pathname.match(/^\/api\/tenants\/([^/]+)\/members$/);
     if (tenantMembersMatch && request.method === 'GET') {
       const tenantId = decodeURIComponent(tenantMembersMatch[1]);
-      await requireActiveTenantAccess(board, requestContext, tenantId);
+      await requireActiveTenantAccess(env, board, requestContext, tenantId);
       return json({
-        members: await board.listTenantMembers(tenantId),
-        seatSummary: await board.getTenantSeatSummary(tenantId)
+        members: await tenantAuthDb.listTenantMembers(env, tenantId),
+        seatSummary: await tenantAuthDb.getTenantSeatSummary(env, tenantId)
       });
     }
 
     if (tenantMembersMatch && request.method === 'POST') {
       const tenantId = decodeURIComponent(tenantMembersMatch[1]);
       const input = parseCreateTenantMemberInput(await readJson(request));
-      await requireOwnerTenantAccess(board, requestContext, tenantId);
-      return json(await board.createTenantMember(tenantId, input, requestContext.userId), { status: 201 });
+      await requireOwnerTenantAccess(env, board, requestContext, tenantId);
+      return json(await tenantAuthDb.createTenantMember(env, tenantId, input, requestContext.userId), { status: 201 });
     }
 
     const tenantInvitesMatch = url.pathname.match(/^\/api\/tenants\/([^/]+)\/invites$/);
     if (tenantInvitesMatch && request.method === 'POST') {
       const tenantId = decodeURIComponent(tenantInvitesMatch[1]);
       const input = parseCreateTenantInviteInput(await readJson(request));
-      await requireOwnerTenantAccess(board, requestContext, tenantId);
-      return json(await board.createTenantInvite(tenantId, input, requestContext.userId), { status: 201 });
+      await requireOwnerTenantAccess(env, board, requestContext, tenantId);
+      return json(await tenantAuthDb.createTenantInvite(env, tenantId, input, requestContext.userId), { status: 201 });
     }
 
     if (tenantInvitesMatch && request.method === 'GET') {
       const tenantId = decodeURIComponent(tenantInvitesMatch[1]);
-      await requireOwnerTenantAccess(board, requestContext, tenantId);
-      return json(await board.listTenantInvites(tenantId, requestContext.userId));
+      await requireOwnerTenantAccess(env, board, requestContext, tenantId);
+      return json(await tenantAuthDb.listTenantInvites(env, tenantId, requestContext.userId));
     }
 
     const inviteAcceptMatch = url.pathname.match(/^\/api\/invites\/([^/]+)\/accept$/);
     if (inviteAcceptMatch && request.method === 'POST') {
       const body = parseAcceptTenantInviteInput(await readJson(request));
       const inviteId = decodeURIComponent(inviteAcceptMatch[1]);
-      const result = await board.acceptTenantInvite(body.token, requestContext.userId);
+      const result = await tenantAuthDb.acceptTenantInvite(env, body.token, requestContext.userId);
       if (result.invite.id !== inviteId) {
         throw forbidden('Invite token does not match requested invite id.');
       }
@@ -209,24 +210,24 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
       const tenantId = decodeURIComponent(tenantMemberMatch[1]);
       const memberId = decodeURIComponent(tenantMemberMatch[2]);
       const patch = parseUpdateTenantMemberInput(await readJson(request));
-      await requireOwnerTenantAccess(board, requestContext, tenantId);
-      return json(await board.updateTenantMember(tenantId, memberId, patch, requestContext.userId));
+      await requireOwnerTenantAccess(env, board, requestContext, tenantId);
+      return json(await tenantAuthDb.updateTenantMember(env, tenantId, memberId, patch, requestContext.userId));
     }
 
     if (url.pathname === '/api/board' && request.method === 'GET') {
-      await requireActiveTenantAccess(board, requestContext);
+      await requireActiveTenantAccess(env, board, requestContext);
       const repoId = url.searchParams.get('repoId') ?? 'all';
       if (repoId !== 'all') {
-        await assertRepoAccess(board, requestContext, repoId);
+        await assertRepoAccess(env, board, requestContext, repoId);
       }
       return json(await board.getBoardSync(repoId, requestContext.activeTenantId));
     }
 
     if (url.pathname === '/api/board/ws' && request.method === 'GET') {
-      await requireActiveTenantAccess(board, requestContext);
+      await requireActiveTenantAccess(env, board, requestContext);
       const repoId = url.searchParams.get('repoId');
       if (repoId && repoId !== 'all') {
-        await assertRepoAccess(board, requestContext, repoId);
+        await assertRepoAccess(env, board, requestContext, repoId);
       }
       const wsUrl = new URL(request.url);
       wsUrl.searchParams.set('tenantId', requestContext.activeTenantId);
@@ -235,21 +236,21 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
     }
 
     if (url.pathname === '/api/repos' && request.method === 'GET') {
-      await requireActiveTenantAccess(board, requestContext);
+      await requireActiveTenantAccess(env, board, requestContext);
       return json(await board.listRepos(requestContext.activeTenantId));
     }
 
     if (url.pathname === '/api/repos' && request.method === 'POST') {
       const input = parseCreateRepoInput(await readJson(request));
       const tenantId = normalizeTenantId(input.tenantId ?? requestContext.activeTenantId);
-      await requireActiveTenantAccess(board, requestContext, tenantId);
+      await requireActiveTenantAccess(env, board, requestContext, tenantId);
       return json(await board.createRepo({ ...input, tenantId }), { status: 201 });
     }
 
     const repoMatch = url.pathname.match(/^\/api\/repos\/([^/]+)$/);
     if (repoMatch && request.method === 'PATCH') {
       const repoId = decodeURIComponent(repoMatch[1]);
-      const repo = await assertRepoAccess(board, requestContext, repoId);
+      const repo = await assertRepoAccess(env, board, requestContext, repoId);
       const patch = parseUpdateRepoInput(await readJson(request));
       if (patch.tenantId && normalizeTenantId(patch.tenantId) !== repo.tenantId) {
         throw forbidden('Repo tenantId cannot be changed.');
@@ -278,30 +279,30 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
     }
 
     if (url.pathname === '/api/tasks' && request.method === 'GET') {
-      await requireActiveTenantAccess(board, requestContext);
+      await requireActiveTenantAccess(env, board, requestContext);
       const repoId = url.searchParams.get('repoId');
       if (!repoId || repoId === 'all') {
         return json((await board.getBoardSync('all', requestContext.activeTenantId)).tasks);
       }
-      await assertRepoAccess(board, requestContext, repoId);
+      await assertRepoAccess(env, board, requestContext, repoId);
       return json(await env.REPO_BOARD.getByName(repoId).listTasks(requestContext.activeTenantId));
     }
 
     if (url.pathname === '/api/tasks' && request.method === 'POST') {
       const input = parseCreateTaskInput(await readJson(request));
-      await assertRepoAccess(board, requestContext, input.repoId);
+      await assertRepoAccess(env, board, requestContext, input.repoId);
       return json(await env.REPO_BOARD.getByName(input.repoId).createTask(input), { status: 201 });
     }
 
     if (url.pathname === '/api/tenant-usage' && request.method === 'GET') {
       const tenantId = url.searchParams.get('tenantId') ?? requestContext.activeTenantId;
-      await requireActiveTenantAccess(board, requestContext, tenantId);
+      await requireActiveTenantAccess(env, board, requestContext, tenantId);
       return json(await getTenantUsageSummary(url, env));
     }
 
     if (url.pathname === '/api/tenant-usage/runs' && request.method === 'GET') {
       const tenantId = url.searchParams.get('tenantId') ?? requestContext.activeTenantId;
-      await requireActiveTenantAccess(board, requestContext, tenantId);
+      await requireActiveTenantAccess(env, board, requestContext, tenantId);
       return json(await getTenantRunUsage(url, env));
     }
 
@@ -309,21 +310,21 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
     if (taskMatch && request.method === 'GET') {
       const taskId = decodeURIComponent(taskMatch[1]);
       const repoId = await resolveRepoIdForTask(board, taskId);
-      await assertRepoAccess(board, requestContext, repoId);
+      await assertRepoAccess(env, board, requestContext, repoId);
       return json(await env.REPO_BOARD.getByName(repoId).getTask(taskId, requestContext.activeTenantId));
     }
 
     if (taskMatch && request.method === 'PATCH') {
       const taskId = decodeURIComponent(taskMatch[1]);
       const repoId = await resolveRepoIdForTask(board, taskId);
-      await assertRepoAccess(board, requestContext, repoId);
+      await assertRepoAccess(env, board, requestContext, repoId);
       return json(await env.REPO_BOARD.getByName(repoId).updateTask(taskId, parseUpdateTaskInput(await readJson(request)), requestContext.activeTenantId));
     }
 
     if (taskMatch && request.method === 'DELETE') {
       const taskId = decodeURIComponent(taskMatch[1]);
       const repoId = await resolveRepoIdForTask(board, taskId);
-      await assertRepoAccess(board, requestContext, repoId);
+      await assertRepoAccess(env, board, requestContext, repoId);
       return json(await env.REPO_BOARD.getByName(repoId).deleteTask(taskId, requestContext.activeTenantId));
     }
 
@@ -331,7 +332,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
     if (runStartMatch && request.method === 'POST') {
       const taskId = decodeURIComponent(runStartMatch[1]);
       const repoId = await resolveRepoIdForTask(board, taskId);
-      await assertRepoAccess(board, requestContext, repoId);
+      await assertRepoAccess(env, board, requestContext, repoId);
       const run = await env.REPO_BOARD.getByName(repoId).startRun(taskId, { tenantId: requestContext.activeTenantId });
       const workflow = await scheduleRunJob(env, ctx, {
         tenantId: requestContext.activeTenantId,
@@ -351,7 +352,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
     if (runMatch && request.method === 'GET') {
       const runId = decodeURIComponent(runMatch[1]);
       const repoId = await resolveRepoIdForRun(board, runId);
-      await assertRepoAccess(board, requestContext, repoId);
+      await assertRepoAccess(env, board, requestContext, repoId);
       return json(await env.REPO_BOARD.getByName(repoId).getRun(runId, requestContext.activeTenantId));
     }
 
@@ -359,7 +360,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
     if (runRetryMatch && request.method === 'POST') {
       const runId = decodeURIComponent(runRetryMatch[1]);
       const repoId = await resolveRepoIdForRun(board, runId);
-      await assertRepoAccess(board, requestContext, repoId);
+      await assertRepoAccess(env, board, requestContext, repoId);
       const run = await env.REPO_BOARD.getByName(repoId).retryRun(runId, requestContext.activeTenantId);
       const workflow = await scheduleRunJob(env, ctx, {
         tenantId: requestContext.activeTenantId,
@@ -379,7 +380,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
     if (runCancelMatch && request.method === 'POST') {
       const runId = decodeURIComponent(runCancelMatch[1]);
       const repoId = await resolveRepoIdForRun(board, runId);
-      await assertRepoAccess(board, requestContext, repoId);
+      await assertRepoAccess(env, board, requestContext, repoId);
       const body = await readJson(request).catch(() => ({}));
       const reason = typeof (body as { reason?: unknown })?.reason === 'string' && (body as { reason?: string }).reason?.trim()
         ? (body as { reason: string }).reason.trim()
@@ -407,7 +408,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
         throw badRequest('Invalid request changes payload.');
       }
       const repoId = await resolveRepoIdForRun(board, runId);
-      await assertRepoAccess(board, requestContext, repoId);
+      await assertRepoAccess(env, board, requestContext, repoId);
       const run = await env.REPO_BOARD.getByName(repoId).requestRunChanges(runId, body.prompt.trim(), requestContext.activeTenantId);
       const workflow = await scheduleRunJob(env, ctx, {
         tenantId: requestContext.activeTenantId,
@@ -427,7 +428,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
     if (evidenceRetryMatch && request.method === 'POST') {
       const runId = decodeURIComponent(evidenceRetryMatch[1]);
       const repoId = await resolveRepoIdForRun(board, runId);
-      await assertRepoAccess(board, requestContext, repoId);
+      await assertRepoAccess(env, board, requestContext, repoId);
       const run = await env.REPO_BOARD.getByName(repoId).retryEvidence(runId, requestContext.activeTenantId);
       const workflow = await scheduleRunJob(env, ctx, {
         tenantId: requestContext.activeTenantId,
@@ -447,7 +448,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
     if (previewRetryMatch && request.method === 'POST') {
       const runId = decodeURIComponent(previewRetryMatch[1]);
       const repoId = await resolveRepoIdForRun(board, runId);
-      await assertRepoAccess(board, requestContext, repoId);
+      await assertRepoAccess(env, board, requestContext, repoId);
       const run = await env.REPO_BOARD.getByName(repoId).retryPreview(runId, requestContext.activeTenantId);
       const workflow = await scheduleRunJob(env, ctx, {
         tenantId: requestContext.activeTenantId,
@@ -467,7 +468,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
     if (runLogsMatch && request.method === 'GET') {
       const runId = decodeURIComponent(runLogsMatch[1]);
       const repoId = await resolveRepoIdForRun(board, runId);
-      await assertRepoAccess(board, requestContext, repoId);
+      await assertRepoAccess(env, board, requestContext, repoId);
       const tail = url.searchParams.get('tail');
       return json(await env.REPO_BOARD.getByName(repoId).getRunLogs(runId, tail ? Number(tail) : undefined, requestContext.activeTenantId));
     }
@@ -476,7 +477,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
     if (runUsageMatch && request.method === 'GET') {
       const runId = decodeURIComponent(runUsageMatch[1]);
       const repoId = await resolveRepoIdForRun(board, runId);
-      await assertRepoAccess(board, requestContext, repoId);
+      await assertRepoAccess(env, board, requestContext, repoId);
       return json(await getRunUsage(runId, env));
     }
 
@@ -484,7 +485,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
     if (runEventsMatch && request.method === 'GET') {
       const runId = decodeURIComponent(runEventsMatch[1]);
       const repoId = await resolveRepoIdForRun(board, runId);
-      await assertRepoAccess(board, requestContext, repoId);
+      await assertRepoAccess(env, board, requestContext, repoId);
       return json(await env.REPO_BOARD.getByName(repoId).getRunEvents(runId, requestContext.activeTenantId));
     }
 
@@ -492,7 +493,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
     if (runCommandsMatch && request.method === 'GET') {
       const runId = decodeURIComponent(runCommandsMatch[1]);
       const repoId = await resolveRepoIdForRun(board, runId);
-      await assertRepoAccess(board, requestContext, repoId);
+      await assertRepoAccess(env, board, requestContext, repoId);
       return json(await env.REPO_BOARD.getByName(repoId).getRunCommands(runId, requestContext.activeTenantId));
     }
 
@@ -500,7 +501,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
     if (runTerminalMatch && request.method === 'GET') {
       const runId = decodeURIComponent(runTerminalMatch[1]);
       const repoId = await resolveRepoIdForRun(board, runId);
-      await assertRepoAccess(board, requestContext, repoId);
+      await assertRepoAccess(env, board, requestContext, repoId);
       const bootstrap = await env.REPO_BOARD.getByName(repoId).getTerminalBootstrap(runId, requestContext.activeTenantId);
       if (!bootstrap.attachable) {
         return json(bootstrap, { status: 409 });
@@ -512,7 +513,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
     if (runTerminalSocketMatch && request.method === 'GET') {
       const runId = decodeURIComponent(runTerminalSocketMatch[1]);
       const repoId = await resolveRepoIdForRun(board, runId);
-      await assertRepoAccess(board, requestContext, repoId);
+      await assertRepoAccess(env, board, requestContext, repoId);
       const bootstrap = await env.REPO_BOARD.getByName(repoId).getTerminalBootstrap(runId, requestContext.activeTenantId);
       if (!bootstrap.attachable) {
         return json(bootstrap, { status: 409 });
@@ -562,7 +563,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
     if (runArtifactsMatch && request.method === 'GET') {
       const runId = decodeURIComponent(runArtifactsMatch[1]);
       const repoId = await resolveRepoIdForRun(board, runId);
-      await assertRepoAccess(board, requestContext, repoId);
+      await assertRepoAccess(env, board, requestContext, repoId);
       return json(await env.REPO_BOARD.getByName(repoId).getRunArtifacts(runId, requestContext.activeTenantId));
     }
 
@@ -570,7 +571,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
     if (runTakeoverMatch && request.method === 'POST') {
       const runId = decodeURIComponent(runTakeoverMatch[1]);
       const repoId = await resolveRepoIdForRun(board, runId);
-      await assertRepoAccess(board, requestContext, repoId);
+      await assertRepoAccess(env, board, requestContext, repoId);
       const repoBoard = env.REPO_BOARD.getByName(repoId);
       const run = await repoBoard.getRun(runId, requestContext.activeTenantId);
       if (run.sandboxId && run.codexProcessId) {
@@ -664,13 +665,14 @@ type PlatformAdminContext = {
 };
 
 async function resolveRequestTenantContext(
+  env: Env,
   board: DurableObjectStub<import('./durable/board-index').BoardIndexDO>,
   request: Request,
   options: RequestTenantContextOptions = {}
 ): Promise<RequestTenantContext> {
   const supportToken = readPlatformSupportToken(request);
   if (supportToken) {
-    const support = await board.resolvePlatformSupportSessionByToken(supportToken);
+    const support = await tenantAuthDb.resolvePlatformSupportSessionByToken(env, supportToken);
     return {
       userId: `platform_admin:${support.session.adminId}`,
       activeTenantId: normalizeTenantIdStrict(support.session.tenantId),
@@ -682,7 +684,7 @@ async function resolveRequestTenantContext(
 
   const sessionToken = readSessionToken(request);
   if (sessionToken) {
-    const resolved = await board.resolveSessionByToken(sessionToken);
+    const resolved = await tenantAuthDb.resolveSessionByToken(env, sessionToken);
     return {
       userId: resolved.user.id,
       activeTenantId: normalizeTenantIdStrict(resolved.session.activeTenantId),
@@ -704,6 +706,7 @@ async function resolveRequestTenantContext(
 }
 
 async function resolvePlatformAdminContext(
+  env: Env,
   board: DurableObjectStub<import('./durable/board-index').BoardIndexDO>,
   request: Request
 ): Promise<PlatformAdminContext> {
@@ -711,7 +714,7 @@ async function resolvePlatformAdminContext(
   if (!token) {
     throw unauthorized('Missing platform admin token.');
   }
-  const resolved = await board.resolvePlatformAdminByToken(token);
+  const resolved = await tenantAuthDb.resolvePlatformAdminByToken(env, token);
   return {
     platformAdminId: resolved.admin.id,
     platformSupportToken: token
@@ -719,6 +722,7 @@ async function resolvePlatformAdminContext(
 }
 
 async function requireActiveTenantAccess(
+  env: Env,
   board: DurableObjectStub<import('./durable/board-index').BoardIndexDO>,
   context: RequestTenantContext,
   tenantId = context.activeTenantId
@@ -727,31 +731,33 @@ async function requireActiveTenantAccess(
   if (!context.userId) {
     throw unauthorized('Missing user identity.');
   }
-  const hasAccess = await board.hasActiveTenantAccess(normalizedTenantId, context.userId);
+  const hasAccess = await tenantAuthDb.hasActiveTenantAccess(env, normalizedTenantId, context.userId);
   if (!hasAccess) {
     throw forbidden(`User ${context.userId} does not have an active seat in tenant ${normalizedTenantId}.`);
   }
 }
 
 async function requireOwnerTenantAccess(
+  env: Env,
   board: DurableObjectStub<import('./durable/board-index').BoardIndexDO>,
   context: RequestTenantContext,
   tenantId = context.activeTenantId
 ) {
-  await requireActiveTenantAccess(board, context, tenantId);
-  const membership = await board.getTenantMembership(tenantId, context.userId);
+  await requireActiveTenantAccess(env, board, context, tenantId);
+  const membership = await tenantAuthDb.getTenantMembership(env, tenantId, context.userId);
   if (!membership || membership.role !== 'owner') {
     throw forbidden(`User ${context.userId} must be an owner of tenant ${normalizeTenantId(tenantId)}.`);
   }
 }
 
 async function assertRepoAccess(
+  env: Env,
   board: DurableObjectStub<import('./durable/board-index').BoardIndexDO>,
   context: RequestTenantContext,
   repoId: string
 ) {
   const repo = await board.getRepo(repoId);
-  await requireActiveTenantAccess(board, context, repo.tenantId);
+  await requireActiveTenantAccess(env, board, context, repo.tenantId);
   if (repo.tenantId !== context.activeTenantId) {
     throw forbidden(`Cross-tenant access denied: repo ${repoId} belongs to tenant ${repo.tenantId}, active tenant is ${context.activeTenantId}.`);
   }

@@ -58,7 +58,8 @@ If configured, a platform admin account is created automatically in `BoardIndexD
   - support session enter/exit
   - invite creation/acceptance
 
-## Notes
+## Persistence
 
-- This stage keeps persistence DO-backed for now (invites/admin/support/audit), aligned with current runtime architecture.
-- D1 migration for identity/admin tables can be done as a follow-up if required for analytics/reporting at scale.
+- Tenant/auth/admin persistence is D1-backed via `TENANT_DB`.
+- Durable Objects continue to own board/task/run live state and websocket fanout.
+- This stage is greenfield-only for D1 tenant/auth/admin data (no DO->D1 backfill path).
