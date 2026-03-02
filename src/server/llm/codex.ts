@@ -248,6 +248,8 @@ async function runCodexProcessWithLogs(context: Parameters<LlmAdapter['run']>[0]
             latestResumeCommand = sessionState.resumeCommand;
             const latestRun = await repoBoard.getRun(runId);
             await repoBoard.transitionRun(runId, {
+              llmAdapter: codexLlmAdapter.kind,
+              llmSupportsResume: codexLlmAdapter.capabilities.supportsResume,
               llmResumeCommand: latestResumeCommand,
               llmSessionId: latestThreadId,
               latestCodexResumeCommand: latestResumeCommand
@@ -256,6 +258,7 @@ async function runCodexProcessWithLogs(context: Parameters<LlmAdapter['run']>[0]
               await repoBoard.updateOperatorSession(runId, {
                 ...latestRun.operatorSession,
                 llmAdapter: latestRun.operatorSession.llmAdapter ?? latestRun.llmAdapter ?? 'codex',
+                llmSupportsResume: latestRun.operatorSession.llmSupportsResume ?? latestRun.llmSupportsResume ?? codexLlmAdapter.capabilities.supportsResume,
                 llmResumeCommand: latestResumeCommand,
                 llmSessionId: latestThreadId,
                 codexResumeCommand: latestResumeCommand,
