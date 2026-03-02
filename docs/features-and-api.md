@@ -14,7 +14,7 @@
 | Operator attach | 4 | ✅ Implemented | `GET /api/runs/:runId/terminal`; `GET /api/runs/:runId/ws` | _none_ | Websocket attach endpoint requires `Upgrade: websocket`. |
 | Operator takeover | 4 | ✅ Implemented | `POST /api/runs/:runId/takeover` | _none_ | Run operator control handoff endpoint exists. |
 | Operator control | 6 | ⚠️ Partial | `POST /api/runs/:runId/cancel` | Guidance-mode and explicit control-state/queue semantics not fully in scope yet; broader Stage 6 endpoints absent | Partial completion: cancel transition exists, but guided execution semantics are incomplete. |
-| Tenant + metering | 4.5 | ⏳ In progress | _none_ | `GET /api/tenants`; `POST /api/tenants`; `GET /api/tenants/:tenantId`; `PATCH /api/tenants/:tenantId`; `GET /api/tenants/:tenantId/members`; `POST /api/tenants/:tenantId/members`; `PATCH /api/tenants/:tenantId/members/:memberId`; `POST /api/auth/signup`; `POST /api/auth/login`; `POST /api/auth/logout`; `GET /api/me`; `POST /api/me/tenant-context`; `GET /api/tenant-usage?tenantId=&from=&to=`; `GET /api/tenant-usage/runs?tenantId=&from=&to=`; `GET /api/runs/:runId/usage` | Stage 4.5 not yet implemented. |
+| Tenant + metering | 4.5 | ✅ Implemented | `GET /api/tenants`; `POST /api/tenants`; `GET /api/tenants/:tenantId`; `PATCH /api/tenants/:tenantId`; `GET /api/tenants/:tenantId/members`; `POST /api/tenants/:tenantId/members`; `PATCH /api/tenants/:tenantId/members/:memberId`; `POST /api/auth/signup`; `POST /api/auth/login`; `POST /api/auth/logout`; `GET /api/me`; `POST /api/me/tenant-context`; `GET /api/tenant-usage?tenantId=&from=&to=`; `GET /api/tenant-usage/runs?tenantId=&from=&to=`; `GET /api/runs/:runId/usage` | _none_ | Tenant-aware APIs and pre-production rollout constraints are implemented. |
 | Explainability/audit | 5 | ⏳ Pending | _none_ | `GET /api/runs/:runId/explanation`; `GET /api/runs/:runId/audit` | Stage 5 not yet implemented. |
 | Scale/queueing | 7 | ⏳ Pending | _none_ | queued run endpoints + queue reason APIs | Stage 7 not yet implemented. `max_instances` is currently set in Workers config and is platform-level only. |
 | Hardening/policy/credentials | 8 | ⏳ Pending | _none_ | Stage 8 hardening/policy credential APIs and policy guard endpoints | Stage 8 not yet implemented. |
@@ -40,7 +40,7 @@ Use this block as a checklist per release:
 - [x] All implemented endpoints are functional in preview
 - [x] No untracked production API regressions
 - [ ] Stage 6 control semantics completed
-- [ ] Stage 4.5 APIs added
+- [x] Stage 4.5 APIs added
 - [ ] Stage 5 audit/explanation APIs added
 - [ ] Stage 7 queue APIs added
 - [ ] Stage 8 policy APIs added
