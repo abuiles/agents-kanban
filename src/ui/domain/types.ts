@@ -14,8 +14,10 @@ export type RunStatus =
   | 'FAILED';
 
 export type SimulationProfile = 'happy_path' | 'fail_tests' | 'fail_preview';
+export type LlmAdapterKind = 'codex' | 'cursor_cli';
+export type LlmReasoningEffort = 'low' | 'medium' | 'high';
 export type CodexModel = 'gpt-5.3-codex' | 'gpt-5.3-codex-spark' | 'gpt-5.1-codex-mini';
-export type CodexReasoningEffort = 'low' | 'medium' | 'high';
+export type CodexReasoningEffort = LlmReasoningEffort;
 export type ScmProvider = 'github' | 'gitlab';
 export type ReviewProvider = ScmProvider;
 
@@ -112,6 +114,9 @@ export type TaskBranchSource = {
 
 export type TaskUiMeta = {
   simulationProfile?: SimulationProfile;
+  llmAdapter?: LlmAdapterKind;
+  llmModel?: string;
+  llmReasoningEffort?: LlmReasoningEffort;
   codexModel?: CodexModel;
   codexReasoningEffort?: CodexReasoningEffort;
 };
@@ -180,6 +185,9 @@ export type OperatorSession = {
   actorLabel: string;
   connectionState: 'connecting' | 'open' | 'closed' | 'failed';
   takeoverState: 'codex_control' | 'observing' | 'operator_control' | 'resumable';
+  llmAdapter?: LlmAdapterKind;
+  llmSessionId?: string;
+  llmResumeCommand?: string;
   codexThreadId?: string;
   codexResumeCommand?: string;
   closeReason?: string;
@@ -198,6 +206,7 @@ export type TerminalBootstrap = {
   cols: number;
   rows: number;
   session?: OperatorSession;
+  llmResumeCommand?: string;
   codexResumeCommand?: string;
 };
 
@@ -271,6 +280,11 @@ export type AgentRun = {
   evidenceSandboxId?: string;
   commitSha?: string;
   commitMessage?: string;
+  llmAdapter?: LlmAdapterKind;
+  llmModel?: string;
+  llmReasoningEffort?: LlmReasoningEffort;
+  llmResumeCommand?: string;
+  llmSessionId?: string;
   codexProcessId?: string;
   currentCommandId?: string;
   latestCodexResumeCommand?: string;

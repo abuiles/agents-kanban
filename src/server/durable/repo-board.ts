@@ -23,6 +23,7 @@ import { executeRunJob } from '../run-orchestrator';
 import { refreshDependencyStates } from '../shared/dependency-state';
 import { buildLatestRunsByTaskId, isDependencyMergedToDefaultBranch } from '../shared/dependency-readiness';
 import { resolveRunSource } from '../shared/run-source-resolution';
+import { buildTaskUiMeta, normalizeOperatorSession, normalizeRun, normalizeTask } from '../../shared/llm';
 import { hasRunReview, normalizeDependencyReviewMetadata, normalizeRunReviewMetadata, normalizeTaskBranchSourceReviewMetadata } from '../../shared/scm';
 
 const STORAGE_KEY = 'repo-board-state';
@@ -121,11 +122,14 @@ export class RepoBoardDO extends DurableObject<Env> {
       status: input.status ?? 'INBOX',
       createdAt: now,
       updatedAt: now,
-      uiMeta: {
-        simulationProfile: input.simulationProfile ?? 'happy_path',
-        codexModel: input.codexModel ?? 'gpt-5.1-codex-mini',
-        codexReasoningEffort: input.codexReasoningEffort ?? 'medium'
-      }
+      uiMeta: buildTaskUiMeta({
+        simulationProfile: input.simulationProfile,
+        llmAdapter: input.llmAdapter,
+        llmModel: input.llmModel,
+        llmReasoningEffort: input.llmReasoningEffort,
+        codexModel: input.codexModel,
+        codexReasoningEffort: input.codexReasoningEffort
+      })
     };
 
     this.state = {
@@ -167,11 +171,14 @@ export class RepoBoardDO extends DurableObject<Env> {
       sourceRef: patch.sourceRef ?? existing.sourceRef,
       context: patch.context ?? existing.context,
       acceptanceCriteria: patch.acceptanceCriteria ?? existing.acceptanceCriteria,
-      uiMeta: {
-        simulationProfile: patch.simulationProfile ?? existing.uiMeta?.simulationProfile ?? 'happy_path',
-        codexModel: patch.codexModel ?? existing.uiMeta?.codexModel ?? 'gpt-5.1-codex-mini',
-        codexReasoningEffort: patch.codexReasoningEffort ?? existing.uiMeta?.codexReasoningEffort ?? 'medium'
-      },
+      uiMeta: buildTaskUiMeta({
+        simulationProfile: patch.simulationProfile ?? existing.uiMeta?.simulationProfile,
+        llmAdapter: patch.llmAdapter ?? existing.uiMeta?.llmAdapter,
+        llmModel: patch.llmModel ?? existing.uiMeta?.llmModel,
+        llmReasoningEffort: patch.llmReasoningEffort ?? existing.uiMeta?.llmReasoningEffort,
+        codexModel: patch.codexModel ?? existing.uiMeta?.codexModel,
+        codexReasoningEffort: patch.codexReasoningEffort ?? existing.uiMeta?.codexReasoningEffort
+      }),
       updatedAt: new Date().toISOString()
     };
 
@@ -571,10 +578,13 @@ export class RepoBoardDO extends DurableObject<Env> {
   async updateOperatorSession(runId: string, session?: OperatorSession) {
     await this.ready;
     const run = await this.getRun(runId);
+    const nextSession = normalizeOperatorSession(session, run);
     const updated = {
-      ...run,
-      operatorSession: session,
-      latestCodexResumeCommand: session?.codexResumeCommand ?? run.latestCodexResumeCommand
+      ...normalizeRun(run),
+      operatorSession: nextSession,
+      llmSessionId: nextSession?.llmSessionId ?? run.llmSessionId,
+      llmResumeCommand: nextSession?.llmResumeCommand ?? run.llmResumeCommand,
+      latestCodexResumeCommand: nextSession?.codexResumeCommand ?? run.latestCodexResumeCommand
     };
     this.state = {
       ...this.state,
@@ -582,7 +592,7 @@ export class RepoBoardDO extends DurableObject<Env> {
     };
     await this.persist();
     await this.emit({ type: 'run.updated', payload: { run: updated } }, updated.repoId);
-    await this.emit({ type: 'run.operator_session_updated', payload: { runId, session } }, updated.repoId);
+    await this.emit({ type: 'run.operator_session_updated', payload: { runId, session: nextSession } }, updated.repoId);
     return updated;
   }
 
@@ -602,6 +612,7 @@ export class RepoBoardDO extends DurableObject<Env> {
         reason: 'sandbox_missing',
         cols: 120,
         rows: 32,
+        llmResumeCommand: run.llmResumeCommand,
         codexResumeCommand: run.latestCodexResumeCommand
       };
     }
@@ -619,6 +630,7 @@ export class RepoBoardDO extends DurableObject<Env> {
         cols: 120,
         rows: 32,
         session: run.operatorSession,
+        llmResumeCommand: run.llmResumeCommand,
         codexResumeCommand: run.latestCodexResumeCommand
       };
     }
@@ -635,6 +647,7 @@ export class RepoBoardDO extends DurableObject<Env> {
       cols: 120,
       rows: 32,
       session: run.operatorSession,
+      llmResumeCommand: run.llmResumeCommand,
       codexResumeCommand: run.latestCodexResumeCommand
     };
   }
@@ -648,7 +661,7 @@ export class RepoBoardDO extends DurableObject<Env> {
 
     const now = new Date().toISOString();
     const sessionName = getOperatorSessionName(run);
-    const session = run.operatorSession ?? {
+    const session = normalizeOperatorSession(run.operatorSession, run) ?? {
       id: `${runId}:${sessionName}`,
       runId,
       sandboxId: run.sandboxId,
@@ -658,6 +671,9 @@ export class RepoBoardDO extends DurableObject<Env> {
       actorLabel: actor.actorLabel,
       connectionState: 'open' as const,
       takeoverState: 'observing' as const,
+      llmAdapter: run.llmAdapter,
+      llmSessionId: run.llmSessionId,
+      llmResumeCommand: run.llmResumeCommand,
       codexThreadId: undefined,
       codexResumeCommand: run.latestCodexResumeCommand
     };
@@ -665,17 +681,19 @@ export class RepoBoardDO extends DurableObject<Env> {
       ...session,
       actorId: actor.actorId,
       actorLabel: actor.actorLabel,
-      takeoverState: run.latestCodexResumeCommand ? 'resumable' : 'operator_control',
+      takeoverState: run.llmResumeCommand ? 'resumable' : 'operator_control',
       connectionState: session.connectionState === 'failed' ? 'failed' : 'open'
     };
 
-    const updated = {
+    const updated = normalizeRun({
       ...run,
       status: 'OPERATOR_CONTROLLED' as const,
       codexProcessId: undefined,
       currentCommandId: undefined,
+      llmSessionId: nextSession.llmSessionId ?? run.llmSessionId,
+      llmResumeCommand: nextSession.llmResumeCommand ?? run.llmResumeCommand,
       operatorSession: nextSession
-    };
+    });
     const task = this.state.tasks.find((candidate) => candidate.taskId === run.taskId);
     if (!task) {
       throw notFound(`Task ${run.taskId} not found.`, { taskId: run.taskId, runId });
@@ -689,10 +707,10 @@ export class RepoBoardDO extends DurableObject<Env> {
     const events: RunEvent[] = [
       buildRunEvent(updated, 'operator', 'operator.takeover_started', 'Operator took control of the live sandbox session and stopped Codex execution.', { sessionName: nextSession.sessionName })
     ];
-    if (updated.latestCodexResumeCommand) {
+    if (updated.llmResumeCommand) {
       events.push(
         buildRunEvent(updated, 'system', 'codex.resume_available', 'Codex resume command is available for this run.', {
-          command: updated.latestCodexResumeCommand
+          command: updated.llmResumeCommand
         })
       );
     }
@@ -999,7 +1017,7 @@ function getOperatorSessionName(run: AgentRun) {
 
 function cloneRepoBoardState(state: RepoBoardState): RepoBoardState {
   return {
-    tasks: state.tasks.map((task) => ({
+    tasks: state.tasks.map((task) => normalizeTask({
       ...task,
       dependencies: cloneTaskDependencies(task.dependencies),
       dependencyState: cloneTaskDependencyState(task.dependencyState),
@@ -1008,7 +1026,7 @@ function cloneRepoBoardState(state: RepoBoardState): RepoBoardState {
       context: { ...task.context, links: task.context.links.map((link) => ({ ...link })) },
       uiMeta: task.uiMeta ? { ...task.uiMeta } : undefined
     })),
-    runs: state.runs.map((run) => ({
+    runs: state.runs.map((run) => normalizeRun({
       ...normalizeRunReviewMetadata(run),
       codexProcessId: run.codexProcessId,
       changeRequest: run.changeRequest ? { ...run.changeRequest } : undefined,
@@ -1041,11 +1059,11 @@ function cloneRepoBoardState(state: RepoBoardState): RepoBoardState {
 
 function normalizeRepoBoardState(state?: Partial<RepoBoardState> | null): RepoBoardState {
   return {
-    tasks: (state?.tasks ?? []).map((task) => ({
+    tasks: (state?.tasks ?? []).map((task) => normalizeTask({
       ...task,
       branchSource: cloneTaskBranchSource(task.branchSource)
     })),
-    runs: (state?.runs ?? []).map((run) => ({
+    runs: (state?.runs ?? []).map((run) => normalizeRun({
       ...normalizeRunReviewMetadata(run),
       dependencyContext: run.dependencyContext ? normalizeDependencyReviewMetadata({ ...run.dependencyContext }) : undefined
     })),

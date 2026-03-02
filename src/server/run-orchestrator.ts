@@ -3,6 +3,7 @@ import type { RepoBoardDO } from './durable/repo-board';
 import type { BoardIndexDO } from './durable/board-index';
 import type { Repo, RunCommand, RunCommandPhase, RunEvent, Task } from '../ui/domain/types';
 import { buildRunLog, type RunJobParams } from './shared/real-run';
+import { getTaskLlmConfig } from '../shared/llm';
 import { NonRetryableError } from 'cloudflare:workflows';
 import { inspectPreviewDiscovery } from './preview-discovery';
 import { LineLogBuffer } from './line-log-buffer';
@@ -59,8 +60,9 @@ export async function executeRunJob(env: Env, params: RunJobParams, sleepFn: Sle
   }
   const repo = await board.getRepo(params.repoId);
   const scmAdapter = getScmAdapter(repo);
-  const codexModel = detail.task.uiMeta?.codexModel ?? 'gpt-5.1-codex-mini';
-  const codexReasoningEffort = detail.task.uiMeta?.codexReasoningEffort ?? 'medium';
+  const llmConfig = getTaskLlmConfig(detail.task);
+  const codexModel = llmConfig.codexModel;
+  const codexReasoningEffort = llmConfig.codexReasoningEffort;
 
   if (params.mode === 'evidence_only') {
     if (!shouldRunEvidence(repo)) {
@@ -968,10 +970,17 @@ async function execStreamWithLogs(
           if (resumeMatch.resumeCommand && resumeMatch.resumeCommand !== latestResumeCommand) {
             latestResumeCommand = resumeMatch.resumeCommand;
             const latestRun = await repoBoard.getRun(runId);
-            await repoBoard.transitionRun(runId, { latestCodexResumeCommand: latestResumeCommand });
+            await repoBoard.transitionRun(runId, {
+              llmSessionId: latestThreadId,
+              llmResumeCommand: latestResumeCommand,
+              latestCodexResumeCommand: latestResumeCommand
+            });
             if (latestRun.operatorSession) {
               await repoBoard.updateOperatorSession(runId, {
                 ...latestRun.operatorSession,
+                llmAdapter: latestRun.llmAdapter ?? 'codex',
+                llmSessionId: latestThreadId,
+                llmResumeCommand: latestResumeCommand,
                 codexResumeCommand: latestResumeCommand,
                 codexThreadId: latestThreadId,
                 takeoverState: latestRun.operatorSession.takeoverState === 'operator_control' ? 'resumable' : latestRun.operatorSession.takeoverState
@@ -1153,10 +1162,17 @@ async function runCodexProcessWithLogs(
           if (resumeMatch.resumeCommand && resumeMatch.resumeCommand !== latestResumeCommand) {
             latestResumeCommand = resumeMatch.resumeCommand;
             const latestRun = await repoBoard.getRun(runId);
-            await repoBoard.transitionRun(runId, { latestCodexResumeCommand: latestResumeCommand });
+            await repoBoard.transitionRun(runId, {
+              llmSessionId: latestThreadId,
+              llmResumeCommand: latestResumeCommand,
+              latestCodexResumeCommand: latestResumeCommand
+            });
             if (latestRun.operatorSession) {
               await repoBoard.updateOperatorSession(runId, {
                 ...latestRun.operatorSession,
+                llmAdapter: latestRun.llmAdapter ?? 'codex',
+                llmSessionId: latestThreadId,
+                llmResumeCommand: latestResumeCommand,
                 codexResumeCommand: latestResumeCommand,
                 codexThreadId: latestThreadId,
                 takeoverState: latestRun.operatorSession.takeoverState === 'operator_control' ? 'resumable' : latestRun.operatorSession.takeoverState

@@ -1,9 +1,7 @@
 import type { CreateRepoInput, CreateTaskInput, UpdateRepoInput, UpdateTaskInput, UpsertScmCredentialInput } from '../../ui/domain/api';
 import { badRequest } from './errors';
+import { CODEX_MODELS, LLM_ADAPTERS, LLM_REASONING_EFFORTS } from '../../shared/llm';
 import { SCM_PROVIDERS } from '../../shared/scm';
-
-const CODEX_MODELS = new Set(['gpt-5.1-codex-mini', 'gpt-5.3-codex', 'gpt-5.3-codex-spark'] as const);
-const CODEX_REASONING_EFFORTS = new Set(['low', 'medium', 'high'] as const);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -298,6 +296,12 @@ export function parseCreateTaskInput(body: unknown): CreateTaskInput {
     throw badRequest('Invalid task payload.');
   }
 
+  const llmAdapter = readEnumValue(body.llmAdapter, 'llmAdapter', LLM_ADAPTERS, false);
+  const llmModel = readTrimmedString(body.llmModel, 'llmModel', false);
+  const llmReasoningEffort = readEnumValue(body.llmReasoningEffort, 'llmReasoningEffort', LLM_REASONING_EFFORTS, false);
+  const codexModel = readEnumValue(body.codexModel, 'codexModel', CODEX_MODELS, false);
+  const codexReasoningEffort = readEnumValue(body.codexReasoningEffort, 'codexReasoningEffort', LLM_REASONING_EFFORTS, false);
+
   return {
     repoId: readString(body.repoId, 'repoId')!,
     title: readString(body.title, 'title')!,
@@ -313,8 +317,11 @@ export function parseCreateTaskInput(body: unknown): CreateTaskInput {
     baselineUrlOverride: readString(body.baselineUrlOverride, 'baselineUrlOverride', false),
     status: readString(body.status, 'status', false) as CreateTaskInput['status'],
     simulationProfile: readString(body.simulationProfile, 'simulationProfile', false) as CreateTaskInput['simulationProfile'],
-    codexModel: readEnumValue(body.codexModel, 'codexModel', CODEX_MODELS, false),
-    codexReasoningEffort: readEnumValue(body.codexReasoningEffort, 'codexReasoningEffort', CODEX_REASONING_EFFORTS, false)
+    llmAdapter,
+    llmModel: llmModel ?? codexModel,
+    llmReasoningEffort: llmReasoningEffort ?? codexReasoningEffort,
+    codexModel,
+    codexReasoningEffort
   };
 }
 
@@ -324,6 +331,11 @@ export function parseUpdateTaskInput(body: unknown): UpdateTaskInput {
   }
 
   const patch: UpdateTaskInput = {};
+  const llmAdapter = readEnumValue(body.llmAdapter, 'llmAdapter', LLM_ADAPTERS, false);
+  const llmModel = readTrimmedString(body.llmModel, 'llmModel', false);
+  const llmReasoningEffort = readEnumValue(body.llmReasoningEffort, 'llmReasoningEffort', LLM_REASONING_EFFORTS, false);
+  const codexModel = readEnumValue(body.codexModel, 'codexModel', CODEX_MODELS, false);
+  const codexReasoningEffort = readEnumValue(body.codexReasoningEffort, 'codexReasoningEffort', LLM_REASONING_EFFORTS, false);
   if (hasOwn(body, 'repoId')) patch.repoId = readString(body.repoId, 'repoId', false);
   if (hasOwn(body, 'title')) patch.title = readString(body.title, 'title', false);
   if (hasOwn(body, 'description')) patch.description = readString(body.description, 'description', false);
@@ -338,8 +350,11 @@ export function parseUpdateTaskInput(body: unknown): UpdateTaskInput {
   if (hasOwn(body, 'baselineUrlOverride')) patch.baselineUrlOverride = readString(body.baselineUrlOverride, 'baselineUrlOverride', false);
   if (hasOwn(body, 'status')) patch.status = readString(body.status, 'status', false) as UpdateTaskInput['status'];
   if (hasOwn(body, 'simulationProfile')) patch.simulationProfile = readString(body.simulationProfile, 'simulationProfile', false) as UpdateTaskInput['simulationProfile'];
-  if (hasOwn(body, 'codexModel')) patch.codexModel = readEnumValue(body.codexModel, 'codexModel', CODEX_MODELS, false);
-  if (hasOwn(body, 'codexReasoningEffort')) patch.codexReasoningEffort = readEnumValue(body.codexReasoningEffort, 'codexReasoningEffort', CODEX_REASONING_EFFORTS, false);
+  if (hasOwn(body, 'llmAdapter')) patch.llmAdapter = llmAdapter;
+  if (hasOwn(body, 'llmModel') || hasOwn(body, 'codexModel')) patch.llmModel = llmModel ?? codexModel;
+  if (hasOwn(body, 'llmReasoningEffort') || hasOwn(body, 'codexReasoningEffort')) patch.llmReasoningEffort = llmReasoningEffort ?? codexReasoningEffort;
+  if (hasOwn(body, 'codexModel')) patch.codexModel = codexModel;
+  if (hasOwn(body, 'codexReasoningEffort')) patch.codexReasoningEffort = codexReasoningEffort;
   if (hasOwn(body, 'runId')) patch.runId = readString(body.runId, 'runId', false);
   return patch;
 }

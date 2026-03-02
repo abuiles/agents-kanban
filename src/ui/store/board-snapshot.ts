@@ -1,4 +1,5 @@
 import type { BoardSnapshotV1 } from '../domain/types';
+import { normalizeRun, normalizeTask } from '../../shared/llm';
 
 export const BOARD_STORAGE_KEY = 'agentboard.snapshot.v1';
 
@@ -23,5 +24,13 @@ export function parseBoardSnapshot(serialized: string): BoardSnapshotV1 {
     throw new Error('Invalid AgentsKanban snapshot.');
   }
 
-  return parsed;
+  return normalizeBoardSnapshot(parsed);
+}
+
+export function normalizeBoardSnapshot(snapshot: BoardSnapshotV1): BoardSnapshotV1 {
+  return {
+    ...snapshot,
+    tasks: snapshot.tasks.map((task) => normalizeTask(task)),
+    runs: snapshot.runs.map((run) => normalizeRun(run))
+  };
 }

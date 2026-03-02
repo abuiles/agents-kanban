@@ -3,6 +3,8 @@ import type {
   BoardSnapshotV1,
   CodexModel,
   CodexReasoningEffort,
+  LlmAdapterKind,
+  LlmReasoningEffort,
   Repo,
   RunCommand,
   RunEvent,
@@ -54,6 +56,9 @@ export type CreateTaskInput = {
   baselineUrlOverride?: string;
   status?: TaskStatus;
   simulationProfile?: SimulationProfile;
+  llmAdapter?: LlmAdapterKind;
+  llmModel?: string;
+  llmReasoningEffort?: LlmReasoningEffort;
   codexModel?: CodexModel;
   codexReasoningEffort?: CodexReasoningEffort;
 };

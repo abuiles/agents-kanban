@@ -1,7 +1,7 @@
 import type { AgentBoardApi, CreateRepoInput, CreateTaskInput, RequestRunChangesInput, UpdateRepoInput, UpdateTaskInput, UpsertScmCredentialInput } from '../domain/api';
 import type { AgentRun, BoardSnapshotV1, OperatorSession, Repo, RunCommand, RunEvent, RunLogEntry, ScmCredential, Task, TaskDetail, TerminalBootstrap } from '../domain/types';
 import { getTaskDetail } from '../domain/selectors';
-import { parseBoardSnapshot } from '../store/board-snapshot';
+import { normalizeBoardSnapshot, parseBoardSnapshot } from '../store/board-snapshot';
 import { UiPreferencesStore } from '../store/ui-preferences-store';
 
 const EMPTY_SNAPSHOT: BoardSnapshotV1 = {
@@ -232,7 +232,7 @@ export class HttpAgentBoardApi implements AgentBoardApi {
   private composeSnapshot(snapshot: BoardSnapshotV1): BoardSnapshotV1 {
     const ui = this.preferences.getSnapshot();
     return {
-      ...snapshot,
+      ...normalizeBoardSnapshot(snapshot),
       ui: {
         selectedRepoId: ui.selectedRepoId,
         selectedTaskId: ui.selectedTaskId,

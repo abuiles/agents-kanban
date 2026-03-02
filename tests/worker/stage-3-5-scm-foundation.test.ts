@@ -118,4 +118,73 @@ describe('Stage 3.5 SCM foundation', () => {
       prNumber: 12
     });
   });
+
+  it('stores generic llm run and operator session fields while preserving codex aliases', async () => {
+    const board = env.BOARD_INDEX.getByName('agentboard');
+    const repo = await board.createRepo({
+      slug: 'acme/llm-demo',
+      baselineUrl: 'https://llm-demo.example.com',
+      defaultBranch: 'main'
+    });
+    const repoBoard = env.REPO_BOARD.getByName(repo.repoId);
+
+    const task = await repoBoard.createTask({
+      repoId: repo.repoId,
+      title: 'LLM aliases',
+      taskPrompt: 'Use the generic llm metadata.',
+      acceptanceCriteria: ['llm metadata is stored'],
+      context: { links: [] },
+      llmAdapter: 'codex',
+      llmModel: 'gpt-5.3-codex',
+      llmReasoningEffort: 'high',
+      status: 'READY'
+    });
+    const run = await repoBoard.startRun(task.taskId);
+
+    expect(task.uiMeta).toMatchObject({
+      llmAdapter: 'codex',
+      llmModel: 'gpt-5.3-codex',
+      llmReasoningEffort: 'high',
+      codexModel: 'gpt-5.3-codex',
+      codexReasoningEffort: 'high'
+    });
+    expect(run).toMatchObject({
+      llmAdapter: 'codex',
+      llmModel: 'gpt-5.3-codex',
+      llmReasoningEffort: 'high'
+    });
+
+    const updated = await repoBoard.updateOperatorSession(run.runId, {
+      id: `${run.runId}:operator`,
+      runId: run.runId,
+      sandboxId: 'sandbox_1',
+      sessionName: 'operator',
+      startedAt: '2026-03-02T00:00:00.000Z',
+      actorId: 'same-session',
+      actorLabel: 'Operator',
+      connectionState: 'open',
+      takeoverState: 'resumable',
+      codexThreadId: 'thread_456',
+      codexResumeCommand: 'codex resume thread_456'
+    });
+    const bootstrap = await repoBoard.getTerminalBootstrap(run.runId);
+
+    expect(updated).toMatchObject({
+      llmAdapter: 'codex',
+      llmSessionId: 'thread_456',
+      llmResumeCommand: 'codex resume thread_456',
+      latestCodexResumeCommand: 'codex resume thread_456'
+    });
+    expect(updated.operatorSession).toMatchObject({
+      llmAdapter: 'codex',
+      llmSessionId: 'thread_456',
+      llmResumeCommand: 'codex resume thread_456',
+      codexThreadId: 'thread_456',
+      codexResumeCommand: 'codex resume thread_456'
+    });
+    expect(bootstrap).toMatchObject({
+      llmResumeCommand: 'codex resume thread_456',
+      codexResumeCommand: 'codex resume thread_456'
+    });
+  });
 });

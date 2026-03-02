@@ -101,6 +101,38 @@ describe('task validation', () => {
       })
     ).toThrow('Invalid branchSource.upstreamReviewNumber.');
   });
+
+  it('accepts provider-neutral llm task fields', () => {
+    const parsed = parseCreateTaskInput(
+      createTaskPayload({
+        llmAdapter: 'cursor_cli',
+        llmModel: 'cursor-fast',
+        llmReasoningEffort: 'high'
+      })
+    );
+
+    expect(parsed).toMatchObject({
+      llmAdapter: 'cursor_cli',
+      llmModel: 'cursor-fast',
+      llmReasoningEffort: 'high',
+      codexModel: undefined,
+      codexReasoningEffort: undefined
+    });
+  });
+
+  it('maps legacy codex task fields to provider-neutral llm fields', () => {
+    const parsed = parseUpdateTaskInput({
+      codexModel: 'gpt-5.3-codex-spark',
+      codexReasoningEffort: 'high'
+    });
+
+    expect(parsed).toMatchObject({
+      llmModel: 'gpt-5.3-codex-spark',
+      llmReasoningEffort: 'high',
+      codexModel: 'gpt-5.3-codex-spark',
+      codexReasoningEffort: 'high'
+    });
+  });
 });
 
 describe('repo validation', () => {

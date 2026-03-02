@@ -23,6 +23,7 @@ describe('run simulator', () => {
 
     expect(bootstrap.attachable).toBe(true);
     expect(bootstrap.sessionName).toBe('operator');
+    expect(bootstrap.llmResumeCommand).toBeUndefined();
 
     const updatedRun = await api.takeOverRun(run.runId);
     expect(updatedRun.operatorSession?.takeoverState).toBe('operator_control');

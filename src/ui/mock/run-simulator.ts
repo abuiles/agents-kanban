@@ -3,6 +3,7 @@ import { buildLogsForStatus } from './log-builder';
 import { buildSimulationPlan } from './run-templates';
 import { getBaselineUrl } from '../domain/selectors';
 import { LocalBoardStore } from '../store/local-board-store';
+import { buildRunLlmState, normalizeRun } from '../../shared/llm';
 
 const terminalStatuses: RunStatus[] = ['DONE', 'FAILED'];
 
@@ -66,7 +67,8 @@ export class RunSimulator {
       startedAt: startedAt.toISOString(),
       timeline: [],
       simulationProfile: profile,
-      pendingEvents: buildSimulationPlan(startedAt, profile)
+      pendingEvents: buildSimulationPlan(startedAt, profile),
+      ...buildRunLlmState(task)
     };
 
     this.store.update((snapshot) => ({
@@ -158,14 +160,14 @@ export class RunSimulator {
       }
 
       const pendingEvents = run.pendingEvents.filter((event) => !(event.status === status && event.note === note));
-      const nextRun: AgentRun = {
+      const nextRun: AgentRun = normalizeRun({
         ...run,
         status,
         pendingEvents,
-      currentStepStartedAt: now,
-      currentCommandId: undefined,
-      timeline: [...run.timeline, { status, at: now, note }]
-    };
+        currentStepStartedAt: now,
+        currentCommandId: undefined,
+        timeline: [...run.timeline, { status, at: now, note }]
+      });
 
       if (status === 'PR_OPEN') {
         nextRun.prNumber = nextRun.prNumber ?? Math.floor((Date.now() / 1_000) % 10_000);
