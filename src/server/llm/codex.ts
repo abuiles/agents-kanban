@@ -156,6 +156,77 @@ cat /workspace/task.txt | codex exec -m ${request.model} -c model_reasoning_effo
     return runCodexProcessWithLogs(context, command);
   },
 
+  async runPrompt(context, request) {
+    const startedAt = Date.now();
+    const timeoutMs = request.timeoutMs ?? 45_000;
+    const timeoutSeconds = Math.max(1, Math.ceil(timeoutMs / 1000));
+    const phase = request.phase ?? 'preview';
+    await context.sandbox.writeFile('/workspace/prompt.txt', request.prompt);
+    if (request.outputSchema) {
+      await context.sandbox.writeFile('/workspace/prompt-output-schema.json', JSON.stringify(request.outputSchema, null, 2));
+    }
+
+    const schemaArg = request.outputSchema ? '--output-schema /workspace/prompt-output-schema.json' : '';
+    const command = `bash -lc ${shellQuote(`set -euo pipefail
+export HOME="\${HOME:-/root}"
+mkdir -p ${request.cwd}
+cd ${request.cwd}
+rm -f /workspace/prompt-last-message.txt
+run_with_timeout() {
+  if command -v timeout >/dev/null 2>&1; then
+    timeout ${timeoutSeconds}s "$@"
+  else
+    "$@"
+  fi
+}
+cat /workspace/prompt.txt | run_with_timeout codex exec -m ${request.model} -c model_reasoning_effort="${request.reasoningEffort ?? 'medium'}" --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check --ephemeral -C ${request.cwd} ${schemaArg} --output-last-message /workspace/prompt-last-message.txt -
+if [ -f /workspace/prompt-last-message.txt ]; then
+  printf '\\n===CODEX_LAST_MESSAGE===\\n'
+  cat /workspace/prompt-last-message.txt
+fi
+`)}`;
+    const result = await emitCommandLifecycle(
+      context.repoBoard,
+      context.runId,
+      phase,
+      command,
+      () => context.sandbox.exec(command)
+    );
+
+    const elapsedMs = Date.now() - startedAt;
+    const marker = '===CODEX_LAST_MESSAGE===';
+    const rawOutput = result.stdout?.includes(marker)
+      ? result.stdout.split(marker).slice(1).join(marker).trim()
+      : undefined;
+
+    if (result.exitCode === 124) {
+      return {
+        status: 'timed_out',
+        elapsedMs,
+        timeoutMs,
+        rawOutput,
+        stderr: result.stderr
+      };
+    }
+
+    if (!result.success) {
+      return {
+        status: 'failed',
+        elapsedMs,
+        message: result.stderr?.trim() || 'Codex prompt execution failed.',
+        rawOutput,
+        stderr: result.stderr
+      };
+    }
+
+    return {
+      status: 'success',
+      elapsedMs,
+      rawOutput: rawOutput ?? '',
+      stderr: result.stderr
+    };
+  },
+
   extractSessionState(chunk: string, fallbackSessionId?: string) {
     const sessionMatch = chunk.match(/"thread_id":"([^"]+)"/);
     const sessionId = sessionMatch?.[1] ?? fallbackSessionId;
