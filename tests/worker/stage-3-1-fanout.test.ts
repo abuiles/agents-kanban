@@ -59,6 +59,8 @@ describe('Stage 3.1 fanout integration', () => {
       sourceMode: 'dependency_review_head',
       sourceTaskId: taskA.taskId,
       sourceRunId: runA.runId,
+      sourceReviewNumber: 101,
+      sourceReviewProvider: 'github',
       sourcePrNumber: 101,
       sourceHeadSha: sha('a')
     });
@@ -66,6 +68,8 @@ describe('Stage 3.1 fanout integration', () => {
       sourceMode: 'dependency_review_head',
       sourceTaskId: taskA.taskId,
       sourceRunId: runA.runId,
+      sourceReviewNumber: 101,
+      sourceReviewProvider: 'github',
       sourcePrNumber: 101,
       sourceHeadSha: sha('a')
     });
@@ -152,6 +156,8 @@ describe('Stage 3.1 fanout integration', () => {
       sourceMode: 'dependency_review_head',
       sourceTaskId: taskC.taskId,
       sourceRunId: runC.runId,
+      sourceReviewNumber: 203,
+      sourceReviewProvider: 'github',
       sourcePrNumber: 203,
       sourceHeadSha: sha('d')
     });

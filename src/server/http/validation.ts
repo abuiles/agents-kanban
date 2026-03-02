@@ -192,6 +192,16 @@ function readBranchSource(value: unknown, required = true): CreateTaskInput['bra
     kind: readEnumValue(value.kind, 'branchSource.kind', new Set(['explicit_source_ref', 'dependency_review_head', 'default_branch'] as const))!,
     upstreamTaskId: readString(value.upstreamTaskId, 'branchSource.upstreamTaskId', false),
     upstreamRunId: readString(value.upstreamRunId, 'branchSource.upstreamRunId', false),
+    upstreamReviewUrl: readString(value.upstreamReviewUrl, 'branchSource.upstreamReviewUrl', false),
+    upstreamReviewNumber: hasOwn(value, 'upstreamReviewNumber')
+      ? (() => {
+          if (typeof value.upstreamReviewNumber !== 'number' || !Number.isInteger(value.upstreamReviewNumber) || value.upstreamReviewNumber < 1) {
+            throw badRequest('Invalid branchSource.upstreamReviewNumber.');
+          }
+          return value.upstreamReviewNumber;
+        })()
+      : undefined,
+    upstreamReviewProvider: readEnumValue(value.upstreamReviewProvider, 'branchSource.upstreamReviewProvider', SCM_PROVIDERS, false),
     upstreamPrNumber: hasOwn(value, 'upstreamPrNumber')
       ? (() => {
           if (typeof value.upstreamPrNumber !== 'number' || !Number.isInteger(value.upstreamPrNumber) || value.upstreamPrNumber < 1) {

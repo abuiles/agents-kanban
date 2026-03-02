@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeTaskSourceRef, resolveTaskSourceRef } from './source-ref';
+import { normalizeScmSourceRef, normalizeTaskSourceRef, resolveTaskSourceRef } from './source-ref';
 
 describe('source-ref', () => {
   it('resolves an explicit task source ref before context links', () => {
@@ -34,6 +34,27 @@ describe('source-ref', () => {
     expect(normalizeTaskSourceRef('https://github.com/abuiles/minions-demo/pull/4', 'abuiles/minions-demo')).toEqual({
       fetchSpec: 'pull/4/head',
       label: 'PR #4'
+    });
+  });
+
+  it('returns a provider-neutral review-head source ref for GitHub PR URLs', () => {
+    expect(normalizeScmSourceRef('https://github.com/abuiles/minions-demo/pull/4', {
+      repoId: 'repo_demo',
+      slug: 'abuiles/minions-demo',
+      scmProvider: 'github',
+      scmBaseUrl: 'https://github.com',
+      projectPath: 'abuiles/minions-demo',
+      defaultBranch: 'main',
+      baselineUrl: 'https://example.com',
+      enabled: true,
+      createdAt: '2026-03-02T00:00:00.000Z',
+      updatedAt: '2026-03-02T00:00:00.000Z'
+    })).toEqual({
+      kind: 'review_head',
+      value: 'pull/4/head',
+      label: 'PR #4',
+      reviewNumber: 4,
+      reviewProvider: 'github'
     });
   });
 

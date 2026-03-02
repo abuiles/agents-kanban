@@ -1,4 +1,5 @@
 import type { AgentRun, Task } from '../../ui/domain/types';
+import { getRunReviewNumber, hasRunReview } from '../../shared/scm';
 
 const REVIEW_READY_RUN_STATUSES: Set<AgentRun['status']> = new Set([
   'PR_OPEN',
@@ -8,7 +9,7 @@ const REVIEW_READY_RUN_STATUSES: Set<AgentRun['status']> = new Set([
 ]);
 
 export function isDependencyMergedToDefaultBranch(task: Task, latestRun: AgentRun | undefined) {
-  return task.status === 'DONE' && Boolean(latestRun?.prUrl && latestRun.prNumber);
+  return task.status === 'DONE' && Boolean(latestRun && hasRunReview(latestRun) && getRunReviewNumber(latestRun));
 }
 
 export function isDependencyReviewReady(task: Task, latestRun: AgentRun | undefined) {
@@ -24,7 +25,7 @@ export function isDependencyReviewReady(task: Task, latestRun: AgentRun | undefi
     return true;
   }
 
-  return latestRun.status === 'FAILED' && Boolean(latestRun.prUrl);
+  return latestRun.status === 'FAILED' && hasRunReview(latestRun);
 }
 
 export function buildLatestRunsByTaskId(runs: AgentRun[]) {

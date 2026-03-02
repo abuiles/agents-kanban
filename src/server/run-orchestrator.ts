@@ -14,8 +14,10 @@ import {
   type CodexRateLimitsResponse
 } from './codex-rate-limit';
 import { getRepoHost } from '../shared/scm';
+import { getRunReviewNumber, getRunReviewUrl } from '../shared/scm';
 import type { ScmAdapter, ScmAdapterCredential } from './scm/adapter';
 import { getScmAdapter } from './scm/registry';
+import { getScmSourceRefFetchSpec } from './scm/source-ref';
 
 type WorkflowBinding<T> = {
   create(options?: { id?: string; params?: T; retention?: { successRetention?: string | number; errorRetention?: string | number } }): Promise<{ id: string }>;
@@ -255,7 +257,7 @@ cat /workspace/task.txt | codex exec -m ${codexModel} -c model_reasoning_effort=
 
   try {
     const latestRun = await repoBoard.getRun(params.runId);
-    if (latestRun.prUrl && latestRun.prNumber) {
+    if (getRunReviewUrl(latestRun) && getRunReviewNumber(latestRun)) {
       await repoBoard.transitionRun(params.runId, {
         status: 'PR_OPEN',
         previewStatus: 'DISCOVERING',
@@ -265,6 +267,9 @@ cat /workspace/task.txt | codex exec -m ${codexModel} -c model_reasoning_effort=
       const pr = await scmAdapter.createReviewRequest(repo, detail.task, latestRun, scmCredential);
       await repoBoard.transitionRun(params.runId, {
         status: 'PR_OPEN',
+        reviewUrl: pr.url,
+        reviewNumber: pr.number,
+        reviewProvider: pr.provider,
         prNumber: pr.number,
         prUrl: pr.url,
         previewStatus: 'DISCOVERING',
@@ -339,7 +344,7 @@ npx -y playwright install chromium
 
   const updated = await repoBoard.storeArtifactManifest(runId);
   await persistArtifactManifest(env, updated.runId, updated.artifactManifest);
-  if (updated.prNumber) {
+  if (getRunReviewNumber(updated)) {
     const scmAdapter = getScmAdapter(repo);
     const scmCredential = await getScmCredential(env, board, repo, scmAdapter);
     await scmAdapter.upsertRunComment(repo, task, updated, scmCredential);
@@ -1294,7 +1299,7 @@ async function prepareRunBranchFromTaskSource(
   run: Awaited<ReturnType<RepoBoardDO['getRun']>>,
   scmAdapter: ScmAdapter
 ) {
-  if (run.changeRequest?.prompt && run.prUrl) {
+  if (run.changeRequest?.prompt && getRunReviewUrl(run)) {
     await repoBoard.appendRunLogs(runId, [
       buildRunLog(runId, `Preparing existing PR branch ${run.branchName} for a review change request.`, 'bootstrap')
     ]);
@@ -1357,7 +1362,7 @@ async function prepareRunBranchFromTaskSource(
     buildRunLog(runId, `Preparing run branch ${run.branchName} from explicit source ref ${normalized.label}.`, 'bootstrap')
   ]);
   const checkout = await sandbox.exec(
-    `cd /workspace/repo && git fetch origin ${shellEscape(normalized.fetchSpec)} && git checkout -B ${shellEscape(run.branchName)} FETCH_HEAD`
+    `cd /workspace/repo && git fetch origin ${shellEscape(getScmSourceRefFetchSpec(normalized))} && git checkout -B ${shellEscape(run.branchName)} FETCH_HEAD`
   );
   await appendCommandLogs(repoBoard, runId, 'bootstrap', checkout.stdout, checkout.stderr);
   if (!checkout.success) {

@@ -1,15 +1,12 @@
 import type { AgentRun, Repo, ScmProvider, Task } from '../../ui/domain/types';
+import type { ScmSourceRef } from './source-ref';
 
 export type ScmAdapterCredential = {
   token: string;
 };
 
-export type NormalizedScmSourceRef = {
-  fetchSpec: string;
-  label: string;
-};
-
 export type ScmReviewRef = {
+  provider: ScmProvider;
   number: number;
   url: string;
 };
@@ -37,7 +34,7 @@ export type ScmCommitCheck = {
 
 export type ScmAdapter = {
   provider: ScmProvider;
-  normalizeSourceRef(sourceRef: string, repo: Repo): NormalizedScmSourceRef;
+  normalizeSourceRef(sourceRef: string, repo: Repo): ScmSourceRef;
   inferSourceRefFromTask(task: Pick<Task, 'sourceRef' | 'title' | 'description' | 'taskPrompt'>, repo: Repo): string | undefined;
   buildCloneUrl(repo: Repo, credential: ScmAdapterCredential): string;
   createReviewRequest(repo: Repo, task: Task, run: AgentRun, credential: ScmAdapterCredential): Promise<ScmReviewRef>;

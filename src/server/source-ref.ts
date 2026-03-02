@@ -1,13 +1,18 @@
 import type { Repo, Task } from '../ui/domain/types';
-import type { NormalizedScmSourceRef } from './scm/adapter';
 import { githubScmAdapter } from './scm/github';
+import type { LegacyNormalizedScmSourceRef, ScmSourceRef } from './scm/source-ref';
+import { toLegacyNormalizedScmSourceRef } from './scm/source-ref';
 
 export function resolveTaskSourceRef(task: Pick<Task, 'sourceRef' | 'title' | 'description' | 'taskPrompt'>) {
   return githubScmAdapter.inferSourceRefFromTask(task, buildLegacyGithubRepo('github.com/_'));
 }
 
-export function normalizeTaskSourceRef(sourceRef: string, expectedRepoSlug: string): NormalizedScmSourceRef {
-  return githubScmAdapter.normalizeSourceRef(sourceRef, buildLegacyGithubRepo(expectedRepoSlug));
+export function normalizeScmSourceRef(sourceRef: string, repo: Repo): ScmSourceRef {
+  return githubScmAdapter.normalizeSourceRef(sourceRef, repo);
+}
+
+export function normalizeTaskSourceRef(sourceRef: string, expectedRepoSlug: string): LegacyNormalizedScmSourceRef {
+  return toLegacyNormalizedScmSourceRef(normalizeScmSourceRef(sourceRef, buildLegacyGithubRepo(expectedRepoSlug)));
 }
 
 function buildLegacyGithubRepo(projectPath: string): Repo {

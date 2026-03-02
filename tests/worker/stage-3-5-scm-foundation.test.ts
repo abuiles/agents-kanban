@@ -66,4 +66,39 @@ describe('Stage 3.5 SCM foundation', () => {
     expect(updated.scmProvider).toBe('github');
     expect(updated.scmBaseUrl).toBe('https://github.com');
   });
+
+  it('persists provider-neutral review metadata while mirroring legacy PR aliases', async () => {
+    const board = env.BOARD_INDEX.getByName('agentboard');
+    const repo = await board.createRepo({
+      slug: 'acme/review-demo',
+      baselineUrl: 'https://review-demo.example.com',
+      defaultBranch: 'main'
+    });
+    const repoBoard = env.REPO_BOARD.getByName(repo.repoId);
+
+    const task = await repoBoard.createTask({
+      repoId: repo.repoId,
+      title: 'Review metadata',
+      taskPrompt: 'Track provider-neutral review refs.',
+      acceptanceCriteria: ['review metadata is stored'],
+      context: { links: [] },
+      status: 'READY'
+    });
+    const run = await repoBoard.startRun(task.taskId);
+    const updated = await repoBoard.transitionRun(run.runId, {
+      status: 'PR_OPEN',
+      reviewUrl: 'https://github.com/acme/review-demo/pull/12',
+      reviewNumber: 12,
+      reviewProvider: 'github',
+      headSha: 'a'.repeat(40)
+    });
+
+    expect(updated).toMatchObject({
+      reviewUrl: 'https://github.com/acme/review-demo/pull/12',
+      reviewNumber: 12,
+      reviewProvider: 'github',
+      prUrl: 'https://github.com/acme/review-demo/pull/12',
+      prNumber: 12
+    });
+  });
 });

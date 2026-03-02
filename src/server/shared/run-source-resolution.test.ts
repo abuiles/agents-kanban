@@ -78,6 +78,8 @@ describe('resolveRunSource', () => {
       kind: 'dependency_review_head',
       upstreamTaskId: 'task_up',
       upstreamRunId: 'run_task_up',
+      upstreamReviewNumber: 7,
+      upstreamReviewProvider: 'github',
       upstreamPrNumber: 7,
       upstreamHeadSha: 'b'.repeat(40),
       resolvedRef: 'b'.repeat(40)
@@ -85,6 +87,8 @@ describe('resolveRunSource', () => {
     expect(source.dependencyContext).toMatchObject({
       sourceTaskId: 'task_up',
       sourceRunId: 'run_task_up',
+      sourceReviewNumber: 7,
+      sourceReviewProvider: 'github',
       sourcePrNumber: 7,
       sourceHeadSha: 'b'.repeat(40),
       sourceMode: 'dependency_review_head'
@@ -143,6 +147,7 @@ describe('resolveRunSource', () => {
     expect(source.branchSource).toMatchObject({
       kind: 'dependency_review_head',
       upstreamTaskId: 'task_up_2',
+      upstreamReviewNumber: 22,
       upstreamPrNumber: 22,
       upstreamHeadSha: 'f'.repeat(40)
     });

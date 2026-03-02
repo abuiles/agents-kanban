@@ -1,19 +1,26 @@
 import { buildGithubApiBaseUrl, buildGithubGitUrl, getRepoProjectPath, getRepoScmBaseUrl } from '../../shared/scm';
 import type { AgentRun, Repo, Task } from '../../ui/domain/types';
-import type { NormalizedScmSourceRef, ScmAdapter, ScmAdapterCredential, ScmCommitCheck, ScmReviewRef, ScmReviewState } from './adapter';
+import type { ScmAdapter, ScmAdapterCredential, ScmCommitCheck, ScmReviewRef, ScmReviewState } from './adapter';
+import type { ScmSourceRef } from './source-ref';
 
 export class GitHubScmAdapter implements ScmAdapter {
   readonly provider = 'github' as const;
 
-  normalizeSourceRef(sourceRef: string, repo: Repo): NormalizedScmSourceRef {
+  normalizeSourceRef(sourceRef: string, repo: Repo): ScmSourceRef {
     const trimmed = sourceRef.trim();
     const pullHeadMatch = trimmed.match(/^(?:refs\/)?pull\/(\d+)\/head$/i);
     if (pullHeadMatch) {
-      return { fetchSpec: `pull/${pullHeadMatch[1]}/head`, label: `PR #${pullHeadMatch[1]}` };
+      return {
+        kind: 'review_head',
+        value: `pull/${pullHeadMatch[1]}/head`,
+        label: `PR #${pullHeadMatch[1]}`,
+        reviewNumber: Number.parseInt(pullHeadMatch[1], 10),
+        reviewProvider: this.provider
+      };
     }
 
     if (/^[0-9a-f]{7,40}$/i.test(trimmed)) {
-      return { fetchSpec: trimmed, label: `commit ${trimmed.slice(0, 7)}` };
+      return { kind: 'commit', value: trimmed, label: `commit ${trimmed.slice(0, 7)}` };
     }
 
     try {
@@ -34,22 +41,28 @@ export class GitHubScmAdapter implements ScmAdapter {
       }
 
       if (parts[2] === 'pull' && parts[3]) {
-        return { fetchSpec: `pull/${parts[3]}/head`, label: `PR #${parts[3]}` };
+        return {
+          kind: 'review_head',
+          value: `pull/${parts[3]}/head`,
+          label: `PR #${parts[3]}`,
+          reviewNumber: Number.parseInt(parts[3], 10),
+          reviewProvider: this.provider
+        };
       }
 
       if (parts[2] === 'tree' && parts.length >= 4) {
         const branch = decodeURIComponent(parts.slice(3).join('/'));
-        return { fetchSpec: branch, label: `branch ${branch}` };
+        return { kind: 'branch', value: branch, label: `branch ${branch}` };
       }
 
       if (parts[2] === 'commit' && parts[3]) {
-        return { fetchSpec: parts[3], label: `commit ${parts[3].slice(0, 7)}` };
+        return { kind: 'commit', value: parts[3], label: `commit ${parts[3].slice(0, 7)}` };
       }
 
       throw new Error(`Unsupported task source ref URL: ${trimmed}`);
     } catch (error) {
       if (error instanceof TypeError) {
-        return { fetchSpec: trimmed, label: trimmed };
+        return { kind: 'branch', value: trimmed, label: trimmed };
       }
 
       throw error;
@@ -105,11 +118,12 @@ export class GitHubScmAdapter implements ScmAdapter {
       throw new Error(`GitHub PR creation failed with status ${response.status}.`);
     }
     const payload = await response.json() as { number: number; html_url: string };
-    return { number: payload.number, url: payload.html_url };
+    return { provider: this.provider, number: payload.number, url: payload.html_url };
   }
 
   async upsertRunComment(repo: Repo, task: Task, run: AgentRun, credential: ScmAdapterCredential) {
-    if (!run.prNumber) {
+    const reviewNumber = run.reviewNumber ?? run.prNumber;
+    if (!reviewNumber) {
       return;
     }
 
@@ -126,7 +140,7 @@ export class GitHubScmAdapter implements ScmAdapter {
       run.artifactManifest?.video ? `Video: ${run.artifactManifest.video.key}` : undefined
     ].filter(Boolean).join('\n');
 
-    const commentsResponse = await githubRequest(repo, `/issues/${run.prNumber}/comments`, credential.token);
+    const commentsResponse = await githubRequest(repo, `/issues/${reviewNumber}/comments`, credential.token);
     const comments = await commentsResponse.json() as Array<{ id: number; body?: string }>;
     const existing = comments.find((comment) => comment.body?.includes(marker));
     if (existing) {
@@ -137,18 +151,19 @@ export class GitHubScmAdapter implements ScmAdapter {
       return;
     }
 
-    await githubRequest(repo, `/issues/${run.prNumber}/comments`, credential.token, {
+    await githubRequest(repo, `/issues/${reviewNumber}/comments`, credential.token, {
       method: 'POST',
       body: JSON.stringify({ body })
     });
   }
 
   async getReviewState(repo: Repo, run: AgentRun, credential: ScmAdapterCredential): Promise<ScmReviewState> {
-    if (!run.prNumber) {
+    const reviewNumber = run.reviewNumber ?? run.prNumber;
+    if (!reviewNumber) {
       return { exists: false };
     }
 
-    const response = await githubRequest(repo, `/pulls/${run.prNumber}`, credential.token);
+    const response = await githubRequest(repo, `/pulls/${reviewNumber}`, credential.token);
     if (response.status === 404) {
       return { exists: false };
     }

@@ -64,11 +64,15 @@ describe('GitHubScmAdapter', () => {
 
   it('keeps GitHub source-ref normalization behavior compatible', () => {
     expect(githubScmAdapter.normalizeSourceRef('https://github.com/acme/demo/pull/42', buildRepo())).toEqual({
-      fetchSpec: 'pull/42/head',
-      label: 'PR #42'
+      kind: 'review_head',
+      value: 'pull/42/head',
+      label: 'PR #42',
+      reviewNumber: 42,
+      reviewProvider: 'github'
     });
     expect(githubScmAdapter.normalizeSourceRef('https://github.com/acme/demo/tree/feature/minions', buildRepo())).toEqual({
-      fetchSpec: 'feature/minions',
+      kind: 'branch',
+      value: 'feature/minions',
       label: 'branch feature/minions'
     });
     expect(() => githubScmAdapter.normalizeSourceRef('https://github.com/other/repo/pull/1', buildRepo())).toThrow(
@@ -84,7 +88,7 @@ describe('GitHubScmAdapter', () => {
 
     const result = await githubScmAdapter.createReviewRequest(buildRepo(), buildTask(), buildRun(), { token: 'ghp_test' });
 
-    expect(result).toEqual({ number: 123, url: 'https://github.com/acme/demo/pull/123' });
+    expect(result).toEqual({ provider: 'github', number: 123, url: 'https://github.com/acme/demo/pull/123' });
     expect(fetchMock).toHaveBeenCalledWith(
       'https://api.github.com/repos/acme/demo/pulls',
       expect.objectContaining({

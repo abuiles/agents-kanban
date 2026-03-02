@@ -23,6 +23,7 @@ import { executeRunJob } from '../run-orchestrator';
 import { refreshDependencyStates } from '../shared/dependency-state';
 import { buildLatestRunsByTaskId, isDependencyMergedToDefaultBranch } from '../shared/dependency-readiness';
 import { resolveRunSource } from '../shared/run-source-resolution';
+import { hasRunReview, normalizeDependencyReviewMetadata, normalizeRunReviewMetadata, normalizeTaskBranchSourceReviewMetadata } from '../../shared/scm';
 
 const STORAGE_KEY = 'repo-board-state';
 const LOCAL_JOBS_KEY = 'repo-board-local-jobs';
@@ -303,6 +304,9 @@ export class RepoBoardDO extends DurableObject<Env> {
     const now = new Date();
     const nextRun = createRealRun(task, createRunId(task.repoId), now, {
       branchName: existingRun.branchName,
+      reviewUrl: existingRun.reviewUrl,
+      reviewNumber: existingRun.reviewNumber,
+      reviewProvider: existingRun.reviewProvider,
       prUrl: existingRun.prUrl,
       prNumber: existingRun.prNumber,
       baseRunId: existingRun.runId,
@@ -505,7 +509,7 @@ export class RepoBoardDO extends DurableObject<Env> {
 
     const nextTask: Task = {
       ...task,
-      status: updated.prUrl ? 'REVIEW' : 'FAILED',
+      status: hasRunReview(updated) ? 'REVIEW' : 'FAILED',
       updatedAt: nowIso,
       runId
     };
@@ -964,7 +968,7 @@ function deriveTaskStatus(run: AgentRun, current: TaskStatus): TaskStatus {
     return 'REVIEW';
   }
   if (run.status === 'FAILED') {
-    return run.prUrl ? 'REVIEW' : 'FAILED';
+    return hasRunReview(run) ? 'REVIEW' : 'FAILED';
   }
   if (run.status === 'QUEUED' || run.status === 'BOOTSTRAPPING' || run.status === 'RUNNING_CODEX' || run.status === 'OPERATOR_CONTROLLED' || run.status === 'RUNNING_TESTS' || run.status === 'PUSHING_BRANCH') {
     return 'ACTIVE';
@@ -1000,10 +1004,10 @@ function cloneRepoBoardState(state: RepoBoardState): RepoBoardState {
       uiMeta: task.uiMeta ? { ...task.uiMeta } : undefined
     })),
     runs: state.runs.map((run) => ({
-      ...run,
+      ...normalizeRunReviewMetadata(run),
       codexProcessId: run.codexProcessId,
       changeRequest: run.changeRequest ? { ...run.changeRequest } : undefined,
-      dependencyContext: run.dependencyContext ? { ...run.dependencyContext } : undefined,
+      dependencyContext: run.dependencyContext ? normalizeDependencyReviewMetadata({ ...run.dependencyContext }) : undefined,
       operatorSession: run.operatorSession ? { ...run.operatorSession } : undefined,
       errors: run.errors.map((error) => ({ ...error })),
       timeline: run.timeline.map((entry) => ({ ...entry })),
@@ -1032,8 +1036,14 @@ function cloneRepoBoardState(state: RepoBoardState): RepoBoardState {
 
 function normalizeRepoBoardState(state?: Partial<RepoBoardState> | null): RepoBoardState {
   return {
-    tasks: state?.tasks ?? [],
-    runs: state?.runs ?? [],
+    tasks: (state?.tasks ?? []).map((task) => ({
+      ...task,
+      branchSource: cloneTaskBranchSource(task.branchSource)
+    })),
+    runs: (state?.runs ?? []).map((run) => ({
+      ...normalizeRunReviewMetadata(run),
+      dependencyContext: run.dependencyContext ? normalizeDependencyReviewMetadata({ ...run.dependencyContext }) : undefined
+    })),
     logs: (state?.logs ?? [])
       .slice(-MAX_LOG_ENTRIES)
       .map((log) => ({ ...log, message: trimText(log.message, MAX_LOG_MESSAGE_CHARS) })),
@@ -1076,5 +1086,5 @@ function cloneTaskAutomationState(automationState: Task['automationState']) {
 }
 
 function cloneTaskBranchSource(branchSource: Task['branchSource']) {
-  return branchSource ? { ...branchSource } : undefined;
+  return branchSource ? normalizeTaskBranchSourceReviewMetadata({ ...branchSource }) : undefined;
 }

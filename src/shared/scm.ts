@@ -1,4 +1,4 @@
-import type { Repo, ScmProvider } from '../ui/domain/types';
+import type { AgentRun, Repo, ScmProvider, TaskBranchSource } from '../ui/domain/types';
 
 export const SCM_PROVIDERS = new Set(['github', 'gitlab'] as const);
 
@@ -106,4 +106,79 @@ export function buildGithubGitUrl(repo: RepoScmLike, pat: string): string {
   }
 
   return `${baseUrl.protocol}//x-access-token:${encodeURIComponent(pat)}@${baseUrl.host}/${getRepoProjectPath(repo)}.git`;
+}
+
+type ReviewMetadataLike = {
+  reviewUrl?: string;
+  reviewNumber?: number;
+  reviewProvider?: ScmProvider;
+  prUrl?: string;
+  prNumber?: number;
+};
+
+type DependencyReviewMetadataLike = NonNullable<AgentRun['dependencyContext']>;
+type BranchSourceReviewMetadataLike = Extract<TaskBranchSource, { kind: 'dependency_review_head' }>;
+
+export function getRunReviewUrl(review: ReviewMetadataLike) {
+  return review.reviewUrl ?? review.prUrl;
+}
+
+export function getRunReviewNumber(review: ReviewMetadataLike) {
+  return review.reviewNumber ?? review.prNumber;
+}
+
+export function getRunReviewProvider(review: ReviewMetadataLike) {
+  return review.reviewProvider ?? (getRunReviewUrl(review) || getRunReviewNumber(review) ? 'github' : undefined);
+}
+
+export function hasRunReview(review: ReviewMetadataLike) {
+  return Boolean(getRunReviewUrl(review) || getRunReviewNumber(review));
+}
+
+export function normalizeRunReviewMetadata<T extends ReviewMetadataLike>(review: T): T {
+  const reviewUrl = getRunReviewUrl(review);
+  const reviewNumber = getRunReviewNumber(review);
+  const reviewProvider = getRunReviewProvider(review);
+  return {
+    ...review,
+    reviewUrl,
+    reviewNumber,
+    reviewProvider,
+    prUrl: review.prUrl ?? reviewUrl,
+    prNumber: review.prNumber ?? reviewNumber
+  };
+}
+
+export function normalizeDependencyReviewMetadata<T extends DependencyReviewMetadataLike>(dependencyContext: T): T {
+  const sourceReviewUrl = dependencyContext.sourceReviewUrl;
+  const sourceReviewNumber = dependencyContext.sourceReviewNumber ?? dependencyContext.sourcePrNumber;
+  const sourceReviewProvider = dependencyContext.sourceReviewProvider
+    ?? (sourceReviewUrl || sourceReviewNumber ? 'github' : undefined);
+
+  return {
+    ...dependencyContext,
+    sourceReviewUrl,
+    sourceReviewNumber,
+    sourceReviewProvider,
+    sourcePrNumber: dependencyContext.sourcePrNumber ?? sourceReviewNumber
+  };
+}
+
+export function normalizeTaskBranchSourceReviewMetadata<T extends TaskBranchSource>(branchSource: T): T {
+  if (branchSource.kind !== 'dependency_review_head') {
+    return branchSource;
+  }
+
+  const upstreamReviewUrl = branchSource.upstreamReviewUrl;
+  const upstreamReviewNumber = branchSource.upstreamReviewNumber ?? branchSource.upstreamPrNumber;
+  const upstreamReviewProvider = branchSource.upstreamReviewProvider
+    ?? (upstreamReviewUrl || upstreamReviewNumber ? 'github' : undefined);
+
+  return {
+    ...branchSource,
+    upstreamReviewUrl,
+    upstreamReviewNumber,
+    upstreamReviewProvider,
+    upstreamPrNumber: branchSource.upstreamPrNumber ?? upstreamReviewNumber
+  } as T;
 }
