@@ -3,12 +3,16 @@ import type { CreateTaskInput } from '../ui/domain/api';
 import { badRequest, forbidden, notFound, unauthorized } from './http/errors';
 import { handleError, json } from './http/response';
 import {
+  parseAcceptTenantInviteInput,
   parseAuthLoginInput,
+  parseCreateTenantInviteInput,
   parseAuthSignupInput,
   parseCreateRepoInput,
   parseCreateTaskInput,
   parseCreateTenantInput,
   parseCreateTenantMemberInput,
+  parsePlatformAuthLoginInput,
+  parsePlatformSupportAssumeTenantInput,
   parseSetActiveTenantInput,
   parseUpdateRepoInput,
   parseUpdateTaskInput,
@@ -20,7 +24,7 @@ import { extractRepoIdFromRunId, extractRepoIdFromTaskId } from './shared/ids';
 import { parseBoardSnapshot } from '../ui/store/board-snapshot';
 import { scheduleRunJob } from './run-orchestrator';
 import { getRunUsage, getTenantRunUsage, getTenantUsageSummary } from './usage-reporting';
-import { DEFAULT_TENANT_ID, normalizeTenantId } from '../shared/tenant';
+import { normalizeTenantId, normalizeTenantIdStrict } from '../shared/tenant';
 
 const BOARD_OBJECT_NAME = 'agentboard';
 
@@ -69,7 +73,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
     }
 
     if (url.pathname === '/api/auth/logout' && request.method === 'POST') {
-      const requestContext = await resolveRequestTenantContext(board, request);
+      const requestContext = await resolveRequestTenantContext(board, request, { requireSession: true });
       if (requestContext.sessionId) {
         await board.logout(requestContext.sessionId);
       }
@@ -78,7 +82,41 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
       return response;
     }
 
-    const requestContext = await resolveRequestTenantContext(board, request);
+    if (url.pathname === '/api/platform/auth/login' && request.method === 'POST') {
+      const input = parsePlatformAuthLoginInput(await readJson(request));
+      const result = await board.platformLogin(input);
+      return json(result);
+    }
+
+    if (url.pathname === '/api/platform/support/release-tenant' && request.method === 'POST') {
+      const platformContext = await resolvePlatformAdminContext(board, request);
+      const released = await board.releasePlatformSupportSession(platformContext.platformSupportToken, platformContext.platformAdminId);
+      return json(released);
+    }
+
+    if (url.pathname === '/api/platform/support/sessions' && request.method === 'GET') {
+      const platformContext = await resolvePlatformAdminContext(board, request);
+      return json(await board.listPlatformSupportSessions(platformContext.platformAdminId));
+    }
+
+    if (url.pathname === '/api/platform/audit-log' && request.method === 'GET') {
+      const platformContext = await resolvePlatformAdminContext(board, request);
+      return json(await board.listSecurityAuditLog(platformContext.platformAdminId));
+    }
+
+    if (url.pathname === '/api/platform/support/assume-tenant' && request.method === 'POST') {
+      const platformContext = await resolvePlatformAdminContext(board, request);
+      const input = parsePlatformSupportAssumeTenantInput(await readJson(request));
+      const result = await board.createPlatformSupportSession({
+        adminId: platformContext.platformAdminId,
+        tenantId: input.tenantId,
+        reason: input.reason,
+        ttlMinutes: input.ttlMinutes
+      });
+      return json(result, { status: 201 });
+    }
+
+    const requestContext = await resolveRequestTenantContext(board, request, { requireSession: true });
 
     if (url.pathname === '/api/me' && request.method === 'GET') {
       const user = await board.getUserById(requestContext.userId);
@@ -139,6 +177,31 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
       const input = parseCreateTenantMemberInput(await readJson(request));
       await requireOwnerTenantAccess(board, requestContext, tenantId);
       return json(await board.createTenantMember(tenantId, input, requestContext.userId), { status: 201 });
+    }
+
+    const tenantInvitesMatch = url.pathname.match(/^\/api\/tenants\/([^/]+)\/invites$/);
+    if (tenantInvitesMatch && request.method === 'POST') {
+      const tenantId = decodeURIComponent(tenantInvitesMatch[1]);
+      const input = parseCreateTenantInviteInput(await readJson(request));
+      await requireOwnerTenantAccess(board, requestContext, tenantId);
+      return json(await board.createTenantInvite(tenantId, input, requestContext.userId), { status: 201 });
+    }
+
+    if (tenantInvitesMatch && request.method === 'GET') {
+      const tenantId = decodeURIComponent(tenantInvitesMatch[1]);
+      await requireOwnerTenantAccess(board, requestContext, tenantId);
+      return json(await board.listTenantInvites(tenantId, requestContext.userId));
+    }
+
+    const inviteAcceptMatch = url.pathname.match(/^\/api\/invites\/([^/]+)\/accept$/);
+    if (inviteAcceptMatch && request.method === 'POST') {
+      const body = parseAcceptTenantInviteInput(await readJson(request));
+      const inviteId = decodeURIComponent(inviteAcceptMatch[1]);
+      const result = await board.acceptTenantInvite(body.token, requestContext.userId);
+      if (result.invite.id !== inviteId) {
+        throw forbidden('Invite token does not match requested invite id.');
+      }
+      return json(result);
     }
 
     const tenantMemberMatch = url.pathname.match(/^\/api\/tenants\/([^/]+)\/members\/([^/]+)$/);
@@ -231,10 +294,14 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
     }
 
     if (url.pathname === '/api/tenant-usage' && request.method === 'GET') {
+      const tenantId = url.searchParams.get('tenantId') ?? requestContext.activeTenantId;
+      await requireActiveTenantAccess(board, requestContext, tenantId);
       return json(await getTenantUsageSummary(url, env));
     }
 
     if (url.pathname === '/api/tenant-usage/runs' && request.method === 'GET') {
+      const tenantId = url.searchParams.get('tenantId') ?? requestContext.activeTenantId;
+      await requireActiveTenantAccess(board, requestContext, tenantId);
       return json(await getTenantRunUsage(url, env));
     }
 
@@ -266,7 +333,13 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
       const repoId = await resolveRepoIdForTask(board, taskId);
       await assertRepoAccess(board, requestContext, repoId);
       const run = await env.REPO_BOARD.getByName(repoId).startRun(taskId, { tenantId: requestContext.activeTenantId });
-      const workflow = await scheduleRunJob(env, ctx, { repoId, taskId, runId: run.runId, mode: 'full_run' });
+      const workflow = await scheduleRunJob(env, ctx, {
+        tenantId: requestContext.activeTenantId,
+        repoId,
+        taskId,
+        runId: run.runId,
+        mode: 'full_run'
+      });
       await env.REPO_BOARD.getByName(repoId).transitionRun(run.runId, {
         workflowInstanceId: workflow.id,
         orchestrationMode: workflow.id.startsWith('local-alarm-') ? 'local_alarm' : 'workflow'
@@ -288,7 +361,13 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
       const repoId = await resolveRepoIdForRun(board, runId);
       await assertRepoAccess(board, requestContext, repoId);
       const run = await env.REPO_BOARD.getByName(repoId).retryRun(runId, requestContext.activeTenantId);
-      const workflow = await scheduleRunJob(env, ctx, { repoId, taskId: run.taskId, runId: run.runId, mode: 'full_run' });
+      const workflow = await scheduleRunJob(env, ctx, {
+        tenantId: requestContext.activeTenantId,
+        repoId,
+        taskId: run.taskId,
+        runId: run.runId,
+        mode: 'full_run'
+      });
       await env.REPO_BOARD.getByName(repoId).transitionRun(run.runId, {
         workflowInstanceId: workflow.id,
         orchestrationMode: workflow.id.startsWith('local-alarm-') ? 'local_alarm' : 'workflow'
@@ -330,7 +409,13 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
       const repoId = await resolveRepoIdForRun(board, runId);
       await assertRepoAccess(board, requestContext, repoId);
       const run = await env.REPO_BOARD.getByName(repoId).requestRunChanges(runId, body.prompt.trim(), requestContext.activeTenantId);
-      const workflow = await scheduleRunJob(env, ctx, { repoId, taskId: run.taskId, runId: run.runId, mode: 'full_run' });
+      const workflow = await scheduleRunJob(env, ctx, {
+        tenantId: requestContext.activeTenantId,
+        repoId,
+        taskId: run.taskId,
+        runId: run.runId,
+        mode: 'full_run'
+      });
       await env.REPO_BOARD.getByName(repoId).transitionRun(run.runId, {
         workflowInstanceId: workflow.id,
         orchestrationMode: workflow.id.startsWith('local-alarm-') ? 'local_alarm' : 'workflow'
@@ -345,6 +430,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
       await assertRepoAccess(board, requestContext, repoId);
       const run = await env.REPO_BOARD.getByName(repoId).retryEvidence(runId, requestContext.activeTenantId);
       const workflow = await scheduleRunJob(env, ctx, {
+        tenantId: requestContext.activeTenantId,
         repoId,
         taskId: run.taskId,
         runId: run.runId,
@@ -363,7 +449,13 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
       const repoId = await resolveRepoIdForRun(board, runId);
       await assertRepoAccess(board, requestContext, repoId);
       const run = await env.REPO_BOARD.getByName(repoId).retryPreview(runId, requestContext.activeTenantId);
-      const workflow = await scheduleRunJob(env, ctx, { repoId, taskId: run.taskId, runId: run.runId, mode: 'preview_only' });
+      const workflow = await scheduleRunJob(env, ctx, {
+        tenantId: requestContext.activeTenantId,
+        repoId,
+        taskId: run.taskId,
+        runId: run.runId,
+        mode: 'preview_only'
+      });
       await env.REPO_BOARD.getByName(repoId).transitionRun(run.runId, {
         workflowInstanceId: workflow.id,
         orchestrationMode: workflow.id.startsWith('local-alarm-') ? 'local_alarm' : 'workflow'
@@ -383,6 +475,8 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
     const runUsageMatch = url.pathname.match(/^\/api\/runs\/([^/]+)\/usage$/);
     if (runUsageMatch && request.method === 'GET') {
       const runId = decodeURIComponent(runUsageMatch[1]);
+      const repoId = await resolveRepoIdForRun(board, runId);
+      await assertRepoAccess(board, requestContext, repoId);
       return json(await getRunUsage(runId, env));
     }
 
@@ -556,28 +650,71 @@ type RequestTenantContext = {
   activeTenantId: string;
   sessionId?: string;
   sessionToken?: string;
+  platformAdminId?: string;
+  supportSessionId?: string;
+};
+
+type RequestTenantContextOptions = {
+  requireSession?: boolean;
+};
+
+type PlatformAdminContext = {
+  platformAdminId: string;
+  platformSupportToken: string;
 };
 
 async function resolveRequestTenantContext(
   board: DurableObjectStub<import('./durable/board-index').BoardIndexDO>,
-  request: Request
+  request: Request,
+  options: RequestTenantContextOptions = {}
 ): Promise<RequestTenantContext> {
+  const supportToken = readPlatformSupportToken(request);
+  if (supportToken) {
+    const support = await board.resolvePlatformSupportSessionByToken(supportToken);
+    return {
+      userId: `platform_admin:${support.session.adminId}`,
+      activeTenantId: normalizeTenantIdStrict(support.session.tenantId),
+      sessionToken: supportToken,
+      platformAdminId: support.session.adminId,
+      supportSessionId: support.session.id
+    };
+  }
+
   const sessionToken = readSessionToken(request);
   if (sessionToken) {
     const resolved = await board.resolveSessionByToken(sessionToken);
     return {
       userId: resolved.user.id,
-      activeTenantId: normalizeTenantId(resolved.session.activeTenantId),
+      activeTenantId: normalizeTenantIdStrict(resolved.session.activeTenantId),
       sessionId: resolved.session.id,
       sessionToken
     };
   }
 
-  const userId = request.headers.get('x-user-id')?.trim() ?? 'user_system';
-  const activeTenantId = normalizeTenantId(request.headers.get('x-tenant-id') ?? DEFAULT_TENANT_ID);
+  if (options.requireSession) {
+    throw unauthorized('Missing auth session.');
+  }
+
+  const userId = request.headers.get('x-user-id')?.trim();
+  const activeTenantId = request.headers.get('x-tenant-id')?.trim();
+  if (!userId || !activeTenantId) {
+    throw unauthorized('Missing auth session.');
+  }
+  return { userId, activeTenantId: normalizeTenantIdStrict(activeTenantId) };
+}
+
+async function resolvePlatformAdminContext(
+  board: DurableObjectStub<import('./durable/board-index').BoardIndexDO>,
+  request: Request
+): Promise<PlatformAdminContext> {
+  const token = readPlatformAdminToken(request);
+  if (!token) {
+    throw unauthorized('Missing platform admin token.');
+  }
+  const resolved = await board.resolvePlatformAdminByToken(token);
   return {
-    userId,
-    activeTenantId
+    platformAdminId: resolved.admin.id,
+    platformSupportToken: token
   };
 }
 
@@ -648,6 +785,25 @@ function readSessionToken(request: Request): string | undefined {
     }
   }
 
+  return undefined;
+}
+
+function readPlatformAdminToken(request: Request): string | undefined {
+  const authorization = request.headers.get('authorization')?.trim();
+  if (authorization?.toLowerCase().startsWith('bearer ')) {
+    const token = authorization.slice(7).trim();
+    if (token) {
+      return token;
+    }
+  }
+  return request.headers.get('x-platform-admin-token')?.trim() || undefined;
+}
+
+function readPlatformSupportToken(request: Request): string | undefined {
+  const headerToken = request.headers.get('x-support-session-token')?.trim();
+  if (headerToken) {
+    return headerToken;
+  }
   return undefined;
 }
 

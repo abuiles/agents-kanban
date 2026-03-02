@@ -15,6 +15,7 @@
 | Operator takeover | 4 | ✅ Implemented | `POST /api/runs/:runId/takeover` | _none_ | Run operator control handoff endpoint exists. |
 | Operator control | 6 | ⚠️ Partial | `POST /api/runs/:runId/cancel` | Guidance-mode and explicit control-state/queue semantics not fully in scope yet; broader Stage 6 endpoints absent | Partial completion: cancel transition exists, but guided execution semantics are incomplete. |
 | Tenant + metering | 4.5 | ✅ Implemented | `GET /api/tenants`; `POST /api/tenants`; `GET /api/tenants/:tenantId`; `PATCH /api/tenants/:tenantId`; `GET /api/tenants/:tenantId/members`; `POST /api/tenants/:tenantId/members`; `PATCH /api/tenants/:tenantId/members/:memberId`; `POST /api/auth/signup`; `POST /api/auth/login`; `POST /api/auth/logout`; `GET /api/me`; `POST /api/me/tenant-context`; `GET /api/tenant-usage?tenantId=&from=&to=`; `GET /api/tenant-usage/runs?tenantId=&from=&to=`; `GET /api/runs/:runId/usage` | _none_ | Tenant-aware APIs and pre-production rollout constraints are implemented. |
+| Org onboarding + support admin | 4.6 | ✅ Implemented | `POST /api/tenants/:tenantId/invites`; `GET /api/tenants/:tenantId/invites`; `POST /api/invites/:inviteId/accept`; `POST /api/platform/auth/login`; `POST /api/platform/support/assume-tenant`; `POST /api/platform/support/release-tenant`; `GET /api/platform/support/sessions`; `GET /api/platform/audit-log` | _none_ | Invite-by-email onboarding and scoped platform support sessions are in place. |
 | Explainability/audit | 5 | ⏳ Pending | _none_ | `GET /api/runs/:runId/explanation`; `GET /api/runs/:runId/audit` | Stage 5 not yet implemented. |
 | Scale/queueing | 7 | ⏳ Pending | _none_ | queued run endpoints + queue reason APIs | Stage 7 not yet implemented. `max_instances` is currently set in Workers config and is platform-level only. |
 | Hardening/policy/credentials | 8 | ⏳ Pending | _none_ | Stage 8 hardening/policy credential APIs and policy guard endpoints | Stage 8 not yet implemented. |
@@ -32,6 +33,11 @@
 8. `POST /api/runs/:runId/retry`
 9. `GET /api/runs/:runId/terminal`
 10. `GET /api/runs/:runId/ws`
+
+## Related guides
+
+- Tenant/auth API guide: `docs/tenant-auth-api.md`
+- Stage 4.6 org onboarding + admin support: `docs/stage_4_6.md`
 
 ## Sync template
 

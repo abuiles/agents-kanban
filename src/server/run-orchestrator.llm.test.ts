@@ -390,7 +390,11 @@ describe('executeRunJob LLM adapter coverage', () => {
     ]);
 
     await expect(
-      executeRunJob(harness.env, { repoId: repo.repoId, taskId: task.taskId, runId: 'run_1', mode: 'full_run' }, async () => {})
+      executeRunJob(
+        harness.env,
+        { tenantId: 'tenant_legacy', repoId: repo.repoId, taskId: task.taskId, runId: 'run_1', mode: 'full_run' },
+        async () => {}
+      )
     ).rejects.toThrow();
 
     expect(usageLedgerWritesState.entries.length).toBeGreaterThan(0);

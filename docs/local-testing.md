@@ -20,6 +20,9 @@ The runtime resolves credentials in this order:
 
 1. Provider credential registry (`/api/scm/credentials`) keyed by provider + host
 2. (GitHub only) legacy fallback in KV key `github_pat`
+3. Optional platform support-admin bootstrap via worker env:
+   - `PLATFORM_ADMIN_EMAIL`
+   - `PLATFORM_ADMIN_PASSWORD`
 
 Set this for local examples:
 
@@ -167,6 +170,14 @@ You can continue to use `npx wrangler dev` for Worker-only execution on the lega
    - `POST /api/me/tenant-context` to set active tenant if multiple memberships exist
    - Confirm the response contains no `tenant_legacy` fallback tenant and requires an explicit tenant selection.
    - `GET /api/tenants` to verify tenant visibility
+
+0.5 Optional support-admin smoke test (Stage 4.6):
+
+   - `POST /api/platform/auth/login`
+   - `POST /api/platform/support/assume-tenant` with `tenantId` and a `reason`
+   - Re-run a tenant-scoped endpoint using `x-support-session-token`
+   - `POST /api/platform/support/release-tenant`
+   - `GET /api/platform/audit-log` to verify audit entries
 
 1. Create/get board and repo
    - `GET /api/board?repoId=all`

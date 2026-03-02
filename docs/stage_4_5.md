@@ -2,6 +2,10 @@
 
 **Status:** ✅ Complete
 
+Follow-on implementation:
+
+- org signup/invite and platform support-admin mode are documented in `docs/stage_4_6.md`
+
 ## Execution defaults
 
 - Run the local app from `localhost:5173`.
@@ -345,6 +349,10 @@ Rules:
 ### Tenant-aware request model
 
 Every authenticated request must resolve an operator identity and an allowed tenant set.
+
+API consumer reference:
+
+- `docs/tenant-auth-api.md`
 
 Recommended initial model:
 

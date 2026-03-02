@@ -9,6 +9,7 @@
 | 3.1 | ✅ Implemented | [docs/stage_3_1.md](stage_3_1.md) |
 | 3.5 | ✅ Implemented | [docs/stage_3_5.md](stage_3_5.md) |
 | 4 | ✅ Implemented (core) | [docs/stage_4.md](stage_4.md) |
+| 4.6 | ✅ Implemented | [docs/stage_4_6.md](stage_4_6.md) |
 | 6 | ⚠️ Partial | [docs/stage_6.md](stage_6.md) |
 | 4.5 | ✅ Implemented | [docs/stage_4_5.md](stage_4_5.md) |
 | 5 | ⏳ Pending | [docs/stage_5.md](stage_5.md) |
@@ -24,9 +25,10 @@
 5. Stage 4: Observe + attach runs
 6. Stage 6: Operator control (partial)
 7. Stage 4.5: Tenancy and usage accounting
-8. Stage 5: Audit/explainability
-9. Stage 7: Scale/queueing/concurrency
-10. Stage 8: Hardening/security/policy
+8. Stage 4.6: Org onboarding + platform support access
+9. Stage 5: Audit/explainability
+10. Stage 7: Scale/queueing/concurrency
+11. Stage 8: Hardening/security/policy
 
 ## Sync checklist
 
@@ -36,6 +38,7 @@
 - [x] Stage 3.5 complete
 - [x] Stage 4 core complete
 - [x] Stage 4.5 complete
+- [x] Stage 4.6 complete
 - [ ] Stage 5 complete
 - [ ] Stage 6 full control complete
 - [ ] Stage 7 complete
