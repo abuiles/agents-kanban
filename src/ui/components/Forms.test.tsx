@@ -7,6 +7,28 @@ afterEach(() => {
   cleanup();
 });
 
+function queryLabeledControl<T extends HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>(label: string, selector: 'input' | 'select' | 'textarea') {
+  for (const node of screen.queryAllByText(label)) {
+    const control = node.closest('label')?.querySelector(selector);
+    if (control) {
+      return control as T;
+    }
+  }
+  return null;
+}
+
+function getInputField(label: string) {
+  return queryLabeledControl<HTMLInputElement>(label, 'input');
+}
+
+function getSelectField(label: string) {
+  return queryLabeledControl<HTMLSelectElement>(label, 'select');
+}
+
+function getTextareaField(label: string) {
+  return queryLabeledControl<HTMLTextAreaElement>(label, 'textarea');
+}
+
 describe('RepoForm', () => {
   it('submits provider-neutral SCM repo fields', async () => {
     const user = userEvent.setup();
@@ -14,21 +36,31 @@ describe('RepoForm', () => {
 
     render(<RepoForm onSubmit={onSubmit} />);
 
-    const scmProviderField = screen.getByText('SCM provider').closest('label')?.querySelector('select');
+    const scmProviderField = getSelectField('SCM provider');
     const scmBaseUrlField = screen.getByDisplayValue('https://github.com');
-    const projectPathField = screen.getByText('Project path').closest('label')?.querySelector('input');
-    const baselineUrlField = screen.getByText('Baseline URL').closest('label')?.querySelector('input');
+    const projectPathField = getInputField('Project path');
+    const baselineUrlField = getInputField('Baseline URL');
+    const previewModeField = getSelectField('Preview mode');
+    const evidenceModeField = getSelectField('Evidence mode');
+    const previewAdapterField = getSelectField('Preview adapter');
 
     expect(scmProviderField).not.toBeNull();
     expect(scmBaseUrlField).not.toBeNull();
     expect(projectPathField).not.toBeNull();
     expect(baselineUrlField).not.toBeNull();
+    expect(previewModeField).not.toBeNull();
+    expect(evidenceModeField).not.toBeNull();
+    expect(previewAdapterField).not.toBeNull();
 
     await user.selectOptions(scmProviderField! as unknown as Element, 'gitlab');
     await user.clear(scmBaseUrlField!);
     await user.type(scmBaseUrlField!, 'https://gitlab.example.com');
     await user.type(projectPathField!, 'group/platform/repo');
     await user.type(baselineUrlField!, 'https://repo.example.com');
+    await user.selectOptions(previewModeField! as unknown as Element, 'auto');
+    await user.selectOptions(evidenceModeField! as unknown as Element, 'skip');
+    await user.selectOptions(previewAdapterField! as unknown as Element, 'cloudflare_checks');
+    await user.type(getInputField('Check or pipeline name')!, 'Workers Builds: demo');
 
     await user.click(screen.getByRole('button', { name: 'Add repo' }));
 
@@ -37,7 +69,13 @@ describe('RepoForm', () => {
       scmProvider: 'gitlab',
       scmBaseUrl: 'https://gitlab.example.com',
       projectPath: 'group/platform/repo',
-      llmAdapter: 'codex'
+      llmAdapter: 'codex',
+      previewMode: 'auto',
+      evidenceMode: 'skip',
+      previewAdapter: 'cloudflare_checks',
+      previewConfig: {
+        checkName: 'Workers Builds: demo'
+      }
     }));
   });
 
@@ -48,7 +86,7 @@ describe('RepoForm', () => {
     expect(screen.getAllByText('GitHub base URL')).toHaveLength(1);
     expect(screen.getByPlaceholderText('owner/repo')).toBeInTheDocument();
 
-    const scmProviderField = screen.getByText('SCM provider').closest('label')?.querySelector('select');
+    const scmProviderField = getSelectField('SCM provider');
     expect(scmProviderField).not.toBeNull();
     await user.selectOptions(scmProviderField! as unknown as Element, 'gitlab');
 
@@ -56,6 +94,52 @@ describe('RepoForm', () => {
     expect(screen.getByPlaceholderText('group/subgroup/repo')).toBeInTheDocument();
     expect(screen.getByDisplayValue('https://gitlab.com')).toBeInTheDocument();
     expect(screen.getByText(/self-managed GitLab origin/i)).toBeInTheDocument();
+  });
+
+  it('switches preview fields when prompt recipe mode is selected', async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+
+    render(<RepoForm onSubmit={onSubmit} />);
+
+    await user.type(getInputField('Project path')!, 'abuiles/minions');
+    await user.type(getInputField('Baseline URL')!, 'https://repo.example.com');
+    await user.selectOptions(getSelectField('Preview adapter')! as unknown as Element, 'prompt_recipe');
+
+    expect(getInputField('Check or pipeline name')).toBeNull();
+
+    const promptRecipeField = getTextareaField('Prompt recipe');
+    expect(promptRecipeField).not.toBeNull();
+    await user.type(promptRecipeField!, 'Inspect deployment logs and return one preview URL.');
+    await user.click(screen.getByRole('button', { name: 'Add repo' }));
+
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
+      previewAdapter: 'prompt_recipe',
+      previewConfig: {
+        promptRecipe: 'Inspect deployment logs and return one preview URL.'
+      }
+    }));
+  });
+
+  it('disables adapter-specific preview config when preview is skipped', async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+
+    render(<RepoForm onSubmit={onSubmit} />);
+
+    await user.type(getInputField('Project path')!, 'abuiles/minions');
+    await user.type(getInputField('Baseline URL')!, 'https://repo.example.com');
+    await user.selectOptions(getSelectField('Preview mode')! as unknown as Element, 'skip');
+    expect(getSelectField('Preview adapter')).toBeDisabled();
+    expect(getInputField('Check or pipeline name')).toBeNull();
+
+    await user.click(screen.getByRole('button', { name: 'Add repo' }));
+
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
+      previewMode: 'skip',
+      previewAdapter: 'cloudflare_checks',
+      previewConfig: undefined
+    }));
   });
 });
 

@@ -50,7 +50,7 @@ export class LocalAgentBoardApi implements AgentBoardApi {
       evidenceMode: input.evidenceMode ?? 'auto',
       previewAdapter: input.previewAdapter,
       previewConfig: input.previewConfig,
-      previewProvider: input.previewProvider ?? 'cloudflare',
+      previewProvider: input.previewProvider,
       previewCheckName: input.previewCheckName,
       codexAuthBundleR2Key: input.codexAuthBundleR2Key ?? input.llmAuthBundleR2Key,
       createdAt: timestamp,

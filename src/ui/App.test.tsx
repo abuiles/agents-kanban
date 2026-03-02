@@ -14,6 +14,24 @@ afterEach(() => {
   cleanup();
 });
 
+function queryLabeledControl<T extends HTMLSelectElement | HTMLTextAreaElement>(label: string, selector: 'select' | 'textarea') {
+  for (const node of screen.queryAllByText(label)) {
+    const control = node.closest('label')?.querySelector(selector);
+    if (control) {
+      return control as T;
+    }
+  }
+  return null;
+}
+
+function getSelectField(label: string) {
+  return queryLabeledControl<HTMLSelectElement>(label, 'select');
+}
+
+function getTextareaField(label: string) {
+  return queryLabeledControl<HTMLTextAreaElement>(label, 'textarea');
+}
+
 describe('App', () => {
   it('renders seeded board content', async () => {
     render(<App api={getLocalAgentBoardApi()} />);
@@ -58,6 +76,33 @@ describe('App', () => {
 
     await waitFor(() => {
       expect(api.getSnapshot().repos.find((repo) => repo.repoId === 'repo_website')?.baselineUrl).toBe('https://marketing-updated.acme.test');
+    });
+    expect(await screen.findByText('Updated acme/site-marketing.')).toBeInTheDocument();
+  });
+
+  it('updates repo preview adapter settings from the edit repo modal', async () => {
+    const user = userEvent.setup();
+    const api = getLocalAgentBoardApi();
+    render(<App api={api} />);
+
+    const [repoFilter] = await screen.findAllByLabelText(/repo filter/i);
+    await user.selectOptions(repoFilter, 'repo_website');
+    await waitFor(() => {
+      expect(repoFilter).toHaveValue('repo_website');
+    });
+    await user.click(screen.getByRole('button', { name: 'Edit repo' }));
+
+    await user.selectOptions(getSelectField('Preview adapter')! as unknown as Element, 'prompt_recipe');
+    await user.type(getTextareaField('Prompt recipe')!, 'Inspect CI output and return one preview URL.');
+    await user.selectOptions(getSelectField('Evidence mode')! as unknown as Element, 'skip');
+    await user.click(screen.getByRole('button', { name: 'Save repo' }));
+
+    await waitFor(() => {
+      const repo = api.getSnapshot().repos.find((candidate) => candidate.repoId === 'repo_website');
+      expect(repo?.previewAdapter).toBe('prompt_recipe');
+      expect(repo?.previewConfig).toEqual({ promptRecipe: 'Inspect CI output and return one preview URL.' });
+      expect(repo?.previewProvider).toBeUndefined();
+      expect(repo?.evidenceMode).toBe('skip');
     });
     expect(await screen.findByText('Updated acme/site-marketing.')).toBeInTheDocument();
   });

@@ -294,6 +294,7 @@ function readPreviewConfig(value: unknown, field: string, required = true): Crea
 }
 
 function normalizeRepoPreviewFields<T extends {
+  previewMode?: CreateRepoInput['previewMode'];
   previewAdapter?: CreateRepoInput['previewAdapter'];
   previewConfig?: CreateRepoInput['previewConfig'];
   previewProvider?: CreateRepoInput['previewProvider'];
@@ -316,6 +317,10 @@ function normalizeRepoPreviewFields<T extends {
         ...(input.previewConfig?.promptRecipe ? { promptRecipe: input.previewConfig.promptRecipe } : {})
       }
     : input.previewConfig;
+
+  if (previewAdapter === 'prompt_recipe' && !previewConfig?.promptRecipe) {
+    throw badRequest('Invalid preview payload: previewAdapter "prompt_recipe" requires previewConfig.promptRecipe.');
+  }
 
   return {
     ...input,
@@ -403,6 +408,7 @@ export function parseUpdateRepoInput(body: unknown): UpdateRepoInput {
 
   if (hasOwn(body, 'previewAdapter') || hasOwn(body, 'previewConfig') || hasOwn(body, 'previewProvider') || hasOwn(body, 'previewCheckName')) {
     const normalizedPreview = normalizeRepoPreviewFields({
+      previewMode: patch.previewMode,
       previewAdapter: patch.previewAdapter,
       previewConfig: patch.previewConfig,
       previewProvider: patch.previewProvider,

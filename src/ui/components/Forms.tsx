@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { CreateRepoInput, CreateTaskInput } from '../domain/api';
-import type { CodexModel, LlmAdapter, LlmReasoningEffort, Repo, ScmProvider, TaskContextLink, TaskDependency, TaskStatus } from '../domain/types';
+import type { CodexModel, LlmAdapter, LlmReasoningEffort, PreviewAdapterKind, Repo, ScmProvider, TaskContextLink, TaskDependency, TaskStatus } from '../domain/types';
+import { normalizeRepoPreviewConfig } from '../../shared/preview';
 
 const DEFAULT_SCM_BASE_URLS: Record<ScmProvider, string> = {
   github: 'https://github.com',
@@ -62,20 +63,36 @@ export function RepoForm({
   const initialScmBaseUrl = initialValues?.scmBaseUrl ?? DEFAULT_SCM_BASE_URLS[initialScmProvider];
   const initialDefaultBranch = initialValues?.defaultBranch ?? 'main';
   const initialBaselineUrl = initialValues?.baselineUrl ?? '';
-  const initialPreviewCheckName = initialValues?.previewCheckName ?? '';
   const initialLlmAdapter = initialValues?.llmAdapter ?? 'codex';
   const initialLlmProfileId = initialValues?.llmProfileId ?? '';
   const initialLlmAuthBundleR2Key = initialValues?.llmAuthBundleR2Key ?? initialValues?.codexAuthBundleR2Key ?? '';
+  const normalizedPreview = normalizeRepoPreviewConfig({
+    previewAdapter: initialValues?.previewAdapter,
+    previewConfig: initialValues?.previewConfig,
+    previewProvider: initialValues?.previewProvider,
+    previewCheckName: initialValues?.previewCheckName
+  });
+  const initialPreviewMode = initialValues?.previewMode ?? 'auto';
+  const initialEvidenceMode = initialValues?.evidenceMode ?? 'auto';
+  const initialPreviewAdapter = normalizedPreview.previewAdapter ?? 'cloudflare_checks';
+  const initialPreviewCheckName = normalizedPreview.previewConfig?.checkName ?? '';
+  const initialPromptRecipe = normalizedPreview.previewConfig?.promptRecipe ?? '';
+  const initialCodexAuthBundleR2Key = initialValues?.codexAuthBundleR2Key ?? '';
 
   const [scmProvider, setScmProvider] = useState<ScmProvider>(initialScmProvider);
   const [scmBaseUrl, setScmBaseUrl] = useState(initialScmBaseUrl);
   const [projectPath, setProjectPath] = useState(initialProjectPath);
   const [defaultBranch, setDefaultBranch] = useState(initialDefaultBranch);
   const [baselineUrl, setBaselineUrl] = useState(initialBaselineUrl);
+  const [previewMode, setPreviewMode] = useState<NonNullable<CreateRepoInput['previewMode']>>(initialPreviewMode);
+  const [evidenceMode, setEvidenceMode] = useState<NonNullable<CreateRepoInput['evidenceMode']>>(initialEvidenceMode);
+  const [previewAdapter, setPreviewAdapter] = useState<PreviewAdapterKind>(initialPreviewAdapter);
   const [previewCheckName, setPreviewCheckName] = useState(initialPreviewCheckName);
   const [llmAdapter, setLlmAdapter] = useState<LlmAdapter>(initialLlmAdapter);
   const [llmProfileId, setLlmProfileId] = useState(initialLlmProfileId);
   const [llmAuthBundleR2Key, setLlmAuthBundleR2Key] = useState(initialLlmAuthBundleR2Key);
+  const [promptRecipe, setPromptRecipe] = useState(initialPromptRecipe);
+  const [codexAuthBundleR2Key, setCodexAuthBundleR2Key] = useState(initialCodexAuthBundleR2Key);
 
   useEffect(() => {
     setScmProvider(initialScmProvider);
@@ -83,11 +100,31 @@ export function RepoForm({
     setProjectPath(initialProjectPath);
     setDefaultBranch(initialDefaultBranch);
     setBaselineUrl(initialBaselineUrl);
+    setPreviewMode(initialPreviewMode);
+    setEvidenceMode(initialEvidenceMode);
+    setPreviewAdapter(initialPreviewAdapter);
     setPreviewCheckName(initialPreviewCheckName);
     setLlmAdapter(initialLlmAdapter);
     setLlmProfileId(initialLlmProfileId);
     setLlmAuthBundleR2Key(initialLlmAuthBundleR2Key);
-  }, [initialScmProvider, initialScmBaseUrl, initialProjectPath, initialDefaultBranch, initialBaselineUrl, initialPreviewCheckName, initialLlmAdapter, initialLlmProfileId, initialLlmAuthBundleR2Key]);
+    setPromptRecipe(initialPromptRecipe);
+    setCodexAuthBundleR2Key(initialCodexAuthBundleR2Key);
+  }, [
+    initialScmProvider,
+    initialScmBaseUrl,
+    initialProjectPath,
+    initialDefaultBranch,
+    initialBaselineUrl,
+    initialPreviewMode,
+    initialEvidenceMode,
+    initialPreviewAdapter,
+    initialPreviewCheckName,
+    initialLlmAdapter,
+    initialLlmProfileId,
+    initialLlmAuthBundleR2Key,
+    initialPromptRecipe,
+    initialCodexAuthBundleR2Key
+  ]);
 
   const projectPathHint = scmProvider === 'gitlab'
     ? 'Use the GitLab project path like group/subgroup/repo.'
@@ -100,6 +137,11 @@ export function RepoForm({
   const previewCheckHint = scmProvider === 'gitlab'
     ? 'Optional check or pipeline name used to discover the Cloudflare preview URL.'
     : 'Optional check name used to discover the Cloudflare preview URL.';
+  const previewEnabled = previewMode !== 'skip';
+  const previewConfig = {
+    ...(previewAdapter === 'cloudflare_checks' && previewCheckName.trim() ? { checkName: previewCheckName.trim() } : {}),
+    ...(previewAdapter === 'prompt_recipe' && promptRecipe.trim() ? { promptRecipe: promptRecipe.trim() } : {})
+  };
 
   return (
     <form
@@ -117,18 +159,27 @@ export function RepoForm({
           defaultBranch,
           baselineUrl,
           enabled: true,
+          previewMode,
+          evidenceMode,
+          previewAdapter,
+          previewConfig: Object.keys(previewConfig).length > 0 ? previewConfig : undefined,
           previewCheckName: previewCheckName || undefined,
-          codexAuthBundleR2Key: llmAdapter === 'codex' ? (llmAuthBundleR2Key || undefined) : undefined
+          codexAuthBundleR2Key: codexAuthBundleR2Key || (llmAdapter === 'codex' ? (llmAuthBundleR2Key || undefined) : undefined)
         });
         setScmProvider('github');
         setScmBaseUrl(DEFAULT_SCM_BASE_URLS.github);
         setProjectPath('');
         setDefaultBranch('main');
         setBaselineUrl('');
+        setPreviewMode('auto');
+        setEvidenceMode('auto');
+        setPreviewAdapter('cloudflare_checks');
         setPreviewCheckName('');
         setLlmAdapter('codex');
         setLlmProfileId('');
         setLlmAuthBundleR2Key('');
+        setPromptRecipe('');
+        setCodexAuthBundleR2Key('');
       }}
     >
       <div className="grid gap-4 md:grid-cols-3">
@@ -177,23 +228,65 @@ export function RepoForm({
       <FieldShell label="Baseline URL" hint="Used as the before state for evidence runs.">
         <input className={inputClass()} value={baselineUrl} onChange={(event) => setBaselineUrl(event.target.value)} placeholder="https://example.com" required />
       </FieldShell>
-      <div className="grid gap-4 md:grid-cols-2">
-        <FieldShell label="Preview check name" hint={previewCheckHint}>
-          <input className={inputClass()} value={previewCheckName} onChange={(event) => setPreviewCheckName(event.target.value)} placeholder="Cloudflare Pages" />
+      <div className="grid gap-4 md:grid-cols-3">
+        <FieldShell label="Preview mode" hint="Skip bypasses preview discovery entirely.">
+          <select className={inputClass()} value={previewMode} onChange={(event) => setPreviewMode(event.target.value as NonNullable<CreateRepoInput['previewMode']>)}>
+            <option value="auto">Auto</option>
+            <option value="skip">Skip</option>
+          </select>
         </FieldShell>
+        <FieldShell label="Evidence mode" hint="Skip disables evidence even when preview succeeds.">
+          <select className={inputClass()} value={evidenceMode} onChange={(event) => setEvidenceMode(event.target.value as NonNullable<CreateRepoInput['evidenceMode']>)}>
+            <option value="auto">Auto</option>
+            <option value="skip">Skip</option>
+          </select>
+        </FieldShell>
+        <FieldShell label="Preview adapter" hint={previewEnabled ? 'Choose how preview URLs are resolved.' : 'Preview is skipped, so adapter settings are inactive.'}>
+          <select
+            className={inputClass()}
+            value={previewAdapter}
+            onChange={(event) => setPreviewAdapter(event.target.value as PreviewAdapterKind)}
+            disabled={!previewEnabled}
+          >
+            <option value="cloudflare_checks">Cloudflare checks</option>
+            <option value="prompt_recipe">Prompt recipe</option>
+          </select>
+        </FieldShell>
+      </div>
+      {previewEnabled && previewAdapter === 'cloudflare_checks' ? (
+        <FieldShell label="Check or pipeline name" hint={previewCheckHint}>
+          <input className={inputClass()} value={previewCheckName} onChange={(event) => setPreviewCheckName(event.target.value)} placeholder="Workers Builds: app" />
+        </FieldShell>
+      ) : null}
+      {previewEnabled && previewAdapter === 'prompt_recipe' ? (
+        <FieldShell label="Prompt recipe" hint="Instructions for deriving a usable preview URL from repo metadata, review state, and checks.">
+          <textarea
+            className={textareaClass()}
+            value={promptRecipe}
+            onChange={(event) => setPromptRecipe(event.target.value)}
+            rows={5}
+            placeholder="Find the preview URL from deployment logs or commit statuses and return one usable URL."
+            required
+          />
+        </FieldShell>
+      ) : null}
+      <div className="grid gap-4 md:grid-cols-3">
         <FieldShell label="LLM adapter">
           <select className={inputClass()} value={llmAdapter} onChange={(event) => setLlmAdapter(event.target.value as LlmAdapter)}>
             <option value="codex">Codex</option>
             <option value="cursor_cli">Cursor CLI</option>
           </select>
         </FieldShell>
-      </div>
-      <div className="grid gap-4 md:grid-cols-2">
         <FieldShell label="LLM profile id" hint="Optional profile identifier used by adapter integrations.">
           <input className={inputClass()} value={llmProfileId} onChange={(event) => setLlmProfileId(event.target.value)} placeholder="codex-default" />
         </FieldShell>
         <FieldShell label="LLM auth bundle key" hint="Optional R2 key for executor credentials (for example `.codex` auth tarball).">
           <input className={inputClass()} value={llmAuthBundleR2Key} onChange={(event) => setLlmAuthBundleR2Key(event.target.value)} placeholder={llmAdapter === 'codex' ? 'auth/codex.tgz' : 'auth/cursor.tgz'} />
+        </FieldShell>
+      </div>
+      <div className="grid gap-4 md:grid-cols-1">
+        <FieldShell label="Codex auth bundle key" hint="Optional R2 key for a `.codex` auth bundle tarball.">
+          <input className={inputClass()} value={codexAuthBundleR2Key} onChange={(event) => setCodexAuthBundleR2Key(event.target.value)} placeholder="auth/codex.tgz" />
         </FieldShell>
       </div>
       <PrimaryButton>{submitLabel}</PrimaryButton>
