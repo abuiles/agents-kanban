@@ -48,8 +48,8 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
     : [];
   const terminalRun = terminalModalRunId ? snapshot.runs.find((run) => run.runId === terminalModalRunId) : undefined;
   const terminalLogs = terminalModalRunId ? snapshot.logs.filter((entry) => entry.runId === terminalModalRunId) : [];
-  const terminalCodexLogs = terminalLogs.filter((entry) => entry.phase === 'codex');
-  const terminalStreamLogs = terminalCodexLogs.length ? terminalCodexLogs : terminalLogs;
+  const terminalExecutorLogs = terminalLogs.filter((entry) => entry.phase === 'codex');
+  const terminalStreamLogs = terminalExecutorLogs.length ? terminalExecutorLogs : terminalLogs;
 
   useEffect(() => {
     const runId = detail?.latestRun?.runId;
@@ -182,7 +182,7 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
   }
 
   async function copyTerminalResumeCommand() {
-    const command = terminalRun?.latestCodexResumeCommand;
+    const command = terminalRun?.llmResumeCommand ?? terminalRun?.latestCodexResumeCommand;
     if (!command) {
       return;
     }
@@ -190,10 +190,10 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
     try {
       await navigator.clipboard.writeText(command);
       setTerminalResumeCopied(true);
-      setNotice('Copied the latest Codex resume command.');
+      setNotice('Copied the latest resume command.');
       window.setTimeout(() => setTerminalResumeCopied(false), 2_000);
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : 'Failed to copy the Codex resume command.');
+      setNotice(error instanceof Error ? error.message : 'Failed to copy the resume command.');
     }
   }
 
@@ -286,6 +286,9 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
               defaultBranch: repoToEdit.defaultBranch,
               baselineUrl: repoToEdit.baselineUrl,
               previewCheckName: repoToEdit.previewCheckName,
+              llmAdapter: repoToEdit.llmAdapter,
+              llmProfileId: repoToEdit.llmProfileId,
+              llmAuthBundleR2Key: repoToEdit.llmAuthBundleR2Key,
               codexAuthBundleR2Key: repoToEdit.codexAuthBundleR2Key
             }}
             submitLabel="Save repo"
@@ -333,6 +336,9 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
               context: taskToEdit.context,
               status: taskToEdit.status,
               baselineUrlOverride: taskToEdit.baselineUrlOverride,
+              llmAdapter: taskToEdit.uiMeta?.llmAdapter,
+              llmModel: taskToEdit.uiMeta?.llmModel,
+              llmReasoningEffort: taskToEdit.uiMeta?.llmReasoningEffort,
               codexModel: taskToEdit.uiMeta?.codexModel,
               codexReasoningEffort: taskToEdit.uiMeta?.codexReasoningEffort
             }}
@@ -400,7 +406,7 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
                     {terminalRun?.operatorSession?.takeoverState ?? 'observing'}
                   </div>
                   <div className="mt-1 text-xs text-slate-500">
-                    Separate operator shell. Codex keeps running until you explicitly take over.
+                    Separate operator shell. The executor keeps running until you explicitly take over.
                   </div>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
@@ -430,12 +436,12 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
             <section className="space-y-3 rounded-xl border border-slate-800 bg-slate-950/70 p-4">
               <div className="flex items-center justify-between gap-3">
                 <div>
-                  <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Live Codex stream</div>
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Live executor stream</div>
                   <div className="mt-1 text-sm text-slate-300">
-                    {terminalCodexLogs.length ? 'Streaming Codex output.' : 'Showing live run logs while Codex output is unavailable.'}
+                    {terminalExecutorLogs.length ? 'Streaming executor output.' : 'Showing live run logs while dedicated executor output is unavailable.'}
                   </div>
                 </div>
-                {terminalRun?.latestCodexResumeCommand ? (
+                {(terminalRun?.llmResumeCommand ?? terminalRun?.latestCodexResumeCommand) ? (
                   <button
                     type="button"
                     onClick={() => void copyTerminalResumeCommand()}
@@ -445,10 +451,10 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
                   </button>
                 ) : null}
               </div>
-              {terminalRun?.latestCodexResumeCommand ? (
+              {(terminalRun?.llmResumeCommand ?? terminalRun?.latestCodexResumeCommand) ? (
                 <div className="rounded-xl border border-slate-800 bg-slate-900/80 px-3 py-2">
                   <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">Resume command</div>
-                  <code className="mt-2 block break-all text-xs text-cyan-200">{terminalRun.latestCodexResumeCommand}</code>
+                  <code className="mt-2 block break-all text-xs text-cyan-200">{terminalRun?.llmResumeCommand ?? terminalRun?.latestCodexResumeCommand}</code>
                 </div>
               ) : null}
               <div className="max-h-[28rem] space-y-2 overflow-auto rounded-xl border border-slate-900 bg-[#040812] p-3 font-mono text-xs">

@@ -45,6 +45,9 @@ export type Repo = {
   scmProvider?: ScmProvider;
   scmBaseUrl?: string;
   projectPath?: string;
+  llmAdapter?: LlmAdapter;
+  llmProfileId?: string;
+  llmAuthBundleR2Key?: string;
   defaultBranch: string;
   baselineUrl: string;
   enabled: boolean;
@@ -56,6 +59,7 @@ export type Repo = {
   previewProvider?: 'cloudflare';
   previewCheckName?: string;
   previewUrlPattern?: string;
+  // Compatibility alias during migration to generic LLM executor fields.
   codexAuthBundleR2Key?: string;
   createdAt: string;
   updatedAt: string;

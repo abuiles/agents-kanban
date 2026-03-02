@@ -22,6 +22,9 @@ export type CreateRepoInput = {
   scmProvider?: Repo['scmProvider'];
   scmBaseUrl?: string;
   projectPath?: string;
+  llmAdapter?: Repo['llmAdapter'];
+  llmProfileId?: string;
+  llmAuthBundleR2Key?: string;
   defaultBranch?: string;
   baselineUrl: string;
   enabled?: boolean;
@@ -31,6 +34,7 @@ export type CreateRepoInput = {
   previewConfig?: Repo['previewConfig'];
   previewProvider?: Repo['previewProvider'];
   previewCheckName?: string;
+  // Compatibility alias during migration to generic LLM executor fields.
   codexAuthBundleR2Key?: string;
 };
 

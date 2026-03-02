@@ -353,6 +353,10 @@ export function parseCreateRepoInput(body: unknown): CreateRepoInput {
     scmProvider: readEnumValue(body.scmProvider, 'scmProvider', SCM_PROVIDERS, false),
     scmBaseUrl: readTrimmedString(body.scmBaseUrl, 'scmBaseUrl', false),
     projectPath: projectPath ?? slug,
+    llmAdapter: readEnumValue(body.llmAdapter, 'llmAdapter', LLM_ADAPTERS, false),
+    llmProfileId: readTrimmedString(body.llmProfileId, 'llmProfileId', false),
+    llmAuthBundleR2Key: readTrimmedString(body.llmAuthBundleR2Key, 'llmAuthBundleR2Key', false)
+      ?? readTrimmedString(body.codexAuthBundleR2Key, 'codexAuthBundleR2Key', false),
     defaultBranch: readTrimmedString(body.defaultBranch, 'defaultBranch', false),
     baselineUrl: readTrimmedString(body.baselineUrl, 'baselineUrl')!,
     enabled: readBoolean(body.enabled, 'enabled', false),
@@ -362,7 +366,9 @@ export function parseCreateRepoInput(body: unknown): CreateRepoInput {
     previewConfig: readPreviewConfig(body.previewConfig, 'previewConfig', false),
     previewProvider: readEnumValue(body.previewProvider, 'previewProvider', new Set(['cloudflare'] as const), false),
     previewCheckName: readTrimmedString(body.previewCheckName, 'previewCheckName', false),
-    codexAuthBundleR2Key: readTrimmedString(body.codexAuthBundleR2Key, 'codexAuthBundleR2Key', false)
+    codexAuthBundleR2Key:
+      readTrimmedString(body.codexAuthBundleR2Key, 'codexAuthBundleR2Key', false)
+      ?? readTrimmedString(body.llmAuthBundleR2Key, 'llmAuthBundleR2Key', false)
   });
 }
 
@@ -376,6 +382,9 @@ export function parseUpdateRepoInput(body: unknown): UpdateRepoInput {
   if (hasOwn(body, 'scmProvider')) patch.scmProvider = readEnumValue(body.scmProvider, 'scmProvider', SCM_PROVIDERS, false);
   if (hasOwn(body, 'scmBaseUrl')) patch.scmBaseUrl = readTrimmedString(body.scmBaseUrl, 'scmBaseUrl', false);
   if (hasOwn(body, 'projectPath')) patch.projectPath = readTrimmedString(body.projectPath, 'projectPath', false);
+  if (hasOwn(body, 'llmAdapter')) patch.llmAdapter = readEnumValue(body.llmAdapter, 'llmAdapter', LLM_ADAPTERS, false);
+  if (hasOwn(body, 'llmProfileId')) patch.llmProfileId = readTrimmedString(body.llmProfileId, 'llmProfileId', false);
+  if (hasOwn(body, 'llmAuthBundleR2Key')) patch.llmAuthBundleR2Key = readTrimmedString(body.llmAuthBundleR2Key, 'llmAuthBundleR2Key', false);
   if (patch.slug && patch.projectPath && patch.slug !== patch.projectPath) {
     throw badRequest('Invalid repo patch payload: slug and projectPath must match when both are provided.');
   }
@@ -405,7 +414,8 @@ export function parseUpdateRepoInput(body: unknown): UpdateRepoInput {
     if (hasOwn(body, 'previewConfig') || hasOwn(body, 'previewCheckName')) patch.previewConfig = normalizedPreview.previewConfig;
     if (hasOwn(body, 'previewConfig') || hasOwn(body, 'previewCheckName')) patch.previewCheckName = normalizedPreview.previewCheckName;
   }
-
+  if (hasOwn(body, 'llmAuthBundleR2Key') && !hasOwn(body, 'codexAuthBundleR2Key')) patch.codexAuthBundleR2Key = patch.llmAuthBundleR2Key;
+  if (hasOwn(body, 'codexAuthBundleR2Key') && !hasOwn(body, 'llmAuthBundleR2Key')) patch.llmAuthBundleR2Key = patch.codexAuthBundleR2Key;
   return patch;
 }
 

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { CreateRepoInput, CreateTaskInput } from '../domain/api';
-import type { CodexModel, CodexReasoningEffort, Repo, ScmProvider, TaskContextLink, TaskDependency, TaskStatus } from '../domain/types';
+import type { CodexModel, LlmAdapter, LlmReasoningEffort, Repo, ScmProvider, TaskContextLink, TaskDependency, TaskStatus } from '../domain/types';
 
 const DEFAULT_SCM_BASE_URLS: Record<ScmProvider, string> = {
   github: 'https://github.com',
@@ -12,6 +12,11 @@ const CODEX_MODELS: Array<{ value: CodexModel; label: string }> = [
   { value: 'gpt-5.3-codex', label: 'gpt-5.3-codex' },
   { value: 'gpt-5.3-codex-spark', label: 'gpt-5.3-codex-spark' }
 ];
+
+const DEFAULT_LLM_MODELS: Record<LlmAdapter, string> = {
+  codex: 'gpt-5.1-codex-mini',
+  cursor_cli: 'cursor-default'
+};
 
 function FieldShell({ label, children, hint }: { label: string; children: React.ReactNode; hint?: string }) {
   return (
@@ -58,7 +63,9 @@ export function RepoForm({
   const initialDefaultBranch = initialValues?.defaultBranch ?? 'main';
   const initialBaselineUrl = initialValues?.baselineUrl ?? '';
   const initialPreviewCheckName = initialValues?.previewCheckName ?? '';
-  const initialCodexAuthBundleR2Key = initialValues?.codexAuthBundleR2Key ?? '';
+  const initialLlmAdapter = initialValues?.llmAdapter ?? 'codex';
+  const initialLlmProfileId = initialValues?.llmProfileId ?? '';
+  const initialLlmAuthBundleR2Key = initialValues?.llmAuthBundleR2Key ?? initialValues?.codexAuthBundleR2Key ?? '';
 
   const [scmProvider, setScmProvider] = useState<ScmProvider>(initialScmProvider);
   const [scmBaseUrl, setScmBaseUrl] = useState(initialScmBaseUrl);
@@ -66,7 +73,9 @@ export function RepoForm({
   const [defaultBranch, setDefaultBranch] = useState(initialDefaultBranch);
   const [baselineUrl, setBaselineUrl] = useState(initialBaselineUrl);
   const [previewCheckName, setPreviewCheckName] = useState(initialPreviewCheckName);
-  const [codexAuthBundleR2Key, setCodexAuthBundleR2Key] = useState(initialCodexAuthBundleR2Key);
+  const [llmAdapter, setLlmAdapter] = useState<LlmAdapter>(initialLlmAdapter);
+  const [llmProfileId, setLlmProfileId] = useState(initialLlmProfileId);
+  const [llmAuthBundleR2Key, setLlmAuthBundleR2Key] = useState(initialLlmAuthBundleR2Key);
 
   useEffect(() => {
     setScmProvider(initialScmProvider);
@@ -75,8 +84,10 @@ export function RepoForm({
     setDefaultBranch(initialDefaultBranch);
     setBaselineUrl(initialBaselineUrl);
     setPreviewCheckName(initialPreviewCheckName);
-    setCodexAuthBundleR2Key(initialCodexAuthBundleR2Key);
-  }, [initialScmProvider, initialScmBaseUrl, initialProjectPath, initialDefaultBranch, initialBaselineUrl, initialPreviewCheckName, initialCodexAuthBundleR2Key]);
+    setLlmAdapter(initialLlmAdapter);
+    setLlmProfileId(initialLlmProfileId);
+    setLlmAuthBundleR2Key(initialLlmAuthBundleR2Key);
+  }, [initialScmProvider, initialScmBaseUrl, initialProjectPath, initialDefaultBranch, initialBaselineUrl, initialPreviewCheckName, initialLlmAdapter, initialLlmProfileId, initialLlmAuthBundleR2Key]);
 
   const projectPathHint = scmProvider === 'gitlab'
     ? 'Use the GitLab project path like group/subgroup/repo.'
@@ -100,11 +111,14 @@ export function RepoForm({
           scmProvider,
           scmBaseUrl,
           projectPath,
+          llmAdapter,
+          llmProfileId: llmProfileId || undefined,
+          llmAuthBundleR2Key: llmAuthBundleR2Key || undefined,
           defaultBranch,
           baselineUrl,
           enabled: true,
           previewCheckName: previewCheckName || undefined,
-          codexAuthBundleR2Key: codexAuthBundleR2Key || undefined
+          codexAuthBundleR2Key: llmAdapter === 'codex' ? (llmAuthBundleR2Key || undefined) : undefined
         });
         setScmProvider('github');
         setScmBaseUrl(DEFAULT_SCM_BASE_URLS.github);
@@ -112,7 +126,9 @@ export function RepoForm({
         setDefaultBranch('main');
         setBaselineUrl('');
         setPreviewCheckName('');
-        setCodexAuthBundleR2Key('');
+        setLlmAdapter('codex');
+        setLlmProfileId('');
+        setLlmAuthBundleR2Key('');
       }}
     >
       <div className="grid gap-4 md:grid-cols-3">
@@ -165,8 +181,19 @@ export function RepoForm({
         <FieldShell label="Preview check name" hint={previewCheckHint}>
           <input className={inputClass()} value={previewCheckName} onChange={(event) => setPreviewCheckName(event.target.value)} placeholder="Cloudflare Pages" />
         </FieldShell>
-        <FieldShell label="Codex auth bundle key" hint="Optional R2 key for a `.codex` auth bundle tarball.">
-          <input className={inputClass()} value={codexAuthBundleR2Key} onChange={(event) => setCodexAuthBundleR2Key(event.target.value)} placeholder="auth/codex.tgz" />
+        <FieldShell label="LLM adapter">
+          <select className={inputClass()} value={llmAdapter} onChange={(event) => setLlmAdapter(event.target.value as LlmAdapter)}>
+            <option value="codex">Codex</option>
+            <option value="cursor_cli">Cursor CLI</option>
+          </select>
+        </FieldShell>
+      </div>
+      <div className="grid gap-4 md:grid-cols-2">
+        <FieldShell label="LLM profile id" hint="Optional profile identifier used by adapter integrations.">
+          <input className={inputClass()} value={llmProfileId} onChange={(event) => setLlmProfileId(event.target.value)} placeholder="codex-default" />
+        </FieldShell>
+        <FieldShell label="LLM auth bundle key" hint="Optional R2 key for executor credentials (for example `.codex` auth tarball).">
+          <input className={inputClass()} value={llmAuthBundleR2Key} onChange={(event) => setLlmAuthBundleR2Key(event.target.value)} placeholder={llmAdapter === 'codex' ? 'auth/codex.tgz' : 'auth/cursor.tgz'} />
         </FieldShell>
       </div>
       <PrimaryButton>{submitLabel}</PrimaryButton>
@@ -247,8 +274,9 @@ export function TaskForm({
   const initialTaskStatus = initialValues?.status ?? initialStatus;
   const initialBaselineUrlOverride = initialValues?.baselineUrlOverride ?? '';
   const initialAutoStartEligible = initialValues?.automationState?.autoStartEligible ?? false;
-  const initialCodexModel = initialValues?.codexModel ?? 'gpt-5.1-codex-mini';
-  const initialCodexReasoningEffort = initialValues?.codexReasoningEffort ?? 'medium';
+  const initialLlmAdapter = initialValues?.llmAdapter ?? 'codex';
+  const initialLlmModel = initialValues?.llmModel ?? initialValues?.codexModel ?? DEFAULT_LLM_MODELS[initialLlmAdapter];
+  const initialLlmReasoningEffort = initialValues?.llmReasoningEffort ?? initialValues?.codexReasoningEffort ?? 'medium';
 
   const [repoId, setRepoId] = useState(initialRepoId);
   const [title, setTitle] = useState(initialTitle);
@@ -262,8 +290,9 @@ export function TaskForm({
   const [status, setStatus] = useState<TaskStatus>(initialTaskStatus);
   const [baselineUrlOverride, setBaselineUrlOverride] = useState(initialBaselineUrlOverride);
   const [autoStartEligible, setAutoStartEligible] = useState(initialAutoStartEligible);
-  const [codexModel, setCodexModel] = useState<CodexModel>(initialCodexModel);
-  const [codexReasoningEffort, setCodexReasoningEffort] = useState<CodexReasoningEffort>(initialCodexReasoningEffort);
+  const [llmAdapter, setLlmAdapter] = useState<LlmAdapter>(initialLlmAdapter);
+  const [llmModel, setLlmModel] = useState(initialLlmModel);
+  const [llmReasoningEffort, setLlmReasoningEffort] = useState<LlmReasoningEffort>(initialLlmReasoningEffort);
 
   useEffect(() => {
     if (!repos.length) {
@@ -289,13 +318,15 @@ export function TaskForm({
     setStatus(initialTaskStatus);
     setBaselineUrlOverride(initialBaselineUrlOverride);
     setAutoStartEligible(initialAutoStartEligible);
-    setCodexModel(initialCodexModel);
-    setCodexReasoningEffort(initialCodexReasoningEffort);
+    setLlmAdapter(initialLlmAdapter);
+    setLlmModel(initialLlmModel);
+    setLlmReasoningEffort(initialLlmReasoningEffort);
   }, [
     initialAutoStartEligible,
     initialBaselineUrlOverride,
-    initialCodexModel,
-    initialCodexReasoningEffort,
+    initialLlmAdapter,
+    initialLlmModel,
+    initialLlmReasoningEffort,
     initialCriteria,
     initialDependencies,
     initialDescription,
@@ -332,8 +363,11 @@ export function TaskForm({
           status,
           baselineUrlOverride: baselineUrlOverride || undefined,
           simulationProfile: 'happy_path',
-          codexModel,
-          codexReasoningEffort
+          llmAdapter,
+          llmModel: llmModel || undefined,
+          llmReasoningEffort,
+          codexModel: llmAdapter === 'codex' ? (llmModel as CodexModel) : undefined,
+          codexReasoningEffort: llmAdapter === 'codex' ? llmReasoningEffort : undefined
         });
         setTitle('');
         setDescription('');
@@ -346,8 +380,9 @@ export function TaskForm({
         setStatus(initialStatus);
         setBaselineUrlOverride('');
         setAutoStartEligible(false);
-        setCodexModel('gpt-5.1-codex-mini');
-        setCodexReasoningEffort('medium');
+        setLlmAdapter('codex');
+        setLlmModel('gpt-5.1-codex-mini');
+        setLlmReasoningEffort('medium');
       }}
     >
       <div className="grid gap-4 md:grid-cols-2">
@@ -434,20 +469,42 @@ export function TaskForm({
         </FieldShell>
       </div>
       <div className="grid gap-4 md:grid-cols-2">
-        <FieldShell label="Codex model" hint="Per-task execution model.">
-          <select className={inputClass()} value={codexModel} onChange={(event) => setCodexModel(event.target.value as CodexModel)}>
-            {CODEX_MODELS.map((model) => (
-              <option key={model.value} value={model.value}>
-                {model.label}
-              </option>
-            ))}
-          </select>
-        </FieldShell>
-        <FieldShell label="Reasoning effort" hint="Passed to Codex as model reasoning effort.">
+        <FieldShell label="LLM adapter" hint="Selects the executor for this task.">
           <select
             className={inputClass()}
-            value={codexReasoningEffort}
-            onChange={(event) => setCodexReasoningEffort(event.target.value as CodexReasoningEffort)}
+            value={llmAdapter}
+            onChange={(event) => {
+              const nextAdapter = event.target.value as LlmAdapter;
+              setLlmAdapter(nextAdapter);
+              if (!llmModel || llmModel === DEFAULT_LLM_MODELS.codex || llmModel === DEFAULT_LLM_MODELS.cursor_cli) {
+                setLlmModel(DEFAULT_LLM_MODELS[nextAdapter]);
+              }
+            }}
+          >
+            <option value="codex">Codex</option>
+            <option value="cursor_cli">Cursor CLI</option>
+          </select>
+        </FieldShell>
+        <FieldShell label="LLM model" hint="Per-task execution model for the selected adapter.">
+          {llmAdapter === 'codex' ? (
+            <select className={inputClass()} value={llmModel} onChange={(event) => setLlmModel(event.target.value)}>
+              {CODEX_MODELS.map((model) => (
+                <option key={model.value} value={model.value}>
+                  {model.label}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <input className={inputClass()} value={llmModel} onChange={(event) => setLlmModel(event.target.value)} placeholder="cursor-default" />
+          )}
+        </FieldShell>
+      </div>
+      <div className="grid gap-4 md:grid-cols-2">
+        <FieldShell label="Reasoning effort" hint="Executor reasoning effort hint.">
+          <select
+            className={inputClass()}
+            value={llmReasoningEffort}
+            onChange={(event) => setLlmReasoningEffort(event.target.value as LlmReasoningEffort)}
           >
             <option value="low">low</option>
             <option value="medium">medium (default)</option>

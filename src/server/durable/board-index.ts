@@ -276,7 +276,10 @@ function buildRepoRecord(input: CreateRepoInput | Repo): Repo {
     previewProvider: 'previewProvider' in input ? input.previewProvider : 'cloudflare',
     previewCheckName: input.previewCheckName,
     previewUrlPattern: 'previewUrlPattern' in input ? input.previewUrlPattern : undefined,
-    codexAuthBundleR2Key: input.codexAuthBundleR2Key,
+    llmAdapter: input.llmAdapter,
+    llmProfileId: input.llmProfileId,
+    llmAuthBundleR2Key: input.llmAuthBundleR2Key ?? input.codexAuthBundleR2Key,
+    codexAuthBundleR2Key: input.codexAuthBundleR2Key ?? input.llmAuthBundleR2Key,
     createdAt: 'createdAt' in input ? input.createdAt : '',
     updatedAt: 'updatedAt' in input ? input.updatedAt : ''
   });

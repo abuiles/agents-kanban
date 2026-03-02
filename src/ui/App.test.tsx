@@ -187,7 +187,7 @@ describe('App', () => {
     await user.click(screen.getByRole('button', { name: 'Open terminal' }));
 
     expect(await screen.findByRole('heading', { name: /Live terminal/i })).toBeInTheDocument();
-    expect(screen.getByText('Live Codex stream')).toBeInTheDocument();
+    expect(screen.getByText('Live executor stream')).toBeInTheDocument();
     expect(screen.getAllByRole('button', { name: 'Take over' }).length).toBeGreaterThan(1);
     expect(screen.getByRole('button', { name: 'Disconnect' })).toBeInTheDocument();
   });
