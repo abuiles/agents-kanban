@@ -52,7 +52,7 @@ const adapters: PreviewDiscoveryAdapter[] = [
 
 export const cloudflareChecksPreviewAdapter: PreviewAdapter = {
   kind: 'cloudflare_checks',
-  resolve: ({ repo, checks }) => {
+  async resolve({ repo, checks }) {
     const compatibility = inspectCloudflarePreviewDiscovery(repo, checks);
 
     const diagnostics = compatibility.checks.map((check) => ({

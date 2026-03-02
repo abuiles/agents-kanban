@@ -358,6 +358,7 @@ async function runCursorProcessWithLogs(context: Parameters<LlmAdapter['run']>[0
 
   return {
     success,
+    stdout,
     stderr,
     stoppedForTakeover
   };

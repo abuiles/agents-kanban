@@ -1,7 +1,7 @@
 import { getSandbox, type ExecResult } from '@cloudflare/sandbox';
 import type { RepoBoardDO } from './durable/repo-board';
 import type { BoardIndexDO } from './durable/board-index';
-import type { Repo, RunCommand, RunCommandPhase, RunEvent, Task } from '../ui/domain/types';
+import type { LlmReasoningEffort, Repo, RunCommand, RunCommandPhase, RunEvent, Task } from '../ui/domain/types';
 import { buildRunLog, type RunJobParams } from './shared/real-run';
 import { NonRetryableError } from 'cloudflare:workflows';
 import { buildWorkflowInvocationId } from './workflow-id';
@@ -12,9 +12,8 @@ import type { ScmAdapter, ScmAdapterCredential } from './scm/adapter';
 import { getScmAdapter } from './scm/registry';
 import { getScmSourceRefFetchSpec } from './scm/source-ref';
 import { getLlmAdapter, resolveLlmAdapterKind } from './llm/registry';
-import { executePromptWithLlmAdapter } from './llm/runtime';
 import { getPreviewAdapter } from './preview/registry';
-import type { PreviewAdapterResult } from './preview/adapter';
+import type { PreviewAdapterContext, PreviewAdapterResult } from './preview/adapter';
 
 type WorkflowBinding<T> = {
   create(options?: { id?: string; params?: T; retention?: { successRetention?: string | number; errorRetention?: string | number } }): Promise<{ id: string }>;
@@ -74,6 +73,9 @@ export async function executeRunJob(env: Env, params: RunJobParams, sleepFn: Sle
       await finishRunWithoutPreview(repoBoard, params.runId, 'Preview discovery is disabled for this repo.');
       return;
     }
+    const promptRecipeRuntime = repo.previewAdapter === 'prompt_recipe'
+      ? createPromptRecipeRuntime(env as Stage3Env, repoBoard, params.runId, repo, llmAdapter, llmModel, llmReasoningEffort)
+      : undefined;
     return discoverPreviewAndRunEvidence(
       env as Stage3Env,
       repoBoard,
@@ -82,7 +84,8 @@ export async function executeRunJob(env: Env, params: RunJobParams, sleepFn: Sle
       params.runId,
       sleepFn,
       scmAdapter,
-      await getScmCredential(env as Stage3Env, board, repo, scmAdapter)
+      await getScmCredential(env as Stage3Env, board, repo, scmAdapter),
+      promptRecipeRuntime
     );
   }
 
@@ -289,7 +292,21 @@ export async function executeRunJob(env: Env, params: RunJobParams, sleepFn: Sle
     return;
   }
 
-  await discoverPreviewAndRunEvidence(env as Stage3Env, repoBoard, detail.task, repo, params.runId, sleepFn, scmAdapter, scmCredential);
+  const promptRecipeRuntime = repo.previewAdapter === 'prompt_recipe'
+    ? createPromptRecipeRuntime(env as Stage3Env, repoBoard, params.runId, repo, llmAdapter, llmModel, llmReasoningEffort)
+    : undefined;
+
+  await discoverPreviewAndRunEvidence(
+    env as Stage3Env,
+    repoBoard,
+    detail.task,
+    repo,
+    params.runId,
+    sleepFn,
+    scmAdapter,
+    scmCredential,
+    promptRecipeRuntime
+  );
 }
 
 async function runEvidence(
@@ -356,39 +373,25 @@ npx -y playwright install chromium
 }
 
 async function waitForPreview(
-  env: Stage3Env,
   repoBoard: DurableObjectStub<RepoBoardDO>,
   task: Task,
   repo: Repo,
   runId: string,
   sleepFn: SleepFn,
   scmAdapter: ScmAdapter,
-  scmCredential: ScmAdapterCredential
+  scmCredential: ScmAdapterCredential,
+  promptRecipeRuntime?: PreviewAdapterContext['promptRecipeRuntime']
 ) {
   const attempts = 12;
-  const headSha = (await repoBoard.getRun(runId)).headSha;
-  if (!headSha) {
-    return { status: 'failed' as const, reason: 'missing_head_sha' as const };
-  }
 
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     const run = await repoBoard.getRun(runId);
-    const discovery = await lookupPreviewUrl(env, repoBoard, task, repo, run, headSha, sleepFn, scmAdapter, scmCredential);
-    await repoBoard.transitionRun(runId, {
-      executionSummary: {
-        previewResolution: {
-          adapter: discovery.resolution.adapter,
-          status: discovery.resolution.status,
-          explanation: discovery.resolution.explanation,
-          checkedAt: new Date().toISOString(),
-          previewUrl: discovery.resolution.previewUrl,
-          diagnostics: discovery.resolution.diagnostics.map((diagnostic) => ({
-            ...diagnostic,
-            metadata: diagnostic.metadata ? { ...diagnostic.metadata } : undefined
-          }))
-        }
-      }
-    });
+    const headSha = run.headSha;
+    if (!headSha) {
+      return { status: 'failed' as const, reason: 'missing_head_sha' as const };
+    }
+
+    const discovery = await lookupPreviewUrl(repo, task, run, headSha, scmAdapter, scmCredential, promptRecipeRuntime);
     await repoBoard.appendRunLogs(runId, [
       buildRunLog(runId, `Preview discovery attempt ${attempt}/${attempts}.`, 'preview', 'info', { headSha }),
       buildRunLog(
@@ -426,14 +429,15 @@ async function discoverPreviewAndRunEvidence(
   runId: string,
   sleepFn: SleepFn,
   scmAdapter: ScmAdapter,
-  scmCredential: ScmAdapterCredential
+  scmCredential: ScmAdapterCredential,
+  promptRecipeRuntime?: PreviewAdapterContext['promptRecipeRuntime']
 ) {
   await repoBoard.transitionRun(runId, {
     status: 'WAITING_PREVIEW',
     previewStatus: 'DISCOVERING',
-    appendTimelineNote: 'Resolving preview URL.'
+    appendTimelineNote: 'Polling SCM checks for preview URL.'
   });
-  const preview = await waitForPreview(env, repoBoard, task, repo, runId, sleepFn, scmAdapter, scmCredential);
+  const preview = await waitForPreview(repoBoard, task, repo, runId, sleepFn, scmAdapter, scmCredential, promptRecipeRuntime);
   if (preview.status !== 'ready') {
     const timeoutMessage = preview.status === 'timed_out'
       ? 'Preview URL did not appear before timeout. Completing run without preview evidence.'
@@ -489,56 +493,83 @@ async function finishRunWithoutEvidence(repoBoard: DurableObjectStub<RepoBoardDO
 }
 
 async function lookupPreviewUrl(
-  env: Stage3Env,
-  repoBoard: DurableObjectStub<RepoBoardDO>,
-  task: Task,
   repo: Repo,
+  task: Task,
   run: Awaited<ReturnType<RepoBoardDO['getRun']>>,
   headSha: string,
-  sleepFn: SleepFn,
   scmAdapter: ScmAdapter,
-  scmCredential: ScmAdapterCredential
+  scmCredential: ScmAdapterCredential,
+  promptRecipeRuntime?: PreviewAdapterContext['promptRecipeRuntime']
 ) {
   const checks = await scmAdapter.listCommitChecks(repo, headSha, scmCredential);
   const previewAdapter = getPreviewAdapter(repo);
-  const llmAdapterKind = resolveLlmAdapterKind(task, run.llmAdapter);
-  const llmAdapter = getLlmAdapter(llmAdapterKind);
-  const sandbox = getSandbox(env.Sandbox, run.sandboxId ?? run.runId);
-  const llmModel = run.llmModel ?? task.uiMeta?.llmModel ?? task.uiMeta?.codexModel ?? 'gpt-5.3-codex';
-  const llmReasoningEffort = run.llmReasoningEffort ?? task.uiMeta?.llmReasoningEffort ?? task.uiMeta?.codexReasoningEffort ?? 'medium';
-
   return previewAdapter.resolve({
     repo,
     task,
     run,
     checks,
-    llm: {
-      adapter: llmAdapter,
-      runtimeContext: { env, sandbox, repoBoard, runId: run.runId },
-      model: llmModel,
-      reasoningEffort: llmReasoningEffort,
-      cwd: '/workspace/repo',
-      sleepFn,
-      runPrompt: (prompt, options) =>
-        executePromptWithLlmAdapter(
-          llmAdapter,
-          { env, sandbox, repoBoard, runId: run.runId },
-          {
-            repo,
-            task,
-            run,
-            cwd: '/workspace/repo',
-            prompt,
-            model: llmModel,
-            reasoningEffort: llmReasoningEffort,
-            timeoutMs: options?.timeoutMs,
-            outputSchema: options?.outputSchema,
-            phase: 'preview'
-          },
-          sleepFn
-        )
-    }
+    promptRecipeRuntime
   });
+}
+
+function createPromptRecipeRuntime(
+  env: Stage3Env,
+  repoBoard: DurableObjectStub<RepoBoardDO>,
+  runId: string,
+  repo: Repo,
+  llmAdapter: ReturnType<typeof getLlmAdapter>,
+  model: string,
+  reasoningEffort: LlmReasoningEffort
+): PreviewAdapterContext['promptRecipeRuntime'] {
+  const sandbox = getSandbox(env.Sandbox, `${runId}-preview`);
+  const llmContext = { env, sandbox, repoBoard, runId };
+  let prepared = false;
+
+  return {
+    cwd: '/workspace/preview',
+    model,
+    reasoningEffort,
+    async execute(request, timeoutMs) {
+      const startedAt = Date.now();
+
+      if (!prepared) {
+        await emitCommandLifecycle(repoBoard, runId, 'preview', 'mkdir -p /workspace/preview', () => sandbox.exec('mkdir -p /workspace/preview'));
+        await llmAdapter.restoreAuth({ ...llmContext, repo });
+        await llmAdapter.ensureInstalled(llmContext);
+        await llmAdapter.logDiagnostics(llmContext, request);
+        prepared = true;
+      }
+
+      const result = await Promise.race([
+        llmAdapter.run(llmContext, request),
+        new Promise<{ timedOut: true }>((resolve) => setTimeout(() => resolve({ timedOut: true }), timeoutMs))
+      ]);
+      const elapsedMs = Date.now() - startedAt;
+
+      if ('timedOut' in result) {
+        return {
+          status: 'timed_out',
+          elapsedMs,
+          timeoutMs
+        };
+      }
+
+      if (!result.success) {
+        return {
+          status: 'failed',
+          elapsedMs,
+          message: result.stderr || 'Prompt-recipe execution failed.',
+          rawOutput: result.stdout
+        };
+      }
+
+      return {
+        status: 'success',
+        elapsedMs,
+        rawOutput: result.stdout ?? ''
+      };
+    }
+  };
 }
 
 function formatPreviewDiscoveryLog(discovery: PreviewAdapterResult) {
@@ -565,9 +596,6 @@ function formatPreviewDiscoveryLog(discovery: PreviewAdapterResult) {
     : '';
 
   if (discovery.resolution.previewUrl) {
-    if (discovery.resolution.adapter === 'prompt_recipe') {
-      return `${discovery.resolution.explanation}: ${discovery.resolution.previewUrl} | checks: ${checks}${diagnostics}`;
-    }
     return `Preview discovery matched ${discovery.compatibility.matchedCheck ?? 'unknown check'} via ${discovery.compatibility.adapter ?? discovery.resolution.adapter} from ${discovery.compatibility.source ?? 'unknown source'}: ${discovery.resolution.previewUrl} | checks: ${checks}${diagnostics}`;
   }
 

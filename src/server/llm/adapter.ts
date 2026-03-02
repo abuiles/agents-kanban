@@ -33,6 +33,7 @@ export type LlmPromptExecutionRequest = {
 export type LlmExecutionResult = {
   success: boolean;
   stoppedForTakeover?: boolean;
+  stdout?: string;
   stderr?: string;
   resumeCommand?: string;
   sessionId?: string;

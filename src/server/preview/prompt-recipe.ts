@@ -1,50 +1,20 @@
 import { normalizeRepoPreviewConfig } from '../../shared/preview';
-import type { PreviewDiagnostic } from '../../ui/domain/types';
-import type { PreviewAdapter, PreviewAdapterContext, PreviewAdapterResult, PreviewResolution } from './adapter';
+import type {
+  PreviewAdapter,
+  PreviewAdapterResult,
+  PreviewAdapterContext,
+  PreviewDiagnostic,
+  PreviewPromptRecipeRuntimeResult,
+  PreviewResolution
+} from './adapter';
 
 export const PROMPT_RECIPE_PREVIEW_TIMEOUT_MS = 45_000;
-export const PROMPT_RECIPE_DEFAULT_MODEL = 'gpt-5.3-codex';
-export const PROMPT_RECIPE_DEFAULT_REASONING_EFFORT = 'medium';
-
-const PROMPT_RECIPE_OUTPUT_SCHEMA = {
-  type: 'object',
-  additionalProperties: false,
-  required: ['previewUrl'],
-  properties: {
-    previewUrl: {
-      type: 'string',
-      pattern: '^https://.+'
-    }
-  }
-} as const;
-
-type PromptRecipePreviewPayload = {
-  previewUrl: string;
-};
-
-export type PromptRecipeExecutionResult =
-  | {
-      status: 'success';
-      elapsedMs: number;
-      rawOutput: string;
-    }
-  | {
-      status: 'failed';
-      elapsedMs: number;
-      message: string;
-      rawOutput?: string;
-    }
-  | {
-      status: 'timed_out';
-      elapsedMs: number;
-      timeoutMs: number;
-      rawOutput?: string;
-    };
+const PROMPT_RECIPE_RESULT_SCHEMA = '{ "previewUrl": "https://..." }';
 
 export type PromptRecipeValidationResult =
   | {
       ok: true;
-      payload: PromptRecipePreviewPayload;
+      payload: { previewUrl: string };
       diagnostics: PreviewDiagnostic[];
     }
   | {
@@ -107,7 +77,7 @@ export function validatePromptRecipePreviewOutput(rawOutput: string): PromptReci
   };
 }
 
-export function resolvePromptRecipeExecution(result: PromptRecipeExecutionResult): PreviewResolution {
+export function resolvePromptRecipeExecution(result: PreviewPromptRecipeRuntimeResult): PreviewResolution {
   if (result.status === 'timed_out') {
     return {
       status: 'timed_out',
@@ -220,14 +190,14 @@ export function inspectPromptRecipeConfiguration(
   return {
     compatibility: { checks: [] },
     resolution: {
-      status: 'pending',
+      status: 'failed',
       adapter: 'prompt_recipe',
-      explanation: 'Prompt-recipe preview resolution is configured and waiting for executor context.',
+      explanation: 'Prompt-recipe preview resolution requires a generic LLM runtime.',
       diagnostics: [
         {
-          code: 'PROMPT_RECIPE_CONFIG_READY',
-          level: 'info',
-          message: 'Prompt-recipe preview resolution has a configured prompt recipe.',
+          code: 'PROMPT_RECIPE_RUNTIME_UNAVAILABLE',
+          level: 'error',
+          message: 'Prompt-recipe preview runtime is unavailable for this resolution attempt.',
           metadata: {
             hasPromptRecipe: true,
             timeoutMs: PROMPT_RECIPE_PREVIEW_TIMEOUT_MS
@@ -242,26 +212,25 @@ export const promptRecipePreviewAdapter: PreviewAdapter = {
   kind: 'prompt_recipe',
   async resolve(context) {
     const configuration = inspectPromptRecipeConfiguration(context.repo);
-    if (configuration.resolution.status === 'failed') {
+    if (configuration.resolution.diagnostics.some((diagnostic) => diagnostic.code === 'PROMPT_RECIPE_CONFIG_MISSING')) {
       return configuration;
     }
 
-    if (!context.task || !context.run || !context.llm) {
+    if (!context.task || !context.run) {
       return {
-        compatibility: buildCompatibility(context),
+        compatibility: { checks: [] },
         resolution: {
           status: 'failed',
           adapter: 'prompt_recipe',
-          explanation: 'Prompt-recipe preview resolution requires task, run, and executor context.',
+          explanation: 'Prompt-recipe preview resolution requires task and run context.',
           diagnostics: [
             {
-              code: 'PROMPT_RECIPE_RUNTIME_CONTEXT_MISSING',
+              code: 'PROMPT_RECIPE_CONTEXT_MISSING',
               level: 'error',
-              message: 'Prompt-recipe preview resolution could not access the selected executor context.',
+              message: 'Prompt-recipe preview resolution requires both task and run context.',
               metadata: {
                 hasTask: Boolean(context.task),
-                hasRun: Boolean(context.run),
-                hasLlmContext: Boolean(context.llm)
+                hasRun: Boolean(context.run)
               }
             }
           ]
@@ -269,105 +238,78 @@ export const promptRecipePreviewAdapter: PreviewAdapter = {
       };
     }
 
-    const recipe = normalizeRepoPreviewConfig(context.repo).previewConfig?.promptRecipe?.trim();
-    const execution = await context.llm.runPrompt(buildPromptRecipePrompt(context, recipe ?? ''), {
-      timeoutMs: PROMPT_RECIPE_PREVIEW_TIMEOUT_MS,
-      outputSchema: PROMPT_RECIPE_OUTPUT_SCHEMA
-    });
-    const baseResolution = resolvePromptRecipeExecution(execution);
-    const resolution = {
-      ...baseResolution,
-      diagnostics: [
-        {
-          code: 'PROMPT_RECIPE_EXECUTOR_SELECTED',
-          level: 'info' as const,
-          message: `Prompt-recipe preview resolution is using ${context.llm.adapter.kind}.`,
-          metadata: {
-            llmAdapter: context.llm.adapter.kind,
-            llmModel: context.llm.model,
-            llmReasoningEffort: context.llm.reasoningEffort ?? PROMPT_RECIPE_DEFAULT_REASONING_EFFORT,
-            timeoutMs: PROMPT_RECIPE_PREVIEW_TIMEOUT_MS,
-            checkCount: context.checks.length
-          }
-        },
-        ...baseResolution.diagnostics
-      ]
-    };
+    if (!context.promptRecipeRuntime) {
+      return configuration;
+    }
 
+    const request = buildPromptRecipeExecutionRequest(context);
+    const execution = await context.promptRecipeRuntime.execute(request, PROMPT_RECIPE_PREVIEW_TIMEOUT_MS);
     return {
-      compatibility: buildCompatibility(context),
-      resolution
+      compatibility: { checks: [] },
+      resolution: resolvePromptRecipeExecution(execution)
     };
   }
 };
 
-function buildPromptRecipePrompt(context: PreviewAdapterContext, recipe: string) {
-  const repo = context.repo;
-  const task = context.task;
-  const run = context.run;
+export function buildPromptRecipeExecutionRequest(context: PreviewAdapterContext) {
+  const recipe = normalizeRepoPreviewConfig(context.repo).previewConfig?.promptRecipe?.trim();
+  if (!recipe || !context.task || !context.run || !context.promptRecipeRuntime) {
+    throw new Error('Prompt-recipe preview execution request requires promptRecipe, task, run, and runtime context.');
+  }
 
-  return [
-    'Resolve exactly one usable preview URL for this run.',
-    'Follow the customer recipe, use the supplied metadata and normalized SCM checks, and do not invent a URL.',
-    'Return only strict JSON matching this shape: {"previewUrl":"https://..."}',
-    'If you cannot determine a usable preview URL confidently, do not fabricate one.',
+  const reviewUrl = context.run.reviewUrl ?? context.run.prUrl;
+  const prompt = [
+    'Resolve exactly one preview URL for this run.',
+    'Follow the customer recipe and use only the provided repository, run, and SCM check data.',
+    `Return strict JSON matching ${PROMPT_RECIPE_RESULT_SCHEMA}.`,
+    'Do not include markdown, prose, or additional keys.',
     '',
     'Customer recipe:',
     recipe,
     '',
-    'Repo and run context:',
+    'Repository context:',
     JSON.stringify({
-      repo: {
-        repoId: repo.repoId,
-        projectPath: repo.projectPath ?? repo.slug,
-        scmProvider: repo.scmProvider ?? 'github',
-        scmBaseUrl: repo.scmBaseUrl,
-        defaultBranch: repo.defaultBranch,
-        baselineUrl: repo.baselineUrl,
-        previewAdapter: repo.previewAdapter,
-        previewConfig: repo.previewConfig
-      },
-      task: {
-        taskId: task?.taskId,
-        title: task?.title,
-        sourceRef: task?.sourceRef,
-        baselineUrlOverride: task?.baselineUrlOverride
-      },
-      run: {
-        runId: run?.runId,
-        branchName: run?.branchName,
-        headSha: run?.headSha,
-        reviewUrl: run?.reviewUrl ?? run?.prUrl,
-        reviewNumber: run?.reviewNumber ?? run?.prNumber,
-        previewUrl: run?.previewUrl
-      },
-      checks: context.checks.map((check) => ({
-        name: check.name,
-        status: check.status,
-        conclusion: check.conclusion,
-        summary: check.summary,
-        detailsUrl: check.detailsUrl,
-        htmlUrl: check.htmlUrl,
-        appSlug: check.appSlug,
-        rawSource: check.rawSource
-      }))
-    }, null, 2)
+      repoId: context.repo.repoId,
+      slug: context.repo.slug,
+      scmProvider: context.repo.scmProvider ?? 'github',
+      scmBaseUrl: context.repo.scmBaseUrl,
+      projectPath: context.repo.projectPath,
+      defaultBranch: context.repo.defaultBranch,
+      baselineUrl: context.repo.baselineUrl
+    }, null, 2),
+    '',
+    'Task context:',
+    JSON.stringify({
+      taskId: context.task.taskId,
+      title: context.task.title,
+      description: context.task.description,
+      taskPrompt: context.task.taskPrompt,
+      acceptanceCriteria: context.task.acceptanceCriteria
+    }, null, 2),
+    '',
+    'Run context:',
+    JSON.stringify({
+      runId: context.run.runId,
+      branchName: context.run.branchName,
+      headSha: context.run.headSha,
+      reviewUrl,
+      reviewNumber: context.run.reviewNumber ?? context.run.prNumber,
+      reviewProvider: context.run.reviewProvider,
+      previewUrl: context.run.previewUrl
+    }, null, 2),
+    '',
+    'Normalized SCM checks:',
+    JSON.stringify(context.checks, null, 2)
   ].join('\n');
-}
 
-function buildCompatibility(context: PreviewAdapterContext): PreviewAdapterResult['compatibility'] {
   return {
-    adapter: 'prompt_recipe',
-    checks: context.checks.map((check) => ({
-      name: check.name,
-      appSlug: check.appSlug,
-      rawSource: check.rawSource,
-      status: check.status,
-      conclusion: check.conclusion,
-      score: 0,
-      matchedAdapter: 'prompt_recipe',
-      extracted: false
-    }))
+    repo: context.repo,
+    task: context.task,
+    run: context.run,
+    cwd: context.promptRecipeRuntime.cwd,
+    prompt,
+    model: context.promptRecipeRuntime.model,
+    reasoningEffort: context.promptRecipeRuntime.reasoningEffort
   };
 }
 
