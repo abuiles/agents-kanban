@@ -108,6 +108,24 @@ export function buildGithubGitUrl(repo: RepoScmLike, pat: string): string {
   return `${baseUrl.protocol}//x-access-token:${encodeURIComponent(pat)}@${baseUrl.host}/${getRepoProjectPath(repo)}.git`;
 }
 
+export function buildGitlabApiBaseUrl(repo: RepoScmLike): string {
+  const baseUrl = new URL(getRepoScmBaseUrl(repo));
+  if (getRepoScmProvider(repo) !== 'gitlab') {
+    throw new Error(`GitLab adapter does not support SCM provider ${getRepoScmProvider(repo)}.`);
+  }
+
+  return `${baseUrl.origin}/api/v4`;
+}
+
+export function buildGitlabGitUrl(repo: RepoScmLike, token: string): string {
+  const baseUrl = new URL(getRepoScmBaseUrl(repo));
+  if (getRepoScmProvider(repo) !== 'gitlab') {
+    throw new Error(`GitLab adapter does not support SCM provider ${getRepoScmProvider(repo)}.`);
+  }
+
+  return `${baseUrl.protocol}//oauth2:${encodeURIComponent(token)}@${baseUrl.host}/${getRepoProjectPath(repo)}.git`;
+}
+
 type ReviewMetadataLike = {
   reviewUrl?: string;
   reviewNumber?: number;
