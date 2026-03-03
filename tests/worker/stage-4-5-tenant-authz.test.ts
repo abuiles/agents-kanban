@@ -16,24 +16,17 @@ type ApiResult<T> = {
   headers: Headers;
 };
 
-async function api<T>(
-  path: string,
-  init?: RequestInit & {
-    userId?: string;
-    tenantId?: string;
-    sessionToken?: string;
-  }
-): Promise<ApiResult<T>> {
+async function api<T>(path: string, init?: RequestInit & { sessionToken?: string; apiToken?: string }): Promise<ApiResult<T>> {
   const request = new Request(`https://minions.example.test${path}`, {
     ...init,
     headers: {
       'Content-Type': 'application/json',
-      ...(init?.userId ? { 'x-user-id': init.userId } : {}),
-      ...(init?.tenantId ? { 'x-tenant-id': init.tenantId } : {}),
       ...(init?.sessionToken ? { 'x-session-token': init.sessionToken } : {}),
+      ...(init?.apiToken ? { 'x-api-token': init.apiToken } : {}),
       ...(init?.headers ?? {})
     }
   });
+
   const response = await worker.fetch(request, env, createExecutionContext());
   return {
     status: response.status,
@@ -42,254 +35,151 @@ async function api<T>(
   };
 }
 
-function uniqueSlug(prefix: string): string {
-  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+function uniqueEmail(prefix: string): string {
+  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}@example.com`;
 }
 
-describe('Stage 4.5 tenant auth context + cross-tenant authorization', () => {
+describe('single-tenant auth and invite flows', () => {
   beforeEach(async () => {
     await ensureTenantDbSchema();
   });
 
-  it('implements signup/login/me and active tenant context resolution from session', async () => {
+  it('supports signup, logout, and login against the single tenant', async () => {
     const signup = await api<{
       user: { id: string; email: string };
-      activeTenantId: string;
       token: string;
-      memberships: Array<{ tenantId: string; role: 'owner' | 'member'; seatState: 'active' | 'invited' | 'revoked' }>;
+      activeTenantId: string;
+      memberships: Array<{ role: 'owner' | 'member'; seatState: 'active' | 'invited' | 'revoked' }>;
     }>('/api/auth/signup', {
       method: 'POST',
       body: JSON.stringify({
-        email: `${uniqueSlug('owner')}@example.com`,
+        email: uniqueEmail('owner-login'),
         password: 'secret-pass',
-        displayName: 'Owner One',
-        tenantName: 'Tenant Auth Org',
-        seatLimit: 3
+        displayName: 'Owner Login',
+        tenantName: 'Local deployment'
       })
     });
 
     expect(signup.status).toBe(201);
-    expect(signup.body.user.email).toContain('@example.com');
-    expect(signup.body.activeTenantId).toMatch(/^tenant_/);
+    expect(signup.body.activeTenantId).toBe('tenant_local');
     expect(signup.body.memberships).toHaveLength(1);
-    expect(signup.body.memberships[0]).toMatchObject({
-      role: 'owner',
-      seatState: 'active',
-      tenantId: signup.body.activeTenantId
-    });
+    expect(signup.body.memberships[0]).toMatchObject({ role: 'owner', seatState: 'active' });
     expect(signup.headers.get('set-cookie')).toContain('minions_session=');
 
-    const me = await api<{
-      user: { id: string; email: string };
-      activeTenantId: string;
-    }>('/api/me', {
+    const me = await api<{ user: { email: string }; activeTenantId: string }>('/api/me', {
       sessionToken: signup.body.token
     });
     expect(me.status).toBe(200);
-    expect(me.body.user.id).toBe(signup.body.user.id);
-    expect(me.body.activeTenantId).toBe(signup.body.activeTenantId);
+    expect(me.body.user.email).toBe(signup.body.user.email);
+    expect(me.body.activeTenantId).toBe('tenant_local');
 
-    const secondTenant = await api<{ tenant: { id: string } }>('/api/tenants', {
+    const logout = await api<{ ok: true }>('/api/auth/logout', {
       method: 'POST',
-      sessionToken: signup.body.token,
-      body: JSON.stringify({
-        name: 'Second Org',
-        slug: uniqueSlug('second-org'),
-        seatLimit: 2
-      })
-    });
-    expect(secondTenant.status).toBe(201);
-
-    const switched = await api<{ activeTenantId: string }>('/api/me/tenant-context', {
-      method: 'POST',
-      sessionToken: signup.body.token,
-      body: JSON.stringify({ tenantId: secondTenant.body.tenant.id })
-    });
-    expect(switched.status).toBe(200);
-    expect(switched.body.activeTenantId).toBe(secondTenant.body.tenant.id);
-
-    const meAfterSwitch = await api<{ activeTenantId: string }>('/api/me', {
       sessionToken: signup.body.token
     });
-    expect(meAfterSwitch.status).toBe(200);
-    expect(meAfterSwitch.body.activeTenantId).toBe(secondTenant.body.tenant.id);
+    expect(logout.status).toBe(200);
+    expect(logout.headers.get('set-cookie')).toContain('Max-Age=0');
+
+    const meAfterLogout = await api<{ code: string }>('/api/me', {
+      sessionToken: signup.body.token
+    });
+    expect(meAfterLogout.status).toBe(401);
+    expect(meAfterLogout.body.code).toBe('UNAUTHORIZED');
 
     const login = await api<{ token: string; activeTenantId: string }>('/api/auth/login', {
       method: 'POST',
       body: JSON.stringify({
         email: signup.body.user.email,
         password: 'secret-pass',
-        tenantId: signup.body.activeTenantId
+        tenantId: 'tenant_local'
       })
     });
     expect(login.status).toBe(200);
     expect(login.body.token).toBeTruthy();
-    expect(login.body.activeTenantId).toBe(signup.body.activeTenantId);
+    expect(login.body.activeTenantId).toBe('tenant_local');
+
+    const wrongTenantLogin = await api<{ code: string }>('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        email: signup.body.user.email,
+        password: 'secret-pass',
+        tenantId: 'tenant_other'
+      })
+    });
+    expect(wrongTenantLogin.status).toBe(403);
+    expect(wrongTenantLogin.body.code).toBe('FORBIDDEN');
   });
 
-  it('denies cross-tenant board/task/run access with explicit errors', async () => {
-    const signup = await api<{
-      token: string;
-      activeTenantId: string;
-    }>('/api/auth/signup', {
+  it('supports owner invite creation/listing and invite acceptance account creation', async () => {
+    const ownerSignup = await api<{ token: string }>('/api/auth/signup', {
       method: 'POST',
       body: JSON.stringify({
-        email: `${uniqueSlug('operator')}@example.com`,
+        email: uniqueEmail('owner-invite'),
         password: 'secret-pass',
-        tenantName: 'Primary Org'
+        tenantName: 'Local deployment'
       })
     });
-    expect(signup.status).toBe(201);
+    expect(ownerSignup.status).toBe(201);
 
-    const createdRepo = await api<{ repoId: string }>('/api/repos', {
-      method: 'POST',
-      sessionToken: signup.body.token,
-      body: JSON.stringify({
-        slug: uniqueSlug('tenant-a-repo'),
-        baselineUrl: 'https://repo.example.test',
-        defaultBranch: 'main'
-      })
-    });
-    expect(createdRepo.status).toBe(201);
-
-    const createdTask = await api<{ taskId: string }>('/api/tasks', {
-      method: 'POST',
-      sessionToken: signup.body.token,
-      body: JSON.stringify({
-        repoId: createdRepo.body.repoId,
-        title: 'Tenant task',
-        taskPrompt: 'Do the thing',
-        acceptanceCriteria: ['done'],
-        context: { links: [] }
-      })
-    });
-    expect(createdTask.status).toBe(201);
-
-    const run = await api<{ runId: string }>('/api/tasks/' + encodeURIComponent(createdTask.body.taskId) + '/run', {
-      method: 'POST',
-      sessionToken: signup.body.token
-    });
-    expect(run.status).toBe(200);
-
-    const secondTenant = await api<{ tenant: { id: string } }>('/api/tenants', {
-      method: 'POST',
-      sessionToken: signup.body.token,
-      body: JSON.stringify({
-        name: 'Secondary Org',
-        slug: uniqueSlug('secondary-org')
-      })
-    });
-    expect(secondTenant.status).toBe(201);
-
-    const switched = await api<{ activeTenantId: string }>('/api/me/tenant-context', {
-      method: 'POST',
-      sessionToken: signup.body.token,
-      body: JSON.stringify({ tenantId: secondTenant.body.tenant.id })
-    });
-    expect(switched.status).toBe(200);
-
-    const boardDenied = await api<{ code: string; message: string }>(`/api/board?repoId=${encodeURIComponent(createdRepo.body.repoId)}`, {
-      sessionToken: signup.body.token
-    });
-    expect(boardDenied.status).toBe(403);
-    expect(boardDenied.body.code).toBe('FORBIDDEN');
-    expect(boardDenied.body.message).toContain('Cross-tenant access denied');
-
-    const taskDenied = await api<{ code: string; message: string }>(`/api/tasks/${encodeURIComponent(createdTask.body.taskId)}`, {
-      method: 'PATCH',
-      sessionToken: signup.body.token,
-      body: JSON.stringify({ title: 'forbidden update' })
-    });
-    expect(taskDenied.status).toBe(403);
-    expect(taskDenied.body.code).toBe('FORBIDDEN');
-    expect(taskDenied.body.message).toContain('Cross-tenant access denied');
-
-    const runDenied = await api<{ code: string; message: string }>(`/api/runs/${encodeURIComponent(run.body.runId)}`, {
-      sessionToken: signup.body.token
-    });
-    expect(runDenied.status).toBe(403);
-    expect(runDenied.body.code).toBe('FORBIDDEN');
-    expect(runDenied.body.message).toContain('Cross-tenant access denied');
-  });
-
-  it('tenant-filters board/repo/task list projections for active tenant context', async () => {
-    const signup = await api<{
+    const inviteEmail = uniqueEmail('invitee');
+    const createdInvite = await api<{
+      invite: { id: string; email: string; status: 'pending' | 'accepted' | 'revoked'; role: 'owner' | 'member' };
       token: string;
-      activeTenantId: string;
-    }>('/api/auth/signup', {
+    }>('/api/invites', {
+      method: 'POST',
+      sessionToken: ownerSignup.body.token,
+      body: JSON.stringify({ email: inviteEmail, role: 'member' })
+    });
+
+    expect(createdInvite.status).toBe(201);
+    expect(createdInvite.body.invite).toMatchObject({
+      email: inviteEmail,
+      status: 'pending',
+      role: 'member'
+    });
+    expect(createdInvite.body.token).toBeTruthy();
+
+    const invites = await api<Array<{ id: string; email: string; status: string }>>('/api/invites', {
+      sessionToken: ownerSignup.body.token
+    });
+    expect(invites.status).toBe(200);
+    expect(invites.body).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: createdInvite.body.invite.id, email: inviteEmail, status: 'pending' })
+      ])
+    );
+
+    const accepted = await api<{
+      user: { id: string; email: string; displayName?: string };
+      token: string;
+      memberships: Array<{ role: 'owner' | 'member'; seatState: 'active' | 'invited' | 'revoked' }>;
+      invite: { status: 'accepted'; acceptedByUserId: string };
+    }>(`/api/invites/${encodeURIComponent(createdInvite.body.invite.id)}/accept`, {
       method: 'POST',
       body: JSON.stringify({
-        email: `${uniqueSlug('viewer')}@example.com`,
-        password: 'secret-pass',
-        tenantName: 'Tenant List A'
+        token: createdInvite.body.token,
+        password: 'member-pass',
+        displayName: 'Member One'
       })
     });
-    expect(signup.status).toBe(201);
 
-    const tenantARepo = await api<{ repoId: string }>('/api/repos', {
+    expect(accepted.status).toBe(201);
+    expect(accepted.body.user.email).toBe(inviteEmail);
+    expect(accepted.body.invite.status).toBe('accepted');
+    expect(accepted.body.memberships[0]).toMatchObject({ role: 'member', seatState: 'active' });
+
+    const acceptedUserMe = await api<{ user: { email: string } }>('/api/me', {
+      sessionToken: accepted.body.token
+    });
+    expect(acceptedUserMe.status).toBe(200);
+    expect(acceptedUserMe.body.user.email).toBe(inviteEmail);
+
+    const inviteAsMember = await api<{ code: string }>('/api/invites', {
       method: 'POST',
-      sessionToken: signup.body.token,
-      body: JSON.stringify({
-        slug: uniqueSlug('tenant-a-only-repo'),
-        baselineUrl: 'https://tenant-a-only.example.test',
-        defaultBranch: 'main'
-      })
+      sessionToken: accepted.body.token,
+      body: JSON.stringify({ email: uniqueEmail('forbidden-invite') })
     });
-    expect(tenantARepo.status).toBe(201);
-
-    const tenantATask = await api<{ taskId: string }>('/api/tasks', {
-      method: 'POST',
-      sessionToken: signup.body.token,
-      body: JSON.stringify({
-        repoId: tenantARepo.body.repoId,
-        title: 'Tenant A only task',
-        taskPrompt: 'Do tenant A thing',
-        acceptanceCriteria: ['done'],
-        context: { links: [] }
-      })
-    });
-    expect(tenantATask.status).toBe(201);
-
-    const secondTenant = await api<{ tenant: { id: string } }>('/api/tenants', {
-      method: 'POST',
-      sessionToken: signup.body.token,
-      body: JSON.stringify({
-        name: 'Tenant List B',
-        slug: uniqueSlug('tenant-list-b')
-      })
-    });
-    expect(secondTenant.status).toBe(201);
-
-    const switched = await api<{ activeTenantId: string }>('/api/me/tenant-context', {
-      method: 'POST',
-      sessionToken: signup.body.token,
-      body: JSON.stringify({ tenantId: secondTenant.body.tenant.id })
-    });
-    expect(switched.status).toBe(200);
-    expect(switched.body.activeTenantId).toBe(secondTenant.body.tenant.id);
-
-    const repos = await api<Array<{ repoId: string }>>('/api/repos', {
-      sessionToken: signup.body.token
-    });
-    expect(repos.status).toBe(200);
-    expect(repos.body).toEqual([]);
-
-    const board = await api<{
-      repos: Array<{ repoId: string }>;
-      tasks: Array<{ taskId: string }>;
-      runs: Array<{ runId: string }>;
-    }>('/api/board?repoId=all', {
-      sessionToken: signup.body.token
-    });
-    expect(board.status).toBe(200);
-    expect(board.body.repos).toEqual([]);
-    expect(board.body.tasks).toEqual([]);
-    expect(board.body.runs).toEqual([]);
-
-    const tasks = await api<Array<{ taskId: string }>>('/api/tasks?repoId=all', {
-      sessionToken: signup.body.token
-    });
-    expect(tasks.status).toBe(200);
-    expect(tasks.body).toEqual([]);
+    expect(inviteAsMember.status).toBe(403);
+    expect(inviteAsMember.body.code).toBe('FORBIDDEN');
   });
 });

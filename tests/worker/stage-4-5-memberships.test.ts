@@ -15,15 +15,17 @@ type ApiResult<T> = {
   body: T;
 };
 
-async function api<T>(path: string, init?: RequestInit & { sessionToken?: string }): Promise<ApiResult<T>> {
+async function api<T>(path: string, init?: RequestInit & { sessionToken?: string; apiToken?: string }): Promise<ApiResult<T>> {
   const request = new Request(`https://minions.example.test${path}`, {
     ...init,
     headers: {
       'Content-Type': 'application/json',
       ...(init?.sessionToken ? { 'x-session-token': init.sessionToken } : {}),
+      ...(init?.apiToken ? { 'x-api-token': init.apiToken } : {}),
       ...(init?.headers ?? {})
     }
   });
+
   const response = await worker.fetch(request, env, createExecutionContext());
   return {
     status: response.status,
@@ -31,174 +33,81 @@ async function api<T>(path: string, init?: RequestInit & { sessionToken?: string
   };
 }
 
-function uniqueSlug(prefix: string): string {
-  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+function uniqueEmail(prefix: string): string {
+  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}@example.com`;
 }
 
-describe('Stage 4.5 memberships and seats', () => {
+describe('single-tenant personal API tokens', () => {
   beforeEach(async () => {
     await ensureTenantDbSchema();
   });
 
-  it('implements owner/member roles and create/update member endpoints', async () => {
-    const owner = await api<{ token: string; user: { id: string } }>('/api/auth/signup', {
+  it('creates, lists, authenticates with, and revokes personal API tokens', async () => {
+    const signup = await api<{ token: string; user: { id: string; email: string } }>('/api/auth/signup', {
       method: 'POST',
       body: JSON.stringify({
-        email: `${uniqueSlug('owner-membership')}@example.com`,
+        email: uniqueEmail('pat-user'),
         password: 'secret-pass',
-        tenantName: 'Membership Owner Org'
+        tenantName: 'Local deployment'
       })
     });
-    expect(owner.status).toBe(201);
+    expect(signup.status).toBe(201);
 
-    const memberUser = await api<{ user: { id: string } }>('/api/auth/signup', {
+    const created = await api<{
+      token: string;
+      tokenRecord: { id: string; userId: string; name: string; scopes: string[] };
+    }>('/api/me/api-tokens', {
       method: 'POST',
+      sessionToken: signup.body.token,
       body: JSON.stringify({
-        email: `${uniqueSlug('member-membership')}@example.com`,
-        password: 'secret-pass',
-        tenantName: 'Membership Member Org'
-      })
-    });
-    expect(memberUser.status).toBe(201);
-
-    const tenant = await api<{
-      tenant: { id: string; slug: string; seatLimit: number };
-      ownerMembership: { role: 'owner'; seatState: 'active'; userId: string };
-    }>('/api/tenants', {
-      method: 'POST',
-      sessionToken: owner.body.token,
-      body: JSON.stringify({
-        name: 'Membership Org',
-        slug: uniqueSlug('membership-org'),
-        seatLimit: 3
+        name: 'automation token',
+        scopes: ['runs:read', 'runs:write']
       })
     });
 
-    expect(tenant.status).toBe(201);
-    expect(tenant.body.ownerMembership).toMatchObject({
-      userId: owner.body.user.id,
-      role: 'owner',
-      seatState: 'active'
+    expect(created.status).toBe(201);
+    expect(created.body.token).toBeTruthy();
+    expect(created.body.tokenRecord).toMatchObject({
+      userId: signup.body.user.id,
+      name: 'automation token',
+      scopes: ['runs:read', 'runs:write']
     });
 
-    const createdMember = await api<{
-      member: { id: string; userId: string; role: 'member'; seatState: 'active' | 'invited' | 'revoked' };
-    }>(`/api/tenants/${encodeURIComponent(tenant.body.tenant.id)}/members`, {
-      method: 'POST',
-      sessionToken: owner.body.token,
-      body: JSON.stringify({ userId: memberUser.body.user.id, role: 'member', seatState: 'invited' })
+    const listed = await api<Array<{ id: string; name: string }>>('/api/me/api-tokens', {
+      sessionToken: signup.body.token
     });
-
-    expect(createdMember.status).toBe(201);
-    expect(createdMember.body.member).toMatchObject({
-      userId: memberUser.body.user.id,
-      role: 'member',
-      seatState: 'invited'
-    });
-
-    const updatedMember = await api<{
-      member: { id: string; role: 'member'; seatState: 'active' | 'invited' | 'revoked' };
-    }>(`/api/tenants/${encodeURIComponent(tenant.body.tenant.id)}/members/${encodeURIComponent(createdMember.body.member.id)}`, {
-      method: 'PATCH',
-      sessionToken: owner.body.token,
-      body: JSON.stringify({ seatState: 'active' })
-    });
-
-    expect(updatedMember.status).toBe(200);
-    expect(updatedMember.body.member).toMatchObject({
-      role: 'member',
-      seatState: 'active'
-    });
-  });
-
-  it('enforces seat states on access checks and owner-only member management', async () => {
-    const owner = await api<{ token: string }>('/api/auth/signup', {
-      method: 'POST',
-      body: JSON.stringify({
-        email: `${uniqueSlug('owner-seats')}@example.com`,
-        password: 'secret-pass',
-        tenantName: 'Seat Owner Org'
-      })
-    });
-    expect(owner.status).toBe(201);
-
-    const memberUser = await api<{ token: string; user: { id: string } }>('/api/auth/signup', {
-      method: 'POST',
-      body: JSON.stringify({
-        email: `${uniqueSlug('member-seats')}@example.com`,
-        password: 'secret-pass',
-        tenantName: 'Seat Member Org'
-      })
-    });
-    expect(memberUser.status).toBe(201);
-
-    const tenant = await api<{ tenant: { id: string } }>('/api/tenants', {
-      method: 'POST',
-      sessionToken: owner.body.token,
-      body: JSON.stringify({
-        name: 'Seat Org',
-        slug: uniqueSlug('seat-org'),
-        seatLimit: 2
-      })
-    });
-
-    expect(tenant.status).toBe(201);
-
-    const member = await api<{ member: { id: string } }>(`/api/tenants/${encodeURIComponent(tenant.body.tenant.id)}/members`, {
-      method: 'POST',
-      sessionToken: owner.body.token,
-      body: JSON.stringify({ userId: memberUser.body.user.id, role: 'member', seatState: 'invited' })
-    });
-    expect(member.status).toBe(201);
-
-    const invitedAccess = await api<{
-      code: string;
-      message: string;
-    }>(`/api/tenants/${encodeURIComponent(tenant.body.tenant.id)}`, {
-      sessionToken: memberUser.body.token
-    });
-    expect(invitedAccess.status).toBe(403);
-    expect(invitedAccess.body.code).toBe('FORBIDDEN');
-
-    const nonOwnerMutation = await api<{ code: string }>(`/api/tenants/${encodeURIComponent(tenant.body.tenant.id)}/members`, {
-      method: 'POST',
-      sessionToken: memberUser.body.token,
-      body: JSON.stringify({ userId: 'user_extra', role: 'member', seatState: 'invited' })
-    });
-    expect(nonOwnerMutation.status).toBe(403);
-
-    const activatedMember = await api<{ member: { seatState: 'active' } }>(
-      `/api/tenants/${encodeURIComponent(tenant.body.tenant.id)}/members/${encodeURIComponent(member.body.member.id)}`,
-      {
-        method: 'PATCH',
-        sessionToken: owner.body.token,
-        body: JSON.stringify({ seatState: 'active' })
-      }
+    expect(listed.status).toBe(200);
+    expect(listed.body).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: created.body.tokenRecord.id, name: 'automation token' })
+      ])
     );
-    expect(activatedMember.status).toBe(200);
-    expect(activatedMember.body.member.seatState).toBe('active');
 
-    const activeAccess = await api<{ id: string }>(`/api/tenants/${encodeURIComponent(tenant.body.tenant.id)}`, {
-      sessionToken: memberUser.body.token
+    const meWithApiTokenHeader = await api<{ user: { id: string; email: string } }>('/api/me', {
+      apiToken: created.body.token
     });
-    expect(activeAccess.status).toBe(200);
-    expect(activeAccess.body.id).toBe(tenant.body.tenant.id);
+    expect(meWithApiTokenHeader.status).toBe(200);
+    expect(meWithApiTokenHeader.body.user.id).toBe(signup.body.user.id);
 
-    const revokedMember = await api<{ member: { seatState: 'revoked' } }>(
-      `/api/tenants/${encodeURIComponent(tenant.body.tenant.id)}/members/${encodeURIComponent(member.body.member.id)}`,
-      {
-        method: 'PATCH',
-        sessionToken: owner.body.token,
-        body: JSON.stringify({ seatState: 'revoked' })
+    const meWithBearerPat = await api<{ user: { id: string } }>('/api/me', {
+      headers: {
+        Authorization: `Bearer ${created.body.token}`
       }
-    );
-    expect(revokedMember.status).toBe(200);
-    expect(revokedMember.body.member.seatState).toBe('revoked');
-
-    const revokedAccess = await api<{ code: string }>(`/api/tenants/${encodeURIComponent(tenant.body.tenant.id)}`, {
-      sessionToken: memberUser.body.token
     });
-    expect(revokedAccess.status).toBe(403);
-    expect(revokedAccess.body.code).toBe('FORBIDDEN');
+    expect(meWithBearerPat.status).toBe(200);
+    expect(meWithBearerPat.body.user.id).toBe(signup.body.user.id);
+
+    const revoked = await api<{ ok: true }>(`/api/me/api-tokens/${encodeURIComponent(created.body.tokenRecord.id)}`, {
+      method: 'DELETE',
+      sessionToken: signup.body.token
+    });
+    expect(revoked.status).toBe(200);
+    expect(revoked.body.ok).toBe(true);
+
+    const authAfterRevoke = await api<{ code: string }>('/api/me', {
+      apiToken: created.body.token
+    });
+    expect(authAfterRevoke.status).toBe(401);
+    expect(authAfterRevoke.body.code).toBe('UNAUTHORIZED');
   });
 });
