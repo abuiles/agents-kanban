@@ -47,7 +47,11 @@ command -v cursor-agent >/dev/null 2>&1 || command -v cursor >/dev/null 2>&1
   },
 
   async restoreAuth(context) {
-    const env = context.env as Env & { RUN_ARTIFACTS?: R2Bucket; SECRETS_KV?: KVNamespace };
+    const env = context.env as Env & {
+      RUN_ARTIFACTS?: R2Bucket;
+      CURSOR_CLI_AUTH_BUNDLE_R2_KEY?: string;
+      CURSOR_AUTH_BUNDLE_R2_KEY?: string;
+    };
     const authBundleKey = await resolveCursorAuthBundleKey(env, context.repo);
     if (!authBundleKey) {
       await context.repoBoard.appendRunLogs(context.runId, [
@@ -112,6 +116,9 @@ printf 'Cursor reasoning effort: ${request.reasoningEffort ?? 'medium'}\\n'
       () =>
         context.sandbox.exec(
           `bash -lc ${shellQuote(`set -euo pipefail
+if [ -f /workspace/agent-env.sh ]; then
+  . /workspace/agent-env.sh
+fi
 if command -v cursor-agent >/dev/null 2>&1; then
   CURSOR_BIN="cursor-agent"
 elif command -v cursor >/dev/null 2>&1; then
@@ -135,6 +142,9 @@ printf 'Cursor reasoning effort: ${request.reasoningEffort ?? 'medium'}\\n'
     await context.sandbox.writeFile('/workspace/task.txt', request.prompt);
     const command = `bash -lc ${shellQuote(`set -euo pipefail
 export HOME="\${HOME:-/root}"
+if [ -f /workspace/agent-env.sh ]; then
+  . /workspace/agent-env.sh
+fi
 cd ${request.cwd}
 if command -v cursor-agent >/dev/null 2>&1; then
   CURSOR_BIN="cursor-agent"
@@ -156,6 +166,9 @@ PROMPT="$(cat /workspace/task.txt)"
     await context.sandbox.writeFile('/workspace/prompt.txt', request.prompt);
     const command = `bash -lc ${shellQuote(`set -euo pipefail
 export HOME="\${HOME:-/root}"
+if [ -f /workspace/agent-env.sh ]; then
+  . /workspace/agent-env.sh
+fi
 mkdir -p ${request.cwd}
 cd ${request.cwd}
 if command -v cursor-agent >/dev/null 2>&1; then
@@ -468,18 +481,21 @@ async function getParseSSEStream() {
   return parseSSEStreamFn;
 }
 
-async function resolveCursorAuthBundleKey(env: Env & { SECRETS_KV?: KVNamespace }, repo: Repo) {
+async function resolveCursorAuthBundleKey(
+  env: Env & { CURSOR_CLI_AUTH_BUNDLE_R2_KEY?: string; CURSOR_AUTH_BUNDLE_R2_KEY?: string },
+  repo: Repo
+) {
   const fromRepo =
     (repo as Repo & { cursorCliAuthBundleR2Key?: string }).cursorCliAuthBundleR2Key
     ?? (repo as Repo & { cursorAuthBundleR2Key?: string }).cursorAuthBundleR2Key;
   if (fromRepo) {
     return fromRepo;
   }
-  const fromPrimaryKey = await env.SECRETS_KV?.get('cursor_cli_auth_bundle_r2_key');
+  const fromPrimaryKey = env.CURSOR_CLI_AUTH_BUNDLE_R2_KEY?.trim();
   if (fromPrimaryKey) {
     return fromPrimaryKey;
   }
-  return env.SECRETS_KV?.get('cursor_auth_bundle_r2_key');
+  return env.CURSOR_AUTH_BUNDLE_R2_KEY?.trim();
 }
 
 function bytesToBase64(buffer: ArrayBuffer) {

@@ -90,7 +90,8 @@ function createHarness(repo: Repo, task = buildTask(), run = buildRun()) {
   const env = {
     REPO_BOARD: { getByName: () => repoBoard },
     BOARD_INDEX: { getByName: () => board },
-    SECRETS_KV: { get: vi.fn().mockResolvedValue('ghp_test') }
+    GITHUB_TOKEN: 'ghp_test',
+    GITLAB_TOKEN: 'glpat_test'
   } as unknown as Env;
 
   return { env, repoBoard, board, logs, timelineNotes, getRun: () => currentRun };
