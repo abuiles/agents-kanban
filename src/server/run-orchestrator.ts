@@ -32,6 +32,7 @@ type Stage3Env = Env & {
 
 type SleepFn = (name: string, duration: number | `${number} ${string}`) => Promise<void>;
 type RunPhase = NonNullable<ReturnType<typeof buildRunLog>['phase']>;
+type SandboxRole = 'main' | 'preview' | 'evidence';
 
 export async function scheduleRunJob(env: Env, ctx: ExecutionContext, params: RunJobParams) {
   const stage3Env = env as Stage3Env;
@@ -66,6 +67,7 @@ export async function executeRunJob(env: Env, params: RunJobParams, sleepFn: Sle
   const llmReasoningEffort = detail.task.uiMeta?.llmReasoningEffort ?? detail.task.uiMeta?.codexReasoningEffort ?? 'medium';
   const workflowStartedAtMs = Date.now();
   let sandboxStartedAtMs: number | undefined;
+  let sandboxId: string | undefined;
   const emitUsage = async (
     entries: Array<{
       category: import('./usage-ledger').UsageLedgerCategory;
@@ -133,7 +135,8 @@ export async function executeRunJob(env: Env, params: RunJobParams, sleepFn: Sle
     }
 
     const scmCredential = await getScmCredential(env as Stage3Env, repo, scmAdapter);
-    const sandbox = getSandbox(env.Sandbox, params.runId);
+    sandboxId = buildSandboxId(params.runId, 'main');
+    const sandbox = getSandbox(env.Sandbox, sandboxId);
     const llmContext = { env, sandbox, repoBoard, runId: params.runId };
     sandboxStartedAtMs = Date.now();
 
@@ -149,7 +152,7 @@ export async function executeRunJob(env: Env, params: RunJobParams, sleepFn: Sle
     await repoBoard.appendRunLogs(params.runId, [buildRunLog(params.runId, `Starting sandbox run for ${repo.slug}.`, 'bootstrap')]);
     await repoBoard.transitionRun(params.runId, {
       status: 'BOOTSTRAPPING',
-      sandboxId: params.runId,
+      sandboxId,
       llmAdapter: llmAdapter.kind,
       llmSupportsResume: llmAdapter.capabilities.supportsResume,
       appendTimelineNote: 'Sandbox bootstrapped.'
@@ -371,13 +374,13 @@ export async function executeRunJob(env: Env, params: RunJobParams, sleepFn: Sle
         metadata: { mode: params.mode }
       }
     ]);
-    if (sandboxStartedAtMs !== undefined) {
+    if (sandboxStartedAtMs !== undefined && sandboxId) {
       await emitUsage([
         {
           category: 'sandbox_runtime_ms',
           quantity: Math.max(0, endedAtMs - sandboxStartedAtMs),
           source: 'sandbox',
-          metadata: { sandboxId: params.runId }
+          metadata: { sandboxId }
         }
       ]);
     }
@@ -401,8 +404,9 @@ async function runEvidence(
     return;
   }
 
-  const sandbox = getSandbox(env.Sandbox, `${runId}-evidence`);
-  await repoBoard.transitionRun(runId, { status: 'EVIDENCE_RUNNING', evidenceStatus: 'RUNNING', evidenceSandboxId: `${runId}-evidence` });
+  const evidenceSandboxId = buildSandboxId(runId, 'evidence');
+  const sandbox = getSandbox(env.Sandbox, evidenceSandboxId);
+  await repoBoard.transitionRun(runId, { status: 'EVIDENCE_RUNNING', evidenceStatus: 'RUNNING', evidenceSandboxId });
   await repoBoard.appendRunLogs(runId, [buildRunLog(runId, `Capturing evidence for baseline ${baselineUrl} and preview ${previewUrl}.`, 'evidence')]);
 
   try {
@@ -596,7 +600,8 @@ function createPromptRecipeRuntime(
   model: string,
   reasoningEffort: LlmReasoningEffort
 ): PreviewAdapterContext['promptRecipeRuntime'] {
-  const sandbox = getSandbox(env.Sandbox, `${runId}-preview`);
+  const previewSandboxId = buildSandboxId(runId, 'preview');
+  const sandbox = getSandbox(env.Sandbox, previewSandboxId);
   const llmContext = { env, sandbox, repoBoard, runId };
   let prepared = false;
 
@@ -927,6 +932,30 @@ async function prepareRunBranchFromTaskSource(
 
 function buildRunCommandId(runId: string, phase: RunPhase) {
   return `${runId}_${phase}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function buildSandboxId(runId: string, role: SandboxRole) {
+  const normalized = runId.replace(/[^a-zA-Z0-9-_]/g, '-').toLowerCase();
+  const roleTag = role === 'main' ? 'run' : role;
+  const hash = shortStableHash(`${role}:${runId}`).slice(0, 8);
+  const prefix = `sbx-${roleTag}-`;
+  const suffix = `-${hash}`;
+  const maxLength = 63;
+  const maxMiddleLength = maxLength - prefix.length - suffix.length;
+  const middle = maxMiddleLength > 0
+    ? normalized.slice(-maxMiddleLength)
+    : '';
+  const id = `${prefix}${middle}${suffix}`;
+  return id.slice(0, maxLength);
+}
+
+function shortStableHash(input: string) {
+  let hash = 2166136261;
+  for (let index = 0; index < input.length; index += 1) {
+    hash ^= input.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
 }
 
 function buildRunEvent(
