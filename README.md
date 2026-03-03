@@ -1,92 +1,107 @@
-# Minimal Sandbox SDK Example
+# AgentsKanban
 
-A minimal Cloudflare Worker that demonstrates the core capabilities of the Sandbox SDK.
+AgentsKanban is a Cloudflare Workers application for multi-repo task orchestration with a kanban UI and background agent runs. It combines a React/Vite frontend with a Worker API that manages tasks, runs, logs, and artifacts.
 
-## Features
+## Overview
 
-- **Command Execution**: Execute Python code in isolated containers
-- **File Operations**: Read and write files in the sandbox filesystem
-- **Simple API**: Two endpoints demonstrating basic sandbox operations
+- Multi-repo board for planning and execution
+- Task lifecycle across kanban columns (`INBOX` to `DONE` / `FAILED`)
+- Run orchestration with status, logs, artifacts, and retry actions
+- Cloudflare-native runtime components (Durable Objects, Workflows, R2, D1, KV, Containers)
 
-## How It Works
+## Architecture Summary
 
-This example provides two simple endpoints:
+- UI: React + Vite static assets served by Workers assets binding
+- API: Worker routes under `/api/*`
+- Stateful control plane: Durable Objects (`BOARD_INDEX`, `REPO_BOARD`, `Sandbox`)
+- Background orchestration: Workflows binding (`RUN_WORKFLOW`)
+- Storage:
+  - R2 bucket (`RUN_ARTIFACTS`) for run artifacts and bundles
+  - D1 database (`TENANT_DB`) for tenant/auth persistence
+  - KV namespace (`SECRETS_KV`) for secrets/metadata support
+- Ephemeral execution: Cloudflare Containers-backed sandbox class (`Sandbox`)
 
-1. **`/run`** - Executes Python code and returns the output
-2. **`/file`** - Creates a file, reads it back, and returns the contents
+## Prerequisites
 
-## API Endpoints
+- Node.js 20+ and npm
+- Cloudflare account authenticated via Wrangler
+- `wrangler.jsonc` bindings provisioned in your account
+- SCM and model provider credentials as needed:
+  - `GITHUB_TOKEN` and/or `GITLAB_TOKEN`
+  - `OPENAI_API_KEY`
 
-### Execute Python Code
+## Local Setup
 
-```bash
-GET http://localhost:8787/run
-```
-
-Runs `python -c "print(2 + 2)"` and returns:
-
-```json
-{
-  "output": "4\n",
-  "success": true
-}
-```
-
-### File Operations
-
-```bash
-GET http://localhost:8787/file
-```
-
-Creates `/workspace/hello.txt`, reads it back, and returns:
-
-```json
-{
-  "content": "Hello, Sandbox!"
-}
-```
-
-## Setup
-
-1. From the project root, run:
+1. Install dependencies:
 
 ```bash
 npm install
-npm run build
 ```
 
-2. Run locally:
+2. Configure local/remote secrets (example):
 
 ```bash
-cd examples/minimal # if you're not already here
+npx wrangler secret put GITHUB_TOKEN
+npx wrangler secret put GITLAB_TOKEN
+npx wrangler secret put OPENAI_API_KEY
+```
+
+3. If bindings changed, regenerate Worker types:
+
+```bash
+npx wrangler types
+```
+
+4. Build and start local development:
+
+```bash
+npm run build
 npm run dev
 ```
 
-The first run will build the Docker container (2-3 minutes). Subsequent runs are much faster.
+Default local app URL is `http://localhost:5173` with API under `http://localhost:5173/api`.
 
-## Testing
+## Commands
 
-```bash
-# Test command execution
-curl http://localhost:8787/run
-
-# Test file operations
-curl http://localhost:8787/file
-```
-
-## Deploy
+Project scripts from `package.json`:
 
 ```bash
+npm run dev
+npm run build
+npm run test
+npm run test:workers
 npm run deploy
 ```
 
-After first deployment, wait 2-3 minutes for container provisioning before making requests.
+## Cloudflare Bindings and Secrets
 
-## Next Steps
+Bindings defined in `wrangler.jsonc` include:
 
-This minimal example is the starting point for more complex applications. See the [Sandbox SDK documentation](https://developers.cloudflare.com/sandbox/) for:
+- Durable Objects: `Sandbox`, `BOARD_INDEX`, `REPO_BOARD`
+- Workflow: `RUN_WORKFLOW`
+- R2: `RUN_ARTIFACTS`
+- D1: `TENANT_DB`
+- KV: `SECRETS_KV`
+- Assets: `ASSETS`
 
-- Advanced command execution and streaming
-- Background processes
-- Preview URLs for exposed services
-- Custom Docker images
+Use Worker secrets for sensitive values (do not store secrets in `vars`). For local development, use `.dev.vars` or `.env` per Cloudflare Workers documentation.
+
+## API Workflow
+
+For operator/API flow and request sequence, use [docs/api_prompt.md](docs/api_prompt.md).
+
+## Key Docs
+
+- [docs/design.md](docs/design.md)
+- [docs/features-and-api.md](docs/features-and-api.md)
+- [docs/local-testing.md](docs/local-testing.md)
+- [docs/roadmap.md](docs/roadmap.md)
+- Cloudflare Workers docs: https://developers.cloudflare.com/workers/
+- Cloudflare Workers bindings: https://developers.cloudflare.com/workers/configuration/bindings/
+- Cloudflare Workers env vars and secrets:
+  - https://developers.cloudflare.com/workers/development-testing/environment-variables/
+  - https://developers.cloudflare.com/workers/configuration/secrets/
+
+## License
+
+This project is licensed under the MIT License. See [LICENSE](LICENSE).
