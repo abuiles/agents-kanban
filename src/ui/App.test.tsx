@@ -203,7 +203,7 @@ describe('App', () => {
     await screen.findByRole('heading', { name: 'Fix settings navigation overflow' });
     await user.click(await screen.findByRole('button', { name: 'Request changes' }));
     await user.type(
-      await screen.findByPlaceholderText('Describe the changes you want on the current review.'),
+      await screen.findByPlaceholderText('Describe the changes you want on the current PR.'),
       'Tighten the spacing and update the review copy.'
     );
     await user.click(screen.getByRole('button', { name: 'Start review rerun' }));
@@ -220,7 +220,7 @@ describe('App', () => {
       expect(latestRun.prUrl).toBe(previousRun?.prUrl);
     });
 
-    expect(await screen.findByText('Started a review rerun on the existing review branch.')).toBeInTheDocument();
+    expect(await screen.findByText('Started a review rerun on the existing PR branch.')).toBeInTheDocument();
   });
 
   it('opens the terminal in a modal with the live stream panel', async () => {
