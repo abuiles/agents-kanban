@@ -13,7 +13,8 @@
     "cf-typegen": "wrangler types",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "test:workers": "vitest -c vitest.worker.config.ts"
+    "test:workers": "vitest -c vitest.worker.config.ts",
+    "bootstrap:single-tenant": "tsx scripts/bootstrap-single-tenant.ts"
   },
   "devDependencies": {
     "@cloudflare/sandbox": "*",
@@ -35,7 +36,8 @@
     "typescript": "^5.9.3",
     "vite": "^7.3.1",
     "vitest": "^3.2.4",
-    "wrangler": "^4.69.0"
+    "wrangler": "^4.69.0",
+    "tsx": "^4.20.5"
   },
   "author": "",
   "license": "MIT",

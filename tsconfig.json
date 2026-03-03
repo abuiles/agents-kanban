@@ -25,6 +25,7 @@
     "worker-configuration.d.ts",
     "src/**/*.ts",
     "src/**/*.tsx",
+    "scripts/**/*.ts",
     "vite.config.ts"
   ]
 }
