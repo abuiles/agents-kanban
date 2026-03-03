@@ -80,7 +80,7 @@ export async function handleAuthSignup(request: Request, env: Env): Promise<Resp
     });
     const response = json({
       user: result.user,
-      session: result.session,
+      session: toPublicSession(result.session),
       activeTenantId: result.activeTenantId,
       memberships: result.memberships
     }, { status: 201 });
@@ -95,7 +95,7 @@ export async function handleAuthLogin(request: Request, env: Env): Promise<Respo
     const result = await tenantAuthDb.login(env, input);
     const response = json({
       user: result.user,
-      session: result.session,
+      session: toPublicSession(result.session),
       activeTenantId: result.activeTenantId,
       memberships: result.memberships
     });
@@ -195,7 +195,7 @@ export async function handleSetTenantContext(request: Request, env: Env): Promis
     }
     const { tenantId } = parseSetActiveTenantInput(await readJson(request));
     const session = await tenantAuthDb.setSessionActiveTenant(env, requestContext.sessionId, tenantId);
-    const response = json({ activeTenantId: session.activeTenantId, session });
+    const response = json({ activeTenantId: session.activeTenantId, session: toPublicSession(session) });
     if (requestContext.sessionToken) {
       response.headers.append('Set-Cookie', buildSessionCookie(request, requestContext.sessionToken));
     }
@@ -309,7 +309,7 @@ export async function handleAcceptInvite(request: Request, env: Env, params: Rou
     const accepted = await tenantAuthDb.acceptTenantInvite(env, body.token, signup.user.id);
     const response = json({
       user: signup.user,
-      session: signup.session,
+      session: toPublicSession(signup.session),
       activeTenantId: signup.activeTenantId,
       memberships: [accepted.membership],
       invite: accepted.invite
@@ -425,7 +425,8 @@ export async function handleUpdateRepo(request: Request, env: Env, params: Route
 export async function handleListScmCredentials(request: Request, env: Env): Promise<Response> {
   return withApiError(async () => {
     const board = getBoard(env);
-    await resolveRequestTenantContext(env, board, request, { requireSession: true });
+    const requestContext = await resolveRequestTenantContext(env, board, request, { requireSession: true });
+    await requireOwnerTenantAccess(env, board, requestContext);
     return json(await board.listScmCredentials());
   });
 }
@@ -433,7 +434,8 @@ export async function handleListScmCredentials(request: Request, env: Env): Prom
 export async function handleUpsertScmCredential(request: Request, env: Env): Promise<Response> {
   return withApiError(async () => {
     const board = getBoard(env);
-    await resolveRequestTenantContext(env, board, request, { requireSession: true });
+    const requestContext = await resolveRequestTenantContext(env, board, request, { requireSession: true });
+    await requireOwnerTenantAccess(env, board, requestContext);
     return json(await board.upsertScmCredential(parseUpsertScmCredentialInput(await readJson(request))), { status: 201 });
   });
 }
@@ -441,7 +443,8 @@ export async function handleUpsertScmCredential(request: Request, env: Env): Pro
 export async function handleGetScmCredential(request: Request, env: Env, params: RouteParams): Promise<Response> {
   return withApiError(async () => {
     const board = getBoard(env);
-    await resolveRequestTenantContext(env, board, request, { requireSession: true });
+    const requestContext = await resolveRequestTenantContext(env, board, request, { requireSession: true });
+    await requireOwnerTenantAccess(env, board, requestContext);
     const provider = parsePathParam(params.provider) as 'github' | 'gitlab';
     const credentialId = parsePathParam(params.credentialId);
     const credential = await board.getScmCredential(provider, credentialId);
@@ -846,7 +849,8 @@ export async function handleTakeoverRun(request: Request, env: Env, params: Rout
 export async function handleDebugExport(request: Request, env: Env): Promise<Response> {
   return withApiError(async () => {
     const board = getBoard(env);
-    await resolveRequestTenantContext(env, board, request, { requireSession: true });
+    const requestContext = await resolveRequestTenantContext(env, board, request, { requireSession: true });
+    await requireOwnerTenantAccess(env, board, requestContext);
     return json(await board.exportBoard());
   });
 }
@@ -854,7 +858,8 @@ export async function handleDebugExport(request: Request, env: Env): Promise<Res
 export async function handleDebugImport(request: Request, env: Env): Promise<Response> {
   return withApiError(async () => {
     const board = getBoard(env);
-    await resolveRequestTenantContext(env, board, request, { requireSession: true });
+    const requestContext = await resolveRequestTenantContext(env, board, request, { requireSession: true });
+    await requireOwnerTenantAccess(env, board, requestContext);
     const body = await readJson(request);
     if (typeof body !== 'object' || !body || !('version' in body)) {
       throw badRequest('Invalid board snapshot payload.');
@@ -867,7 +872,8 @@ export async function handleDebugImport(request: Request, env: Env): Promise<Res
 export async function handleDebugSandboxRun(request: Request, env: Env): Promise<Response> {
   return withApiError(async () => {
     const board = getBoard(env);
-    await resolveRequestTenantContext(env, board, request, { requireSession: true });
+    const requestContext = await resolveRequestTenantContext(env, board, request, { requireSession: true });
+    await requireOwnerTenantAccess(env, board, requestContext);
     const sandbox = getSandbox(env.Sandbox, 'my-sandbox');
     const result = await sandbox.exec('echo "2 + 2 = $((2 + 2))"');
     return json({
@@ -882,7 +888,8 @@ export async function handleDebugSandboxRun(request: Request, env: Env): Promise
 export async function handleDebugSandboxFile(request: Request, env: Env): Promise<Response> {
   return withApiError(async () => {
     const board = getBoard(env);
-    await resolveRequestTenantContext(env, board, request, { requireSession: true });
+    const requestContext = await resolveRequestTenantContext(env, board, request, { requireSession: true });
+    await requireOwnerTenantAccess(env, board, requestContext);
     const sandbox = getSandbox(env.Sandbox, 'my-sandbox');
     await sandbox.writeFile('/workspace/hello.txt', 'Hello, Sandbox!');
     const file = await sandbox.readFile('/workspace/hello.txt');
@@ -1110,6 +1117,17 @@ function isUnauthorizedError(error: unknown) {
     && error !== null
     && 'status' in error
     && (error as { status?: unknown }).status === 401;
+}
+
+function toPublicSession(session: { id: string; userId: string; tenantId: string; activeTenantId: string; expiresAt: string; lastSeenAt: string }) {
+  return {
+    id: session.id,
+    userId: session.userId,
+    tenantId: session.tenantId,
+    activeTenantId: session.activeTenantId,
+    expiresAt: session.expiresAt,
+    lastSeenAt: session.lastSeenAt
+  };
 }
 
 function buildSessionCookie(request: Request, token: string) {

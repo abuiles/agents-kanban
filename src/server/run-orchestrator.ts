@@ -16,6 +16,7 @@ import { getPreviewAdapter } from './preview/registry';
 import type { PreviewAdapterContext, PreviewAdapterResult } from './preview/adapter';
 import { writeUsageLedgerEntriesBestEffort } from './usage-ledger';
 import { normalizeTenantId } from '../shared/tenant';
+import { redactSensitiveText } from './security/redaction';
 
 type WorkflowBinding<T> = {
   create(options?: { id?: string; params?: T; retention?: { successRetention?: string | number; errorRetention?: string | number } }): Promise<{ id: string }>;
@@ -741,7 +742,7 @@ async function persistArtifactManifest(env: Stage3Env, run: Awaited<ReturnType<R
 }
 
 async function failRun(repoBoard: DurableObjectStub<RepoBoardDO>, runId: string, code: string, phase: NonNullable<ReturnType<typeof buildRunLog>['phase']>, error: unknown, retryable = true) {
-  const message = error instanceof Error ? error.message : String(error);
+  const message = redactSensitiveText(error instanceof Error ? error.message : String(error));
   await repoBoard.appendRunLogs(runId, [buildRunLog(runId, message, phase, 'error')]);
   await repoBoard.markRunFailed(runId, {
     at: new Date().toISOString(),
@@ -754,8 +755,8 @@ async function failRun(repoBoard: DurableObjectStub<RepoBoardDO>, runId: string,
 
 async function appendCommandLogs(repoBoard: DurableObjectStub<RepoBoardDO>, runId: string, phase: NonNullable<ReturnType<typeof buildRunLog>['phase']>, stdout?: string, stderr?: string) {
   const logs = [];
-  if (stdout?.trim()) logs.push(buildRunLog(runId, stdout.trim(), phase));
-  if (stderr?.trim()) logs.push(buildRunLog(runId, stderr.trim(), phase, 'error'));
+  if (stdout?.trim()) logs.push(buildRunLog(runId, redactSensitiveText(stdout.trim()), phase));
+  if (stderr?.trim()) logs.push(buildRunLog(runId, redactSensitiveText(stderr.trim()), phase, 'error'));
   if (logs.length) await repoBoard.appendRunLogs(runId, logs);
 }
 
