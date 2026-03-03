@@ -14,8 +14,8 @@ import type {
   Task,
   TaskDetail,
   TaskStatus,
-  Tenant,
   TenantMember,
+  TenantSeatSummary,
   TerminalBootstrap,
   User
 } from './types';
@@ -86,22 +86,67 @@ export type RequestRunChangesInput = {
 export type AuthSession = {
   user: User;
   memberships: TenantMember[];
-  tenants: Tenant[];
-  activeTenantId: string;
 };
 
 export type AuthLoginInput = {
   email: string;
   password: string;
-  tenantId?: string;
 };
 
-export type AuthSignupInput = {
-  email: string;
+export type AcceptInviteInput = {
+  inviteId: string;
+  token: string;
   password: string;
   displayName?: string;
-  tenantName: string;
-  tenantDomain?: string;
+};
+
+export type CreateInviteInput = {
+  email: string;
+  role?: 'owner' | 'member';
+};
+
+export type InviteRecord = {
+  id: string;
+  tenantId: string;
+  email: string;
+  role: 'owner' | 'member';
+  status: 'pending' | 'accepted' | 'revoked';
+  createdByUserId: string;
+  acceptedByUserId?: string;
+  acceptedAt?: string;
+  revokedAt?: string;
+  expiresAt: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type CreateInviteResult = {
+  invite: InviteRecord;
+  token: string;
+  seatSummary: TenantSeatSummary;
+};
+
+export type UserApiTokenRecord = {
+  id: string;
+  userId: string;
+  name: string;
+  scopes: string[];
+  createdAt: string;
+  updatedAt: string;
+  expiresAt?: string;
+  lastUsedAt?: string;
+  revokedAt?: string;
+};
+
+export type CreateUserApiTokenInput = {
+  name: string;
+  scopes?: string[];
+  expiresAt?: string;
+};
+
+export type CreateUserApiTokenResult = {
+  tokenRecord: UserApiTokenRecord;
+  token: string;
 };
 
 export interface AgentBoardApi {
@@ -109,9 +154,13 @@ export interface AgentBoardApi {
   getSnapshot(): BoardSnapshotV1;
   getAuthSession(): Promise<AuthSession | undefined>;
   login(input: AuthLoginInput): Promise<AuthSession>;
-  signup(input: AuthSignupInput): Promise<AuthSession>;
+  acceptInvite(input: AcceptInviteInput): Promise<AuthSession>;
   logout(): Promise<void>;
-  setActiveTenant(tenantId: string): Promise<AuthSession>;
+  createInvite(input: CreateInviteInput): Promise<CreateInviteResult>;
+  listInvites(): Promise<InviteRecord[]>;
+  createApiToken(input: CreateUserApiTokenInput): Promise<CreateUserApiTokenResult>;
+  listApiTokens(): Promise<UserApiTokenRecord[]>;
+  revokeApiToken(tokenId: string): Promise<void>;
   createRepo(input: CreateRepoInput): Promise<Repo>;
   listRepos(): Promise<Repo[]>;
   updateRepo(repoId: string, patch: UpdateRepoInput): Promise<Repo>;
