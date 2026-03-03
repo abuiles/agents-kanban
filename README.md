@@ -24,6 +24,7 @@ AgentsKanban is a Cloudflare Workers application for multi-repo task orchestrati
   - D1 database (`TENANT_DB`) for tenant/auth persistence
   - KV namespace (`SECRETS_KV`) for secrets/metadata support
 - Ephemeral execution: Cloudflare Containers-backed sandbox class (`Sandbox`) using Cloudflare's default Sandbox Docker image (`docker.io/cloudflare/sandbox:0.7.8`) for now
+- Diagram: [docs/architecture.md](docs/architecture.md)
 
 ## Prerequisites
 
