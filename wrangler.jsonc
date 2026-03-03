@@ -3,86 +3,88 @@
  * https://developers.cloudflare.com/workers/wrangler/configuration/
  */
 {
-  "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "agents-kanban",
-  "main": "src/index.ts",
-  "preview_urls": true,
-  "compatibility_date": "2026-03-01",
-  "compatibility_flags": [
-    "nodejs_compat"
-  ],
-  "observability": {
-    "enabled": true
-  },
-  "containers": [
-    {
-      "class_name": "Sandbox",
-      "image": "./Dockerfile",
-      "instance_type": "lite",
-      "max_instances": 20
-    }
-  ],
-  "durable_objects": {
-    "bindings": [
-      {
-	"class_name": "Sandbox",
-	"name": "Sandbox"
-      },
-      {
-	"class_name": "BoardIndexDO",
-	"name": "BOARD_INDEX"
-      },
-      {
-	"class_name": "RepoBoardDO",
-	"name": "REPO_BOARD"
-      }
-    ]
-  },
-  "workflows": [
-    {
-      "binding": "RUN_WORKFLOW",
-      "name": "my-sandbox-run-workflow",
-      "class_name": "RunWorkflow"
-    }
-  ],
-  "migrations": [
-    {
-      "new_sqlite_classes": [
-	"Sandbox"
-      ],
-      "tag": "v1"
-    },
-    {
-      "new_sqlite_classes": [
-	"BoardIndexDO",
-	"RepoBoardDO"
-      ],
-      "tag": "v2"
-    }
-  ],
-  "assets": {
-    "binding": "ASSETS",
-    "directory": "./dist",
-    "not_found_handling": "single-page-application",
-    "run_worker_first": [
-      "/api/*"
-    ]
-  },
-  "kv_namespaces": [
-    {
-      "binding": "SECRETS_KV"
-    }
-  ],
-  "r2_buckets": [
-    {
-      "bucket_name": "my-sandbox-run-artifacts",
-      "binding": "RUN_ARTIFACTS"
-    }
-  ],
-  "d1_databases": [
-    {
-      "binding": "TENANT_DB",
-      "database_name": "my-sandbox-tenant-db"
-    }
-  ]
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "agents-kanban",
+	"main": "src/index.ts",
+	"preview_urls": true,
+	"compatibility_date": "2026-03-01",
+	"compatibility_flags": [
+		"nodejs_compat"
+	],
+	"observability": {
+		"enabled": true
+	},
+	"containers": [
+		{
+			"class_name": "Sandbox",
+			"image": "./Dockerfile",
+			"instance_type": "lite",
+			"max_instances": 20
+		}
+	],
+	"durable_objects": {
+		"bindings": [
+			{
+				"class_name": "Sandbox",
+				"name": "Sandbox"
+			},
+			{
+				"class_name": "BoardIndexDO",
+				"name": "BOARD_INDEX"
+			},
+			{
+				"class_name": "RepoBoardDO",
+				"name": "REPO_BOARD"
+			}
+		]
+	},
+	"workflows": [
+		{
+			"binding": "RUN_WORKFLOW",
+			"name": "my-sandbox-run-workflow",
+			"class_name": "RunWorkflow"
+		}
+	],
+	"migrations": [
+		{
+			"new_sqlite_classes": [
+				"Sandbox"
+			],
+			"tag": "v1"
+		},
+		{
+			"new_sqlite_classes": [
+				"BoardIndexDO",
+				"RepoBoardDO"
+			],
+			"tag": "v2"
+		}
+	],
+	"assets": {
+		"binding": "ASSETS",
+		"directory": "./dist",
+		"not_found_handling": "single-page-application",
+		"run_worker_first": [
+			"/api/*"
+		]
+	},
+	"kv_namespaces": [
+		{
+			"binding": "SECRETS_KV",
+			"id": "${SECRETS_KV_ID}"
+		}
+	],
+	"r2_buckets": [
+		{
+			"bucket_name": "my-sandbox-run-artifacts",
+			"binding": "RUN_ARTIFACTS"
+		}
+	],
+	"d1_databases": [
+		{
+			"binding": "TENANT_DB",
+			"database_name": "my-sandbox-tenant-db",
+			"database_id": "${TENANT_DB_ID}"
+		}
+	]
 }
