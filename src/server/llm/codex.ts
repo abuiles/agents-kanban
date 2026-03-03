@@ -537,13 +537,13 @@ if (fs.existsSync(configPath) && fs.statSync(configPath).isFile()) {
   console.log('Cloudflare MCP configured: no');
 }
 const apiKey = typeof data.OPENAI_API_KEY === 'string' && data.OPENAI_API_KEY ? data.OPENAI_API_KEY : null;
-console.log(\`Codex OPENAI_API_KEY suffix: \${apiKey ? apiKey.slice(-4) : 'missing'}\`);
+console.log(\`Codex OPENAI_API_KEY present: \${apiKey ? 'yes' : 'no'}\`);
 const runtimeApiKey = typeof process.env.OPENAI_API_KEY === 'string' && process.env.OPENAI_API_KEY ? process.env.OPENAI_API_KEY : null;
-console.log(\`Runtime OPENAI_API_KEY suffix: \${runtimeApiKey ? runtimeApiKey.slice(-4) : 'missing'}\`);
+console.log(\`Runtime OPENAI_API_KEY present: \${runtimeApiKey ? 'yes' : 'no'}\`);
 const accessToken = data.tokens && typeof data.tokens.access_token === 'string' && data.tokens.access_token
   ? data.tokens.access_token
   : null;
-console.log(\`Codex access_token suffix: \${accessToken ? accessToken.slice(-4) : 'missing'}\`);
+console.log(\`Codex access_token present: \${accessToken ? 'yes' : 'no'}\`);
 `
   );
   const diagnostics = await sandbox.exec(
@@ -570,9 +570,9 @@ node /workspace/codex-auth-diagnostics.mjs
     throw await createNonRetryableError('Cloudflare MCP is not configured in sandbox codex config.');
   }
   if (
-    stdout.includes('Codex OPENAI_API_KEY suffix: missing')
-    && stdout.includes('Runtime OPENAI_API_KEY suffix: missing')
-    && stdout.includes('Codex access_token suffix: missing')
+    stdout.includes('Codex OPENAI_API_KEY present: no')
+    && stdout.includes('Runtime OPENAI_API_KEY present: no')
+    && stdout.includes('Codex access_token present: no')
   ) {
     throw await createNonRetryableError('Codex auth file is present but contains no usable credentials.');
   }

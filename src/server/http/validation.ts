@@ -58,6 +58,21 @@ function readPositiveInteger(value: unknown, field: string, required = false): n
   throw badRequest(`Invalid ${field}.`);
 }
 
+function readIsoTimestamp(value: unknown, field: string, required = false): string | undefined {
+  const input = readTrimmedString(value, field, required);
+  if (typeof input === 'undefined') {
+    return undefined;
+  }
+  if (!input) {
+    throw badRequest(`Invalid ${field}.`);
+  }
+  const parsed = new Date(input);
+  if (Number.isNaN(parsed.getTime())) {
+    throw badRequest(`Invalid ${field}.`);
+  }
+  return parsed.toISOString();
+}
+
 function readStringArray(value: unknown, field: string, required = true): string[] | undefined {
   if (Array.isArray(value) && value.every((item) => typeof item === 'string')) {
     return value;
@@ -642,8 +657,8 @@ export function parseAuthSignupInput(body: unknown): AuthSignupInput {
   const seatLimit = readPositiveInteger(tenantInput?.seatLimit ?? body.seatLimit, 'seatLimit', false);
   const defaultSeatLimit = readPositiveInteger(tenantInput?.defaultSeatLimit ?? body.defaultSeatLimit, 'defaultSeatLimit', false);
 
-  const password = readTrimmedString(body.password, 'password')!;
-  if (!password) {
+  const password = readString(body.password, 'password')!;
+  if (!password.length) {
     throw badRequest('Invalid password.');
   }
 
@@ -663,8 +678,8 @@ export function parseAuthLoginInput(body: unknown): AuthLoginInput {
     throw badRequest('Invalid login payload.');
   }
 
-  const password = readTrimmedString(body.password, 'password')!;
-  if (!password) {
+  const password = readString(body.password, 'password')!;
+  if (!password.length) {
     throw badRequest('Invalid password.');
   }
 
@@ -689,12 +704,16 @@ export function parseAcceptTenantInviteInput(body: unknown): AcceptTenantInviteI
   if (!isRecord(body)) {
     throw badRequest('Invalid invite accept payload.');
   }
-  const password = readTrimmedString(body.password, 'password')!;
-  if (!password) {
+  const token = readString(body.token, 'token')!;
+  if (!token.length) {
+    throw badRequest('Invalid token.');
+  }
+  const password = readString(body.password, 'password')!;
+  if (!password.length) {
     throw badRequest('Invalid password.');
   }
   return {
-    token: readTrimmedString(body.token, 'token')!,
+    token,
     password,
     displayName: readTrimmedString(body.displayName, 'displayName', false)
   };
@@ -704,10 +723,14 @@ export function parseCreateUserApiTokenInput(body: unknown): CreateUserApiTokenI
   if (!isRecord(body)) {
     throw badRequest('Invalid API token payload.');
   }
+  const name = readTrimmedString(body.name, 'name')!;
+  if (!name) {
+    throw badRequest('Invalid name.');
+  }
   return {
-    name: readTrimmedString(body.name, 'name')!,
+    name,
     scopes: readStringArray(body.scopes, 'scopes', false),
-    expiresAt: readTrimmedString(body.expiresAt, 'expiresAt', false)
+    expiresAt: readIsoTimestamp(body.expiresAt, 'expiresAt', false)
   };
 }
 

@@ -118,6 +118,18 @@ class FakeTenantAuthDb {
       return { results: this.users.filter((row) => row.email === email).slice(0, 1) };
     }
 
+    if (sql === 'UPDATE users SET password_hash = ?, updated_at = ? WHERE external_id = ?') {
+      const passwordHash = String(bindings[0]);
+      const updatedAt = String(bindings[1]);
+      const userId = String(bindings[2]);
+      this.users = this.users.map((row) => (
+        row.external_id === userId
+          ? { ...row, password_hash: passwordHash, updated_at: updatedAt }
+          : row
+      ));
+      return {};
+    }
+
     if (sql === 'INSERT INTO user_sessions (external_id, user_id, token_hash, expires_at, last_seen_at) VALUES (?, ?, ?, ?, ?)') {
       this.userSessions.push({
         external_id: bindings[0],
@@ -422,5 +434,30 @@ describe('tenant-auth-db single-tenant auth store', () => {
       password: 'secret-pass',
       tenantId: 'tenant_other'
     })).rejects.toMatchObject({ body: { code: 'FORBIDDEN' } });
+  });
+
+  it('upgrades legacy SHA-256 password hashes on successful login', async () => {
+    const created = await signup(env, {
+      email: 'owner@example.com',
+      password: 'secret-pass',
+      tenant: { name: 'ignored' }
+    });
+
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode('secret-pass'));
+    const legacyHash = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+    db.users = db.users.map((row) => (
+      row.external_id === created.user.id
+        ? { ...row, password_hash: legacyHash }
+        : row
+    ));
+
+    const loggedIn = await login(env, {
+      email: 'owner@example.com',
+      password: 'secret-pass'
+    });
+    expect(loggedIn.user.id).toBe(created.user.id);
+
+    const upgraded = db.users.find((row) => row.external_id === created.user.id);
+    expect(String(upgraded?.password_hash)).toMatch(/^pbkdf2_sha256\$\d+\$[a-f0-9]+\$[a-f0-9]{64}$/);
   });
 });

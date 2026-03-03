@@ -136,7 +136,7 @@ function buildSandbox(events: SandboxEvent[]): FakeSandbox {
             'Codex auth file: /root/.codex/auth.json',
             'Codex config file: /root/.codex/config.toml',
             'Cloudflare MCP configured: yes',
-            'Codex OPENAI_API_KEY suffix: 1234'
+            'Codex OPENAI_API_KEY present: yes'
           ].join('\n')
         };
       }

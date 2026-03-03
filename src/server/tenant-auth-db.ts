@@ -68,6 +68,9 @@ const DEFAULT_SEAT_LIMIT = 100;
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 30;
 const INVITE_TTL_MS = 1000 * 60 * 60 * 24 * 30;
 const SINGLE_TENANT_FALLBACK_ID = 'tenant_local';
+const PASSWORD_HASH_SCHEME = 'pbkdf2_sha256';
+const PASSWORD_HASH_ITERATIONS = 210_000;
+const PASSWORD_SALT_BYTES = 16;
 
 let schemaReady: Promise<void> | undefined;
 
@@ -229,6 +232,107 @@ async function hashSecret(input: string): Promise<string> {
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
+function hexToByteValues(hex: string): number[] {
+  if (hex.length % 2 !== 0) {
+    throw new Error('Invalid hex input.');
+  }
+  const bytes: number[] = [];
+  for (let index = 0; index < hex.length; index += 2) {
+    const value = Number.parseInt(hex.slice(index, index + 2), 16);
+    if (Number.isNaN(value)) {
+      throw new Error('Invalid hex input.');
+    }
+    bytes.push(value);
+  }
+  return bytes;
+}
+
+function bytesToHex(bytes: Uint8Array): string {
+  return [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+function timingSafeEqual(left: string, right: string): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+  let diff = 0;
+  for (let index = 0; index < left.length; index += 1) {
+    diff |= left.charCodeAt(index) ^ right.charCodeAt(index);
+  }
+  return diff === 0;
+}
+
+function createRandomHex(bytes: number): string {
+  const values = new Uint8Array(bytes);
+  crypto.getRandomValues(values);
+  return bytesToHex(values);
+}
+
+async function derivePasswordHash(password: string, saltHex: string, iterations: number): Promise<string> {
+  const keyMaterial = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveBits']);
+  const bits = await crypto.subtle.deriveBits(
+    {
+      name: 'PBKDF2',
+      hash: 'SHA-256',
+      salt: Uint8Array.from(hexToByteValues(saltHex)),
+      iterations
+    },
+    keyMaterial,
+    256
+  );
+  return bytesToHex(new Uint8Array(bits));
+}
+
+function parsePasswordHash(hash: string): { iterations: number; saltHex: string; digestHex: string } | undefined {
+  const parts = hash.split('$');
+  if (parts.length !== 4 || parts[0] !== PASSWORD_HASH_SCHEME) {
+    return undefined;
+  }
+  const iterations = Number.parseInt(parts[1] ?? '', 10);
+  const saltHex = parts[2] ?? '';
+  const digestHex = parts[3] ?? '';
+  if (
+    !Number.isInteger(iterations)
+    || iterations < 1
+    || !/^[a-f0-9]+$/i.test(saltHex)
+    || saltHex.length < 2
+    || saltHex.length % 2 !== 0
+    || !/^[a-f0-9]{64}$/i.test(digestHex)
+  ) {
+    return undefined;
+  }
+  return { iterations, saltHex: saltHex.toLowerCase(), digestHex: digestHex.toLowerCase() };
+}
+
+function isLegacySha256Hash(hash: string): boolean {
+  return /^[a-f0-9]{64}$/i.test(hash);
+}
+
+async function hashPassword(password: string): Promise<string> {
+  const saltHex = createRandomHex(PASSWORD_SALT_BYTES);
+  const digestHex = await derivePasswordHash(password, saltHex, PASSWORD_HASH_ITERATIONS);
+  return `${PASSWORD_HASH_SCHEME}$${PASSWORD_HASH_ITERATIONS}$${saltHex}$${digestHex}`;
+}
+
+async function verifyPassword(password: string, passwordHash: string): Promise<{ valid: boolean; upgradedHash?: string }> {
+  const parsed = parsePasswordHash(passwordHash);
+  if (parsed) {
+    const computed = await derivePasswordHash(password, parsed.saltHex, parsed.iterations);
+    return { valid: timingSafeEqual(computed, parsed.digestHex) };
+  }
+
+  if (!isLegacySha256Hash(passwordHash)) {
+    return { valid: false };
+  }
+
+  const legacyHash = await hashSecret(password);
+  if (!timingSafeEqual(legacyHash, passwordHash.toLowerCase())) {
+    return { valid: false };
+  }
+
+  return { valid: true, upgradedHash: await hashPassword(password) };
+}
+
 function stripUserSecret(user: StoredUser): User {
   return { id: user.id, email: user.email, displayName: user.displayName, createdAt: user.createdAt, updatedAt: user.updatedAt };
 }
@@ -324,7 +428,7 @@ export async function signup(env: Env, input: {
 
   await db.prepare(
     'INSERT INTO users (external_id, email, display_name, role, password_hash, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
-  ).bind(userId, email, input.displayName?.trim() || null, role, await hashSecret(input.password), now, now).run();
+  ).bind(userId, email, input.displayName?.trim() || null, role, await hashPassword(input.password), now, now).run();
 
   return login(env, { email, password: input.password });
 }
@@ -338,8 +442,14 @@ export async function login(env: Env, input: { email: string; password: string; 
     throw unauthorized('Invalid email or password.');
   }
   const user = mapStoredUser(userRow);
-  if (user.passwordHash !== await hashSecret(input.password)) {
+  const passwordVerification = await verifyPassword(input.password, user.passwordHash);
+  if (!passwordVerification.valid) {
     throw unauthorized('Invalid email or password.');
+  }
+  if (passwordVerification.upgradedHash) {
+    await db.prepare('UPDATE users SET password_hash = ?, updated_at = ? WHERE external_id = ?')
+      .bind(passwordVerification.upgradedHash, new Date().toISOString(), user.id)
+      .run();
   }
 
   const tenantId = await getTenantId(db);

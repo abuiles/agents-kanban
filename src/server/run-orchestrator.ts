@@ -156,7 +156,7 @@ export async function executeRunJob(env: Env, params: RunJobParams, sleepFn: Sle
 
     try {
       await emitCommandLifecycle(repoBoard, params.runId, 'bootstrap', 'mkdir -p /workspace/repo', () => sandbox.exec('mkdir -p /workspace/repo'));
-      await repoBoard.appendRunLogs(params.runId, [buildRunLog(params.runId, `${scmAdapter.provider} token suffix: ${scmCredential.token.slice(-4)}`, 'bootstrap')]);
+      await repoBoard.appendRunLogs(params.runId, [buildRunLog(params.runId, `Using configured ${scmAdapter.provider} credentials.`, 'bootstrap')]);
       await configureSandboxRuntimeSecrets(sandbox, env as Stage3Env);
       await llmAdapter.restoreAuth({ ...llmContext, repo });
       await sandbox.gitCheckout(scmAdapter.buildCloneUrl(repo, scmCredential), {

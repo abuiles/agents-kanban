@@ -82,10 +82,9 @@ export async function handleAuthSignup(request: Request, env: Env): Promise<Resp
       user: result.user,
       session: result.session,
       activeTenantId: result.activeTenantId,
-      memberships: result.memberships,
-      token: result.token
+      memberships: result.memberships
     }, { status: 201 });
-    response.headers.append('Set-Cookie', buildSessionCookie(result.token));
+    response.headers.append('Set-Cookie', buildSessionCookie(request, result.token));
     return response;
   });
 }
@@ -98,10 +97,9 @@ export async function handleAuthLogin(request: Request, env: Env): Promise<Respo
       user: result.user,
       session: result.session,
       activeTenantId: result.activeTenantId,
-      memberships: result.memberships,
-      token: result.token
+      memberships: result.memberships
     });
-    response.headers.append('Set-Cookie', buildSessionCookie(result.token));
+    response.headers.append('Set-Cookie', buildSessionCookie(request, result.token));
     return response;
   });
 }
@@ -114,7 +112,7 @@ export async function handleAuthLogout(request: Request, env: Env): Promise<Resp
       await tenantAuthDb.logout(env, requestContext.sessionId);
     }
     const response = json({ ok: true });
-    response.headers.append('Set-Cookie', clearSessionCookie());
+    response.headers.append('Set-Cookie', clearSessionCookie(request));
     return response;
   });
 }
@@ -199,7 +197,7 @@ export async function handleSetTenantContext(request: Request, env: Env): Promis
     const session = await tenantAuthDb.setSessionActiveTenant(env, requestContext.sessionId, tenantId);
     const response = json({ activeTenantId: session.activeTenantId, session });
     if (requestContext.sessionToken) {
-      response.headers.append('Set-Cookie', buildSessionCookie(requestContext.sessionToken));
+      response.headers.append('Set-Cookie', buildSessionCookie(request, requestContext.sessionToken));
     }
     return response;
   });
@@ -312,12 +310,11 @@ export async function handleAcceptInvite(request: Request, env: Env, params: Rou
     const response = json({
       user: signup.user,
       session: signup.session,
-      token: signup.token,
       activeTenantId: signup.activeTenantId,
       memberships: [accepted.membership],
       invite: accepted.invite
     }, { status: 201 });
-    response.headers.append('Set-Cookie', buildSessionCookie(signup.token));
+    response.headers.append('Set-Cookie', buildSessionCookie(request, signup.token));
     return response;
   });
 }
@@ -1115,10 +1112,12 @@ function isUnauthorizedError(error: unknown) {
     && (error as { status?: unknown }).status === 401;
 }
 
-function buildSessionCookie(token: string) {
-  return `minions_session=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000`;
+function buildSessionCookie(request: Request, token: string) {
+  const secure = new URL(request.url).protocol === 'https:' ? '; Secure' : '';
+  return `minions_session=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000${secure}`;
 }
 
-function clearSessionCookie() {
-  return 'minions_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0';
+function clearSessionCookie(request: Request) {
+  const secure = new URL(request.url).protocol === 'https:' ? '; Secure' : '';
+  return `minions_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secure}`;
 }
