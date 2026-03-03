@@ -30,13 +30,13 @@ export const codexLlmAdapter: LlmAdapter = {
   },
 
   async restoreAuth(context) {
-    const env = context.env as Env & { RUN_ARTIFACTS?: R2Bucket };
-    const { sandbox, repoBoard, runId, repo } = context;
-    const authBundleKey = repo.codexAuthBundleR2Key ?? repo.llmAuthBundleR2Key;
+    const env = context.env as Env & { RUN_ARTIFACTS?: R2Bucket; CODEX_AUTH_BUNDLE_R2_KEY?: string };
+    const { sandbox, repoBoard, runId } = context;
+    const authBundleKey = env.CODEX_AUTH_BUNDLE_R2_KEY?.trim();
 
     if (!authBundleKey || !env.RUN_ARTIFACTS) {
       const reason = !authBundleKey
-        ? 'No Codex auth bundle configured for this repo.'
+        ? 'No global CODEX_AUTH_BUNDLE_R2_KEY is configured.'
         : 'RUN_ARTIFACTS binding is not configured.';
       await repoBoard.appendRunLogs(runId, [buildRunLog(runId, reason, 'bootstrap', 'error')]);
       throw await createNonRetryableError(reason);
@@ -96,6 +96,9 @@ fi
   async logDiagnostics(context, request) {
     const diagnostics = await context.sandbox.exec(
       `bash -lc ${shellQuote(`set -euo pipefail
+if [ -f /workspace/agent-env.sh ]; then
+  . /workspace/agent-env.sh
+fi
 command -v codex
 codex --version
 printf 'Codex model: ${request.model}\\n'
@@ -150,6 +153,9 @@ printf 'Codex reasoning effort: ${request.reasoningEffort ?? 'medium'}\\n'
     await context.sandbox.writeFile('/workspace/task.txt', request.prompt);
     const command = `bash -lc ${shellQuote(`set -euo pipefail
 export HOME="\${HOME:-/root}"
+if [ -f /workspace/agent-env.sh ]; then
+  . /workspace/agent-env.sh
+fi
 cd ${request.cwd}
 cat /workspace/task.txt | codex exec -m ${request.model} -c model_reasoning_effort="${request.reasoningEffort ?? 'medium'}" --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check -C ${request.cwd} --json -
 `)}`;
@@ -169,6 +175,9 @@ cat /workspace/task.txt | codex exec -m ${request.model} -c model_reasoning_effo
     const schemaArg = request.outputSchema ? '--output-schema /workspace/prompt-output-schema.json' : '';
     const command = `bash -lc ${shellQuote(`set -euo pipefail
 export HOME="\${HOME:-/root}"
+if [ -f /workspace/agent-env.sh ]; then
+  . /workspace/agent-env.sh
+fi
 mkdir -p ${request.cwd}
 cd ${request.cwd}
 rm -f /workspace/prompt-last-message.txt
@@ -529,6 +538,8 @@ if (fs.existsSync(configPath) && fs.statSync(configPath).isFile()) {
 }
 const apiKey = typeof data.OPENAI_API_KEY === 'string' && data.OPENAI_API_KEY ? data.OPENAI_API_KEY : null;
 console.log(\`Codex OPENAI_API_KEY suffix: \${apiKey ? apiKey.slice(-4) : 'missing'}\`);
+const runtimeApiKey = typeof process.env.OPENAI_API_KEY === 'string' && process.env.OPENAI_API_KEY ? process.env.OPENAI_API_KEY : null;
+console.log(\`Runtime OPENAI_API_KEY suffix: \${runtimeApiKey ? runtimeApiKey.slice(-4) : 'missing'}\`);
 const accessToken = data.tokens && typeof data.tokens.access_token === 'string' && data.tokens.access_token
   ? data.tokens.access_token
   : null;
@@ -538,6 +549,9 @@ console.log(\`Codex access_token suffix: \${accessToken ? accessToken.slice(-4) 
   const diagnostics = await sandbox.exec(
     `bash -lc ${shellQuote(`set -euo pipefail
 export HOME="\${HOME:-/root}"
+if [ -f /workspace/agent-env.sh ]; then
+  . /workspace/agent-env.sh
+fi
 node /workspace/codex-auth-diagnostics.mjs
 `)}`
   );
@@ -555,7 +569,11 @@ node /workspace/codex-auth-diagnostics.mjs
   if (stdout.includes('Cloudflare MCP configured: no')) {
     throw await createNonRetryableError('Cloudflare MCP is not configured in sandbox codex config.');
   }
-  if (stdout.includes('Codex OPENAI_API_KEY suffix: missing') && stdout.includes('Codex access_token suffix: missing')) {
+  if (
+    stdout.includes('Codex OPENAI_API_KEY suffix: missing')
+    && stdout.includes('Runtime OPENAI_API_KEY suffix: missing')
+    && stdout.includes('Codex access_token suffix: missing')
+  ) {
     throw await createNonRetryableError('Codex auth file is present but contains no usable credentials.');
   }
 }

@@ -248,7 +248,9 @@ function createHarness(task: Task, repo: Repo) {
     Sandbox: {},
     REPO_BOARD: { getByName: () => repoBoard },
     BOARD_INDEX: { getByName: () => board },
-    SECRETS_KV: { get: vi.fn().mockResolvedValue('ghp_test_1234') },
+    GITHUB_TOKEN: 'ghp_test_1234',
+    OPENAI_API_KEY: 'sk-test-1234',
+    CODEX_AUTH_BUNDLE_R2_KEY: 'auth/codex-auth.tgz',
     RUN_ARTIFACTS: {
       get: vi.fn().mockResolvedValue({
         arrayBuffer: async () => new TextEncoder().encode('bundle').buffer

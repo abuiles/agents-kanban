@@ -16,13 +16,14 @@ Use this flow to verify:
 
 ### SCM credentials
 
-The runtime resolves credentials in this order:
+The runtime resolves SCM and OpenAI credentials from Worker secrets only:
 
-1. Provider credential registry (`/api/scm/credentials`) keyed by provider + host
-2. (GitHub only) legacy fallback in KV key `github_pat`
-3. Optional platform support-admin bootstrap via worker env:
-   - `PLATFORM_ADMIN_EMAIL`
-   - `PLATFORM_ADMIN_PASSWORD`
+- `GITHUB_TOKEN`
+- `GITLAB_TOKEN`
+- `OPENAI_API_KEY`
+- Optional platform support-admin bootstrap via worker env:
+  - `PLATFORM_ADMIN_EMAIL`
+  - `PLATFORM_ADMIN_PASSWORD`
 
 Set this for local examples:
 
@@ -30,79 +31,20 @@ Set this for local examples:
 BASE="http://localhost:5173/api"
 ```
 
-### GitHub keys
-
-- Store per-host token in repository credential registry:
+### Configure runtime secrets
 
 ```bash
-curl -X POST "$BASE/api/scm/credentials" \
-  -H "content-type: application/json" \
-  -d '{
-    "scmProvider": "github",
-    "host": "github.com",
-    "label": "GitHub PAT",
-    "token": "ghp_..."
-  }'
+npx wrangler secret put GITHUB_TOKEN
+npx wrangler secret put GITLAB_TOKEN
+npx wrangler secret put OPENAI_API_KEY
 ```
 
-- Legacy fallback (still supported): `github_pat` in `SECRETS_KV`
-
-```bash
-npx wrangler kv key put github_pat "ghp_..." --binding SECRETS_KV --remote
-```
-
-- Self-hosted GitHub Enterprise
-
-```bash
-{
-  "scmProvider": "github",
-  "host": "github.example.com",
-  "label": "GitHub Enterprise",
-  "token": "ghp_..."
-}
-```
-
-### GitLab keys
-
-GitLab tokens must be registered in the credential registry (no legacy KV fallback):
-
-- Hosted GitLab
-
-```bash
-curl -X POST "$BASE/api/scm/credentials" \
-  -H "content-type: application/json" \
-  -d '{
-    "scmProvider": "gitlab",
-    "host": "gitlab.com",
-    "label": "GitLab Token",
-    "token": "glpat_..."
-  }'
-```
-
-- Self-managed GitLab
-
-```bash
-{
-  "scmProvider": "gitlab",
-  "host": "gitlab.example.internal",
-  "label": "Self-hosted GitLab",
-  "token": "glpat_..."
-}
-```
-
-### Verify registered credentials
-
-```bash
-curl "$BASE/api/scm/credentials"
-```
-
-Expected output includes `hasSecret: true` per host/provider row.
+Set only the providers you use (`GITHUB_TOKEN` for GitHub repos, `GITLAB_TOKEN` for GitLab repos).
 
 ## 3) Required infrastructure bindings
 
 These are mandatory for non-mocked runs:
 
-- KV: `SECRETS_KV`
 - R2 bucket: `RUN_ARTIFACTS` (artifacts + optional Codex auth bundle)
 - D1: `TENANT_DB` (tenant/auth/admin persistence)
 - Workflow: `RUN_WORKFLOW`
@@ -156,13 +98,15 @@ npx wrangler r2 object put my-sandbox-run-artifacts/auth/codex-auth.tgz --file .
 rm -rf "$tmp_dir"
 ```
 
-Set `codexAuthBundleR2Key` on the repo to:
+Set the global Worker secret `CODEX_AUTH_BUNDLE_R2_KEY` to:
 
 ```text
 auth/codex-auth.tgz
 ```
 
-Use `POST /api/repos` or `PATCH /api/repos/:repoId` to set/override this field.
+```bash
+npx wrangler secret put CODEX_AUTH_BUNDLE_R2_KEY
+```
 
 ## 4.5) Container capacity and concurrency checks
 
@@ -236,13 +180,12 @@ You can continue to use `npx wrangler dev` for Worker-only execution on the lega
 ## 8) Troubleshooting matrix
 
 - Missing run start
-  - Ensure repo has enabled credentials for `repo.scmProvider` + `repo.scmBaseUrl` host
-  - For GitHub, confirm one of:
-    - matching `/api/scm/credentials` row
-    - KV `github_pat`
+  - Ensure Worker secrets are configured for `repo.scmProvider`:
+    - GitHub repos require `GITHUB_TOKEN`
+    - GitLab repos require `GITLAB_TOKEN`
 - Missing auth for Codex
   - Ensure R2 contains `auth/codex-auth.tgz`
-  - Ensure repo `codexAuthBundleR2Key` is exactly that path
+  - Ensure Worker secret `CODEX_AUTH_BUNDLE_R2_KEY` points to that object key
 - No preview URL
   - Confirm preview mode and preview check config are correct
 - Evidence never finishes
@@ -252,8 +195,8 @@ You can continue to use `npx wrangler dev` for Worker-only execution on the lega
 
 | Provider | Runtime host key | Runtime credential path | Key format |
 | --- | --- | --- | --- |
-| GitHub | `host` from repo URL (e.g., `github.com`) | Registry + optional KV fallback | `POST /api/scm/credentials`, `npx wrangler kv key put github_pat` |
-| GitLab | `host` from repo URL (e.g., `gitlab.com` or self-hosted host) | Registry only | `POST /api/scm/credentials` |
+| GitHub | `host` from repo URL (e.g., `github.com`) | Worker secret | `GITHUB_TOKEN` |
+| GitLab | `host` from repo URL (e.g., `gitlab.com` or self-hosted host) | Worker secret | `GITLAB_TOKEN` |
 
 ## 10) Sync with docs
 

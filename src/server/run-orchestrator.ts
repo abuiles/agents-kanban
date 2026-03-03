@@ -23,8 +23,10 @@ type WorkflowBinding<T> = {
 
 type Stage3Env = Env & {
   RUN_WORKFLOW?: WorkflowBinding<RunJobParams>;
-  SECRETS_KV?: KVNamespace;
   RUN_ARTIFACTS?: R2Bucket;
+  GITHUB_TOKEN?: string;
+  GITLAB_TOKEN?: string;
+  OPENAI_API_KEY?: string;
 };
 
 type SleepFn = (name: string, duration: number | `${number} ${string}`) => Promise<void>;
@@ -124,12 +126,12 @@ export async function executeRunJob(env: Env, params: RunJobParams, sleepFn: Sle
         params.runId,
         sleepFn,
         scmAdapter,
-        await getScmCredential(env as Stage3Env, board, repo, scmAdapter),
+        await getScmCredential(env as Stage3Env, repo, scmAdapter),
         promptRecipeRuntime
       );
     }
 
-    const scmCredential = await getScmCredential(env as Stage3Env, board, repo, scmAdapter);
+    const scmCredential = await getScmCredential(env as Stage3Env, repo, scmAdapter);
     const sandbox = getSandbox(env.Sandbox, params.runId);
     const llmContext = { env, sandbox, repoBoard, runId: params.runId };
     sandboxStartedAtMs = Date.now();
@@ -155,6 +157,7 @@ export async function executeRunJob(env: Env, params: RunJobParams, sleepFn: Sle
     try {
       await emitCommandLifecycle(repoBoard, params.runId, 'bootstrap', 'mkdir -p /workspace/repo', () => sandbox.exec('mkdir -p /workspace/repo'));
       await repoBoard.appendRunLogs(params.runId, [buildRunLog(params.runId, `${scmAdapter.provider} token suffix: ${scmCredential.token.slice(-4)}`, 'bootstrap')]);
+      await configureSandboxRuntimeSecrets(sandbox, env as Stage3Env);
       await llmAdapter.restoreAuth({ ...llmContext, repo });
       await sandbox.gitCheckout(scmAdapter.buildCloneUrl(repo, scmCredential), {
         branch: repo.defaultBranch,
@@ -437,7 +440,7 @@ npx -y playwright install chromium
   await persistArtifactManifest(env, updated);
   if (getRunReviewNumber(updated)) {
     const scmAdapter = getScmAdapter(repo);
-    const scmCredential = await getScmCredential(env, board, repo, scmAdapter);
+    const scmCredential = await getScmCredential(env, repo, scmAdapter);
     await scmAdapter.upsertRunComment(repo, task, updated, scmCredential);
   }
   await repoBoard.transitionRun(runId, { status: 'DONE', evidenceStatus: 'READY', endedAt: new Date().toISOString(), appendTimelineNote: 'Evidence captured and manifest stored.' });
@@ -605,6 +608,7 @@ function createPromptRecipeRuntime(
 
       if (!prepared) {
         await emitCommandLifecycle(repoBoard, runId, 'preview', 'mkdir -p /workspace/preview', () => sandbox.exec('mkdir -p /workspace/preview'));
+        await configureSandboxRuntimeSecrets(sandbox, env);
         await llmAdapter.restoreAuth({ ...llmContext, repo });
         await llmAdapter.ensureInstalled(llmContext);
         await llmAdapter.logDiagnostics(llmContext, request);
@@ -675,24 +679,32 @@ function formatPreviewDiscoveryLog(discovery: PreviewAdapterResult) {
 
 async function getScmCredential(
   env: Stage3Env,
-  board: DurableObjectStub<BoardIndexDO>,
   repo: Repo,
   scmAdapter: ScmAdapter
 ): Promise<ScmAdapterCredential> {
-  const registryToken = await board.getScmCredentialSecret(scmAdapter.provider, getRepoHost(repo));
-  if (registryToken) {
-    return { token: registryToken };
+  if (scmAdapter.provider === 'github' && env.GITHUB_TOKEN?.trim()) {
+    return { token: env.GITHUB_TOKEN.trim() };
   }
-
-  if (scmAdapter.provider === 'github') {
-    const pat = await env.SECRETS_KV?.get('github_pat');
-    if (!pat) {
-      throw new NonRetryableError('Missing GitHub credential for this host. Configure the SCM credential registry or `github_pat` in KV.');
-    }
-    return { token: pat };
+  if (scmAdapter.provider === 'gitlab' && env.GITLAB_TOKEN?.trim()) {
+    return { token: env.GITLAB_TOKEN.trim() };
   }
+  throw new NonRetryableError(
+    `Missing ${scmAdapter.provider === 'github' ? 'GITHUB_TOKEN' : 'GITLAB_TOKEN'} secret for provider ${scmAdapter.provider} host ${getRepoHost(repo)}.`
+  );
+}
 
-  throw new NonRetryableError(`Missing SCM credential for provider ${scmAdapter.provider} host ${getRepoHost(repo)}.`);
+async function configureSandboxRuntimeSecrets(
+  sandbox: ReturnType<typeof getSandbox>,
+  env: Stage3Env
+) {
+  const exports: string[] = [];
+  if (env.OPENAI_API_KEY?.trim()) {
+    exports.push(`export OPENAI_API_KEY=${shellQuote(env.OPENAI_API_KEY.trim())}`);
+  }
+  await sandbox.writeFile(
+    '/workspace/agent-env.sh',
+    exports.length ? `${exports.join('\n')}\n` : '# no runtime env exports configured\n'
+  );
 }
 
 async function persistArtifactManifest(env: Stage3Env, run: Awaited<ReturnType<RepoBoardDO['getRun']>>) {
