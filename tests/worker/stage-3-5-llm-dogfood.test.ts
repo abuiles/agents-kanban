@@ -12,7 +12,7 @@ function createExecutionContext(): ExecutionContext {
   } as ExecutionContext;
 }
 
-async function api<T>(path: string, init?: RequestInit): Promise<T> {
+async function api<T>(path: string, init?: RequestInit & { sessionToken?: string }): Promise<T> {
   const response = await apiResponse(path, init);
   if (!response.ok) {
     throw new Error(`API ${init?.method ?? 'GET'} ${path} failed with status ${response.status}.`);
@@ -20,15 +20,107 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return await response.json() as T;
 }
 
-async function apiResponse(path: string, init?: RequestInit): Promise<Response> {
+async function apiResponse(path: string, init?: RequestInit & { sessionToken?: string }): Promise<Response> {
   const request = new Request(`https://minions.example.test${path}`, {
     ...init,
     headers: {
       'Content-Type': 'application/json',
+      ...(init?.sessionToken ? { 'x-session-token': init.sessionToken } : {}),
       ...(init?.headers ?? {})
     }
   });
   return worker.fetch(request, env, createExecutionContext());
+}
+
+async function ensureTenantDbSeed() {
+  const db = env.TENANT_DB;
+  const now = new Date().toISOString();
+  await db.prepare(
+    `CREATE TABLE IF NOT EXISTS app_tenant_config (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      external_id TEXT NOT NULL UNIQUE,
+      slug TEXT NOT NULL,
+      name TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'active',
+      domain TEXT,
+      created_by_user_id TEXT,
+      seat_limit INTEGER NOT NULL DEFAULT 100,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )`
+  ).run();
+  await db.prepare(
+    `CREATE TABLE IF NOT EXISTS users (
+      id INTEGER PRIMARY KEY,
+      external_id TEXT NOT NULL UNIQUE,
+      email TEXT NOT NULL UNIQUE,
+      display_name TEXT,
+      role TEXT NOT NULL,
+      password_hash TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )`
+  ).run();
+  await db.prepare(
+    `CREATE TABLE IF NOT EXISTS user_sessions (
+      id INTEGER PRIMARY KEY,
+      external_id TEXT NOT NULL UNIQUE,
+      user_id TEXT NOT NULL,
+      token_hash TEXT NOT NULL UNIQUE,
+      expires_at TEXT NOT NULL,
+      last_seen_at TEXT NOT NULL
+    )`
+  ).run();
+  await db.prepare(
+    `CREATE TABLE IF NOT EXISTS invites (
+      id INTEGER PRIMARY KEY,
+      external_id TEXT NOT NULL UNIQUE,
+      email TEXT NOT NULL,
+      role TEXT NOT NULL,
+      status TEXT NOT NULL,
+      token_hash TEXT NOT NULL UNIQUE,
+      created_by_user_id TEXT NOT NULL,
+      accepted_by_user_id TEXT,
+      accepted_at TEXT,
+      revoked_at TEXT,
+      expires_at TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )`
+  ).run();
+  await db.prepare(
+    `CREATE TABLE IF NOT EXISTS user_api_tokens (
+      id INTEGER PRIMARY KEY,
+      external_id TEXT NOT NULL UNIQUE,
+      user_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      scopes_json TEXT,
+      token_hash TEXT NOT NULL UNIQUE,
+      expires_at TEXT,
+      last_used_at TEXT,
+      revoked_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )`
+  ).run();
+  await db.prepare(
+    `INSERT OR IGNORE INTO app_tenant_config
+      (id, external_id, slug, name, status, domain, created_by_user_id, seat_limit, created_at, updated_at)
+     VALUES (1, ?, ?, ?, 'active', NULL, 'system', 100, ?, ?)`
+  ).bind('tenant_local', 'local', 'Local Tenant', now, now).run();
+}
+
+async function createSessionToken() {
+  await ensureTenantDbSeed();
+  const signup = await api<{ token: string }>('/api/auth/signup', {
+    method: 'POST',
+    body: JSON.stringify({
+      email: `dogfood-llm-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}@example.com`,
+      password: 'secret-pass',
+      tenantName: 'Local Tenant'
+    })
+  });
+  return signup.token;
 }
 
 function taskInput(repoId: string, title: string, patch: Partial<JsonValue> = {}) {
@@ -45,8 +137,10 @@ function taskInput(repoId: string, title: string, patch: Partial<JsonValue> = {}
 
 describe('Stage 3.5 LLM adapter dogfood API coverage', () => {
   it('keeps Codex session persistence and resumable takeover visible through the API surfaces', async () => {
+    const sessionToken = await createSessionToken();
     const repo = await api<Repo>('/api/repos', {
       method: 'POST',
+      sessionToken,
       body: JSON.stringify({
         slug: 'abuiles/minions-codex-dogfood',
         baselineUrl: 'https://codex-dogfood.example.com',
@@ -55,6 +149,7 @@ describe('Stage 3.5 LLM adapter dogfood API coverage', () => {
     });
     const task = await api<Task>('/api/tasks', {
       method: 'POST',
+      sessionToken,
       body: JSON.stringify(taskInput(repo.repoId, 'Codex adapter truthfulness', {
         llmAdapter: 'codex',
         llmModel: 'gpt-5.3-codex',
@@ -92,10 +187,10 @@ describe('Stage 3.5 LLM adapter dogfood API coverage', () => {
       codexResumeCommand: 'codex resume thread-123'
     });
 
-    const detail = await api<TaskDetail>(`/api/tasks/${encodeURIComponent(task.taskId)}`);
-    const terminal = await api<TerminalBootstrap>(`/api/runs/${encodeURIComponent(run.runId)}/terminal`);
-    const takenOver = await api<AgentRun>(`/api/runs/${encodeURIComponent(run.runId)}/takeover`, { method: 'POST' });
-    const exported = await api<BoardSnapshotV1>('/api/debug/export');
+    const detail = await api<TaskDetail>(`/api/tasks/${encodeURIComponent(task.taskId)}`, { sessionToken });
+    const terminal = await api<TerminalBootstrap>(`/api/runs/${encodeURIComponent(run.runId)}/terminal`, { sessionToken });
+    const takenOver = await api<AgentRun>(`/api/runs/${encodeURIComponent(run.runId)}/takeover`, { method: 'POST', sessionToken });
+    const exported = await api<BoardSnapshotV1>('/api/debug/export', { sessionToken });
 
     expect(detail.latestRun).toMatchObject({
       runId: run.runId,
@@ -132,10 +227,11 @@ describe('Stage 3.5 LLM adapter dogfood API coverage', () => {
 
     await api('/api/debug/import', {
       method: 'POST',
+      sessionToken,
       body: JSON.stringify(exported)
     });
 
-    const reloadedDetail = await api<TaskDetail>(`/api/tasks/${encodeURIComponent(task.taskId)}`);
+    const reloadedDetail = await api<TaskDetail>(`/api/tasks/${encodeURIComponent(task.taskId)}`, { sessionToken });
     expect(reloadedDetail.latestRun).toMatchObject({
       llmAdapter: 'codex',
       llmSupportsResume: true,
@@ -149,8 +245,10 @@ describe('Stage 3.5 LLM adapter dogfood API coverage', () => {
   });
 
   it('surfaces Cursor CLI execution and non-resumable takeover truthfully through task/run APIs', async () => {
+    const sessionToken = await createSessionToken();
     const repo = await api<Repo>('/api/repos', {
       method: 'POST',
+      sessionToken,
       body: JSON.stringify({
         slug: 'abuiles/minions-cursor-dogfood',
         baselineUrl: 'https://cursor-dogfood.example.com',
@@ -159,6 +257,7 @@ describe('Stage 3.5 LLM adapter dogfood API coverage', () => {
     });
     const task = await api<Task>('/api/tasks', {
       method: 'POST',
+      sessionToken,
       body: JSON.stringify(taskInput(repo.repoId, 'Cursor CLI adapter truthfulness', {
         llmAdapter: 'cursor_cli',
         llmModel: 'cursor-default',
@@ -189,9 +288,9 @@ describe('Stage 3.5 LLM adapter dogfood API coverage', () => {
       llmSupportsResume: false
     });
 
-    const detail = await api<TaskDetail>(`/api/tasks/${encodeURIComponent(task.taskId)}`);
-    const terminal = await api<TerminalBootstrap>(`/api/runs/${encodeURIComponent(run.runId)}/terminal`);
-    const takenOver = await api<AgentRun>(`/api/runs/${encodeURIComponent(run.runId)}/takeover`, { method: 'POST' });
+    const detail = await api<TaskDetail>(`/api/tasks/${encodeURIComponent(task.taskId)}`, { sessionToken });
+    const terminal = await api<TerminalBootstrap>(`/api/runs/${encodeURIComponent(run.runId)}/terminal`, { sessionToken });
+    const takenOver = await api<AgentRun>(`/api/runs/${encodeURIComponent(run.runId)}/takeover`, { method: 'POST', sessionToken });
 
     expect(detail.latestRun).toMatchObject({
       runId: run.runId,
@@ -215,11 +314,12 @@ describe('Stage 3.5 LLM adapter dogfood API coverage', () => {
     expect(takenOver.operatorSession?.llmResumeCommand).toBeUndefined();
   });
 
-  it('rejects cross-tenant terminal and artifact reads', async () => {
+  it('rejects unauthenticated terminal and artifact reads', async () => {
+    const sessionToken = await createSessionToken();
     const repo = await api<Repo>('/api/repos', {
       method: 'POST',
+      sessionToken,
       body: JSON.stringify({
-        tenantId: 'tenant_acme',
         slug: 'acme/minions-tenant-checks',
         baselineUrl: 'https://tenant-checks.example.com',
         defaultBranch: 'main'
@@ -227,6 +327,7 @@ describe('Stage 3.5 LLM adapter dogfood API coverage', () => {
     });
     const task = await api<Task>('/api/tasks', {
       method: 'POST',
+      sessionToken,
       body: JSON.stringify(taskInput(repo.repoId, 'Tenant access checks'))
     });
     const repoBoard = env.REPO_BOARD.getByName(repo.repoId);
@@ -237,14 +338,10 @@ describe('Stage 3.5 LLM adapter dogfood API coverage', () => {
     });
     await repoBoard.storeArtifactManifest(run.runId);
 
-    const terminalResponse = await apiResponse(`/api/runs/${encodeURIComponent(run.runId)}/terminal`, {
-      headers: { 'X-Tenant-Id': 'tenant_other' }
-    });
-    const artifactResponse = await apiResponse(`/api/runs/${encodeURIComponent(run.runId)}/artifacts`, {
-      headers: { 'X-Tenant-Id': 'tenant_other' }
-    });
+    const terminalResponse = await apiResponse(`/api/runs/${encodeURIComponent(run.runId)}/terminal`);
+    const artifactResponse = await apiResponse(`/api/runs/${encodeURIComponent(run.runId)}/artifacts`);
 
-    expect(terminalResponse.status).toBe(404);
-    expect(artifactResponse.status).toBe(404);
+    expect(terminalResponse.status).toBe(401);
+    expect(artifactResponse.status).toBe(401);
   });
 });

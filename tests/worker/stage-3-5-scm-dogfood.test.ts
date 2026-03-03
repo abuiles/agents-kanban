@@ -13,11 +13,12 @@ function createExecutionContext(): ExecutionContext {
   } as ExecutionContext;
 }
 
-async function api<T>(path: string, init?: RequestInit): Promise<T> {
+async function api<T>(path: string, init?: RequestInit & { sessionToken?: string }): Promise<T> {
   const request = new Request(`https://minions.example.test${path}`, {
     ...init,
     headers: {
       'Content-Type': 'application/json',
+      ...(init?.sessionToken ? { 'x-session-token': init.sessionToken } : {}),
       ...(init?.headers ?? {})
     }
   });
@@ -26,6 +27,97 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
     throw new Error(`API ${init?.method ?? 'GET'} ${path} failed with status ${response.status}.`);
   }
   return await response.json() as T;
+}
+
+async function ensureTenantDbSeed() {
+  const db = env.TENANT_DB;
+  const now = new Date().toISOString();
+  await db.prepare(
+    `CREATE TABLE IF NOT EXISTS app_tenant_config (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      external_id TEXT NOT NULL UNIQUE,
+      slug TEXT NOT NULL,
+      name TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'active',
+      domain TEXT,
+      created_by_user_id TEXT,
+      seat_limit INTEGER NOT NULL DEFAULT 100,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )`
+  ).run();
+  await db.prepare(
+    `CREATE TABLE IF NOT EXISTS users (
+      id INTEGER PRIMARY KEY,
+      external_id TEXT NOT NULL UNIQUE,
+      email TEXT NOT NULL UNIQUE,
+      display_name TEXT,
+      role TEXT NOT NULL,
+      password_hash TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )`
+  ).run();
+  await db.prepare(
+    `CREATE TABLE IF NOT EXISTS user_sessions (
+      id INTEGER PRIMARY KEY,
+      external_id TEXT NOT NULL UNIQUE,
+      user_id TEXT NOT NULL,
+      token_hash TEXT NOT NULL UNIQUE,
+      expires_at TEXT NOT NULL,
+      last_seen_at TEXT NOT NULL
+    )`
+  ).run();
+  await db.prepare(
+    `CREATE TABLE IF NOT EXISTS invites (
+      id INTEGER PRIMARY KEY,
+      external_id TEXT NOT NULL UNIQUE,
+      email TEXT NOT NULL,
+      role TEXT NOT NULL,
+      status TEXT NOT NULL,
+      token_hash TEXT NOT NULL UNIQUE,
+      created_by_user_id TEXT NOT NULL,
+      accepted_by_user_id TEXT,
+      accepted_at TEXT,
+      revoked_at TEXT,
+      expires_at TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )`
+  ).run();
+  await db.prepare(
+    `CREATE TABLE IF NOT EXISTS user_api_tokens (
+      id INTEGER PRIMARY KEY,
+      external_id TEXT NOT NULL UNIQUE,
+      user_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      scopes_json TEXT,
+      token_hash TEXT NOT NULL UNIQUE,
+      expires_at TEXT,
+      last_used_at TEXT,
+      revoked_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )`
+  ).run();
+  await db.prepare(
+    `INSERT OR IGNORE INTO app_tenant_config
+      (id, external_id, slug, name, status, domain, created_by_user_id, seat_limit, created_at, updated_at)
+     VALUES (1, ?, ?, ?, 'active', NULL, 'system', 100, ?, ?)`
+  ).bind('tenant_local', 'local', 'Local Tenant', now, now).run();
+}
+
+async function createSessionToken() {
+  await ensureTenantDbSeed();
+  const signup = await api<{ token: string }>('/api/auth/signup', {
+    method: 'POST',
+    body: JSON.stringify({
+      email: `dogfood-scm-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}@example.com`,
+      password: 'secret-pass',
+      tenantName: 'Local Tenant'
+    })
+  });
+  return signup.token;
 }
 
 function taskInput(repoId: string, title: string, patch: Partial<JsonValue> = {}) {
@@ -42,8 +134,10 @@ function taskInput(repoId: string, title: string, patch: Partial<JsonValue> = {}
 
 describe('Stage 3.5 SCM dogfood API coverage', () => {
   it('dogfoods the GitHub repo/task/run APIs without regressing adapterized GitHub review behavior', async () => {
+    const sessionToken = await createSessionToken();
     const repo = await api<Repo>('/api/repos', {
       method: 'POST',
+      sessionToken,
       body: JSON.stringify({
         slug: 'abuiles/minions-github-dogfood',
         baselineUrl: 'https://github-dogfood.example.com',
@@ -53,6 +147,7 @@ describe('Stage 3.5 SCM dogfood API coverage', () => {
 
     const task = await api<Task>('/api/tasks', {
       method: 'POST',
+      sessionToken,
       body: JSON.stringify(taskInput(repo.repoId, 'GitHub dogfood regression', {
         sourceRef: 'https://github.com/abuiles/minions-github-dogfood/pull/42'
       }))
@@ -68,9 +163,10 @@ describe('Stage 3.5 SCM dogfood API coverage', () => {
       headSha: 'a'.repeat(40)
     });
 
-    const detail = await api<TaskDetail>(`/api/tasks/${encodeURIComponent(task.taskId)}`);
+    const detail = await api<TaskDetail>(`/api/tasks/${encodeURIComponent(task.taskId)}`, { sessionToken });
     const snapshot = await api<{ repos: Repo[]; tasks: Task[]; runs: Array<{ runId: string; reviewProvider?: string; prNumber?: number }> }>(
-      `/api/board?repoId=${encodeURIComponent(repo.repoId)}`
+      `/api/board?repoId=${encodeURIComponent(repo.repoId)}`,
+      { sessionToken }
     );
 
     expect(detail.repo).toMatchObject({
@@ -101,8 +197,10 @@ describe('Stage 3.5 SCM dogfood API coverage', () => {
   });
 
   it('dogfoods hosted and self-managed GitLab configuration through the repo/task APIs', async () => {
+    const sessionToken = await createSessionToken();
     const hostedRepo = await api<Repo>('/api/repos', {
       method: 'POST',
+      sessionToken,
       body: JSON.stringify({
         slug: 'group/platform/minions-hosted',
         projectPath: 'group/platform/minions-hosted',
@@ -114,6 +212,7 @@ describe('Stage 3.5 SCM dogfood API coverage', () => {
     });
     const selfManagedRepo = await api<Repo>('/api/repos', {
       method: 'POST',
+      sessionToken,
       body: JSON.stringify({
         slug: 'group/subgroup/minions-self-managed',
         projectPath: 'group/subgroup/minions-self-managed',
@@ -125,6 +224,7 @@ describe('Stage 3.5 SCM dogfood API coverage', () => {
     });
     const credential = await api<ScmCredential>('/api/scm/credentials', {
       method: 'POST',
+      sessionToken,
       body: JSON.stringify({
         scmProvider: 'gitlab',
         host: 'GitLab.EXAMPLE.com',
@@ -135,12 +235,14 @@ describe('Stage 3.5 SCM dogfood API coverage', () => {
 
     const hostedTask = await api<Task>('/api/tasks', {
       method: 'POST',
+      sessionToken,
       body: JSON.stringify(taskInput(hostedRepo.repoId, 'Hosted GitLab MR', {
         sourceRef: 'https://gitlab.com/group/platform/minions-hosted/-/merge_requests/77'
       }))
     });
     const selfManagedTask = await api<Task>('/api/tasks', {
       method: 'POST',
+      sessionToken,
       body: JSON.stringify(taskInput(selfManagedRepo.repoId, 'Self-managed GitLab branch', {
         sourceRef: 'https://gitlab.example.com/group/subgroup/minions-self-managed/-/tree/feature%2Fadapter'
       }))
@@ -156,8 +258,8 @@ describe('Stage 3.5 SCM dogfood API coverage', () => {
       headSha: 'b'.repeat(40)
     });
 
-    const hostedDetail = await api<TaskDetail>(`/api/tasks/${encodeURIComponent(hostedTask.taskId)}`);
-    const selfManagedDetail = await api<TaskDetail>(`/api/tasks/${encodeURIComponent(selfManagedTask.taskId)}`);
+    const hostedDetail = await api<TaskDetail>(`/api/tasks/${encodeURIComponent(hostedTask.taskId)}`, { sessionToken });
+    const selfManagedDetail = await api<TaskDetail>(`/api/tasks/${encodeURIComponent(selfManagedTask.taskId)}`, { sessionToken });
 
     expect(hostedDetail.repo).toMatchObject({
       scmProvider: 'gitlab',

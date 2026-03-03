@@ -1,66 +1,31 @@
-# AgentsKanban Stage 4.6 (Org Onboarding + Platform Support Access)
+# Stage 4.6 (Superseded)
 
-**Status:** ✅ Implemented
+**Status:** Superseded by single-tenant migration
 
-## Goal
+This document described the previous multi-tenant onboarding and platform-support-admin model.
 
-Add production-safe org onboarding primitives:
+That contract is no longer active.
 
-- strict session-auth for tenant-scoped APIs
-- employee onboarding via invites by email
-- platform "god/admin" support mode with scoped tenant sessions and audit log
+## Replacement docs
 
-## Implemented API surface
+- Current migration and acceptance criteria: `docs/stage_single_tenant_oss.md`
+- Current auth API contract: `docs/tenant-auth-api.md`
 
-### Org onboarding
+## Removed from current API
 
-- `POST /api/tenants/:tenantId/invites` (owner-only)
-- `GET /api/tenants/:tenantId/invites` (owner-only)
+- `/api/tenants*`
+- `POST /api/me/tenant-context`
+- `/api/platform/*`
+
+## Current replacement APIs
+
+- `POST /api/auth/signup`
+- `POST /api/auth/login`
+- `POST /api/auth/logout`
+- `GET /api/me`
+- `GET /api/invites`
+- `POST /api/invites`
 - `POST /api/invites/:inviteId/accept`
-
-### Platform support/admin
-
-- `POST /api/platform/auth/login`
-- `POST /api/platform/support/assume-tenant`
-- `POST /api/platform/support/release-tenant`
-- `GET /api/platform/support/sessions`
-- `GET /api/platform/audit-log`
-
-## Auth and tenancy rules
-
-- Tenant-scoped endpoints now require an auth session or a platform support session.
-- Legacy header fallback (`x-user-id` + default tenant) is no longer used for protected APIs.
-- Platform support mode is tenant-scoped via `x-support-session-token`.
-- Cross-tenant access remains denied unless support mode targets that tenant.
-
-## Invite flow
-
-1. Tenant owner creates invite with email (+ optional role).
-2. Invite response includes one-time token.
-3. Invitee calls `POST /api/invites/:inviteId/accept` with token while authenticated.
-4. Membership is activated and invite is marked accepted.
-
-## Platform admin bootstrap
-
-Platform admin bootstrap is env-driven:
-
-- `PLATFORM_ADMIN_EMAIL`
-- `PLATFORM_ADMIN_PASSWORD`
-
-If configured, a platform admin account is created automatically in `BoardIndexDO` state.
-
-## Audit and support-session behavior
-
-- Support sessions are time-bound and require a reason.
-- Session release is explicit (`/release-tenant`) or automatic on expiry.
-- Security events are recorded in an audit log for:
-  - platform login
-  - support session enter/exit
-  - invite creation/acceptance
-
-## Persistence
-
-- Tenant/auth/admin persistence is D1-backed via `TENANT_DB` (migration-driven schema; runtime verifies required tables instead of creating them).
-- Initial schema migration is checked in at `migrations/0000_tenant_auth_schema.sql` and should be applied with `wrangler d1 migrations apply`.
-- Durable Objects continue to own board/task/run live state and websocket fanout.
-- This stage is greenfield-only for D1 tenant/auth/admin data (no DO->D1 backfill path).
+- `GET /api/me/api-tokens`
+- `POST /api/me/api-tokens`
+- `DELETE /api/me/api-tokens/:tokenId`
