@@ -2,6 +2,8 @@
 
 AgentsKanban is a Cloudflare Workers application for multi-repo task orchestration with a kanban UI and background agent runs. It combines a React/Vite frontend with a Worker API that manages tasks, runs, logs, and artifacts.
 
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/abuiles/agents-kanban)
+
 ## Overview
 
 - Multi-repo board for planning and execution
@@ -33,6 +35,21 @@ This project was inspired by Stripe's Minions work on one-shot, end-to-end codin
   - KV namespace (`SECRETS_KV`) for secrets/metadata support
 - Ephemeral execution: Cloudflare Containers-backed sandbox class (`Sandbox`) using Cloudflare's default Sandbox Docker image (`docker.io/cloudflare/sandbox:0.7.8`) for now
 - Diagram: [docs/architecture.md](docs/architecture.md)
+
+## Requirements
+
+- Cloudflare account authenticated via Wrangler (`wrangler login`)
+- Workers plan that supports Cloudflare Sandbox/Containers usage
+- Runtime provider/API credentials, depending on your repos:
+  - `GITHUB_TOKEN` (GitHub repos)
+  - `GITLAB_TOKEN` (GitLab repos)
+  - `OPENAI_API_KEY` (LLM execution)
+- Cloudflare bindings configured in `wrangler.jsonc`:
+  - Durable Objects: `Sandbox`, `BOARD_INDEX`, `REPO_BOARD`
+  - Workflow: `RUN_WORKFLOW`
+  - R2: `RUN_ARTIFACTS`
+  - D1: `TENANT_DB`
+  - KV: `SECRETS_KV`
 
 ## Prerequisites
 
@@ -75,6 +92,42 @@ npm run dev
 ```
 
 Default local app URL is `http://localhost:5173` with API under `http://localhost:5173/api`.
+
+## Cloud Deploy Quick Start
+
+1. Install dependencies:
+
+```bash
+npm install
+```
+
+2. Set required runtime secrets:
+
+```bash
+npx wrangler secret put GITHUB_TOKEN
+npx wrangler secret put GITLAB_TOKEN
+npx wrangler secret put OPENAI_API_KEY
+```
+
+3. Deploy:
+
+```bash
+npm run deploy
+```
+
+4. Apply D1 migrations on the remote database:
+
+```bash
+npx wrangler d1 migrations apply TENANT_DB --remote
+```
+
+5. Optional: bootstrap single-tenant seed data:
+
+```bash
+npm run bootstrap:single-tenant -- --input ./scripts/bootstrap-single-tenant.example.json --remote
+```
+
+For deeper setup and troubleshooting, see [docs/local-testing.md](docs/local-testing.md) and [docs/features-and-api.md](docs/features-and-api.md).
 
 ## Commands
 
