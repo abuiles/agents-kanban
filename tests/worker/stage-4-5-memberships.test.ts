@@ -1,6 +1,7 @@
 import { env } from 'cloudflare:test';
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import worker from '../../src/index';
+import { ensureTenantDbSchema } from './helpers';
 
 function createExecutionContext(): ExecutionContext {
   return {
@@ -14,13 +15,12 @@ type ApiResult<T> = {
   body: T;
 };
 
-async function api<T>(path: string, init?: RequestInit & { userId?: string; tenantId?: string }): Promise<ApiResult<T>> {
+async function api<T>(path: string, init?: RequestInit & { sessionToken?: string }): Promise<ApiResult<T>> {
   const request = new Request(`https://minions.example.test${path}`, {
     ...init,
     headers: {
       'Content-Type': 'application/json',
-      ...(init?.userId ? { 'x-user-id': init.userId } : {}),
-      ...(init?.tenantId ? { 'x-tenant-id': init.tenantId } : {}),
+      ...(init?.sessionToken ? { 'x-session-token': init.sessionToken } : {}),
       ...(init?.headers ?? {})
     }
   });
@@ -36,14 +36,37 @@ function uniqueSlug(prefix: string): string {
 }
 
 describe('Stage 4.5 memberships and seats', () => {
+  beforeEach(async () => {
+    await ensureTenantDbSchema();
+  });
+
   it('implements owner/member roles and create/update member endpoints', async () => {
-    const ownerId = 'user_owner_membership';
+    const owner = await api<{ token: string; user: { id: string } }>('/api/auth/signup', {
+      method: 'POST',
+      body: JSON.stringify({
+        email: `${uniqueSlug('owner-membership')}@example.com`,
+        password: 'secret-pass',
+        tenantName: 'Membership Owner Org'
+      })
+    });
+    expect(owner.status).toBe(201);
+
+    const memberUser = await api<{ user: { id: string } }>('/api/auth/signup', {
+      method: 'POST',
+      body: JSON.stringify({
+        email: `${uniqueSlug('member-membership')}@example.com`,
+        password: 'secret-pass',
+        tenantName: 'Membership Member Org'
+      })
+    });
+    expect(memberUser.status).toBe(201);
+
     const tenant = await api<{
       tenant: { id: string; slug: string; seatLimit: number };
       ownerMembership: { role: 'owner'; seatState: 'active'; userId: string };
     }>('/api/tenants', {
       method: 'POST',
-      userId: ownerId,
+      sessionToken: owner.body.token,
       body: JSON.stringify({
         name: 'Membership Org',
         slug: uniqueSlug('membership-org'),
@@ -53,7 +76,7 @@ describe('Stage 4.5 memberships and seats', () => {
 
     expect(tenant.status).toBe(201);
     expect(tenant.body.ownerMembership).toMatchObject({
-      userId: ownerId,
+      userId: owner.body.user.id,
       role: 'owner',
       seatState: 'active'
     });
@@ -62,14 +85,13 @@ describe('Stage 4.5 memberships and seats', () => {
       member: { id: string; userId: string; role: 'member'; seatState: 'active' | 'invited' | 'revoked' };
     }>(`/api/tenants/${encodeURIComponent(tenant.body.tenant.id)}/members`, {
       method: 'POST',
-      userId: ownerId,
-      tenantId: tenant.body.tenant.id,
-      body: JSON.stringify({ userId: 'user_member_membership', role: 'member', seatState: 'invited' })
+      sessionToken: owner.body.token,
+      body: JSON.stringify({ userId: memberUser.body.user.id, role: 'member', seatState: 'invited' })
     });
 
     expect(createdMember.status).toBe(201);
     expect(createdMember.body.member).toMatchObject({
-      userId: 'user_member_membership',
+      userId: memberUser.body.user.id,
       role: 'member',
       seatState: 'invited'
     });
@@ -78,8 +100,7 @@ describe('Stage 4.5 memberships and seats', () => {
       member: { id: string; role: 'member'; seatState: 'active' | 'invited' | 'revoked' };
     }>(`/api/tenants/${encodeURIComponent(tenant.body.tenant.id)}/members/${encodeURIComponent(createdMember.body.member.id)}`, {
       method: 'PATCH',
-      userId: ownerId,
-      tenantId: tenant.body.tenant.id,
+      sessionToken: owner.body.token,
       body: JSON.stringify({ seatState: 'active' })
     });
 
@@ -91,11 +112,29 @@ describe('Stage 4.5 memberships and seats', () => {
   });
 
   it('enforces seat states on access checks and owner-only member management', async () => {
-    const ownerId = 'user_owner_seats';
-    const memberId = 'user_member_seats';
+    const owner = await api<{ token: string }>('/api/auth/signup', {
+      method: 'POST',
+      body: JSON.stringify({
+        email: `${uniqueSlug('owner-seats')}@example.com`,
+        password: 'secret-pass',
+        tenantName: 'Seat Owner Org'
+      })
+    });
+    expect(owner.status).toBe(201);
+
+    const memberUser = await api<{ token: string; user: { id: string } }>('/api/auth/signup', {
+      method: 'POST',
+      body: JSON.stringify({
+        email: `${uniqueSlug('member-seats')}@example.com`,
+        password: 'secret-pass',
+        tenantName: 'Seat Member Org'
+      })
+    });
+    expect(memberUser.status).toBe(201);
+
     const tenant = await api<{ tenant: { id: string } }>('/api/tenants', {
       method: 'POST',
-      userId: ownerId,
+      sessionToken: owner.body.token,
       body: JSON.stringify({
         name: 'Seat Org',
         slug: uniqueSlug('seat-org'),
@@ -107,26 +146,23 @@ describe('Stage 4.5 memberships and seats', () => {
 
     const member = await api<{ member: { id: string } }>(`/api/tenants/${encodeURIComponent(tenant.body.tenant.id)}/members`, {
       method: 'POST',
-      userId: ownerId,
-      tenantId: tenant.body.tenant.id,
-      body: JSON.stringify({ userId: memberId, role: 'member', seatState: 'invited' })
+      sessionToken: owner.body.token,
+      body: JSON.stringify({ userId: memberUser.body.user.id, role: 'member', seatState: 'invited' })
     });
     expect(member.status).toBe(201);
 
     const invitedAccess = await api<{
       code: string;
       message: string;
-    }>('/api/repos', {
-      userId: memberId,
-      tenantId: tenant.body.tenant.id
+    }>(`/api/tenants/${encodeURIComponent(tenant.body.tenant.id)}`, {
+      sessionToken: memberUser.body.token
     });
     expect(invitedAccess.status).toBe(403);
     expect(invitedAccess.body.code).toBe('FORBIDDEN');
 
     const nonOwnerMutation = await api<{ code: string }>(`/api/tenants/${encodeURIComponent(tenant.body.tenant.id)}/members`, {
       method: 'POST',
-      userId: memberId,
-      tenantId: tenant.body.tenant.id,
+      sessionToken: memberUser.body.token,
       body: JSON.stringify({ userId: 'user_extra', role: 'member', seatState: 'invited' })
     });
     expect(nonOwnerMutation.status).toBe(403);
@@ -135,35 +171,32 @@ describe('Stage 4.5 memberships and seats', () => {
       `/api/tenants/${encodeURIComponent(tenant.body.tenant.id)}/members/${encodeURIComponent(member.body.member.id)}`,
       {
         method: 'PATCH',
-        userId: ownerId,
-        tenantId: tenant.body.tenant.id,
+        sessionToken: owner.body.token,
         body: JSON.stringify({ seatState: 'active' })
       }
     );
     expect(activatedMember.status).toBe(200);
     expect(activatedMember.body.member.seatState).toBe('active');
 
-    const activeAccess = await api<unknown[]>('/api/repos', {
-      userId: memberId,
-      tenantId: tenant.body.tenant.id
+    const activeAccess = await api<{ id: string }>(`/api/tenants/${encodeURIComponent(tenant.body.tenant.id)}`, {
+      sessionToken: memberUser.body.token
     });
     expect(activeAccess.status).toBe(200);
+    expect(activeAccess.body.id).toBe(tenant.body.tenant.id);
 
     const revokedMember = await api<{ member: { seatState: 'revoked' } }>(
       `/api/tenants/${encodeURIComponent(tenant.body.tenant.id)}/members/${encodeURIComponent(member.body.member.id)}`,
       {
         method: 'PATCH',
-        userId: ownerId,
-        tenantId: tenant.body.tenant.id,
+        sessionToken: owner.body.token,
         body: JSON.stringify({ seatState: 'revoked' })
       }
     );
     expect(revokedMember.status).toBe(200);
     expect(revokedMember.body.member.seatState).toBe('revoked');
 
-    const revokedAccess = await api<{ code: string }>('/api/repos', {
-      userId: memberId,
-      tenantId: tenant.body.tenant.id
+    const revokedAccess = await api<{ code: string }>(`/api/tenants/${encodeURIComponent(tenant.body.tenant.id)}`, {
+      sessionToken: memberUser.body.token
     });
     expect(revokedAccess.status).toBe(403);
     expect(revokedAccess.body.code).toBe('FORBIDDEN');

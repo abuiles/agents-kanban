@@ -532,12 +532,16 @@ export type UpdateTenantMemberInput = {
   seatState?: 'active' | 'invited' | 'revoked';
 };
 
+export type CreateTenantInviteInput = {
+  email: string;
+  role?: 'owner' | 'member';
+};
+
 export type AuthSignupInput = {
   email: string;
   password: string;
   displayName?: string;
   tenantName: string;
-  tenantSlug: string;
   tenantDomain?: string;
   seatLimit?: number;
   defaultSeatLimit?: number;
@@ -551,6 +555,21 @@ export type AuthLoginInput = {
 
 export type SetActiveTenantInput = {
   tenantId: string;
+};
+
+export type AcceptTenantInviteInput = {
+  token: string;
+};
+
+export type PlatformAuthLoginInput = {
+  email: string;
+  password: string;
+};
+
+export type PlatformSupportAssumeTenantInput = {
+  tenantId: string;
+  reason: string;
+  ttlMinutes?: number;
 };
 
 export function parseCreateTenantInput(body: unknown): CreateTenantInput {
@@ -579,6 +598,16 @@ export function parseCreateTenantMemberInput(body: unknown): CreateTenantMemberI
   };
 }
 
+export function parseCreateTenantInviteInput(body: unknown): CreateTenantInviteInput {
+  if (!isRecord(body)) {
+    throw badRequest('Invalid tenant invite payload.');
+  }
+  return {
+    email: readTrimmedString(body.email, 'email')!,
+    role: readEnumValue(body.role, 'role', TENANT_MEMBER_ROLES, false)
+  };
+}
+
 export function parseUpdateTenantMemberInput(body: unknown): UpdateTenantMemberInput {
   if (!isRecord(body)) {
     throw badRequest('Invalid tenant member patch payload.');
@@ -601,7 +630,6 @@ export function parseAuthSignupInput(body: unknown): AuthSignupInput {
 
   const tenantInput = isRecord(body.tenant) ? body.tenant : undefined;
   const tenantName = readTrimmedString(tenantInput?.name ?? body.tenantName, 'tenantName')!;
-  const tenantSlug = readTrimmedString(tenantInput?.slug ?? body.tenantSlug, 'tenantSlug')!;
   const tenantDomain = readTrimmedString(tenantInput?.domain ?? body.tenantDomain, 'tenantDomain', false);
   const seatLimit = readPositiveInteger(tenantInput?.seatLimit ?? body.seatLimit, 'seatLimit', false);
   const defaultSeatLimit = readPositiveInteger(tenantInput?.defaultSeatLimit ?? body.defaultSeatLimit, 'defaultSeatLimit', false);
@@ -616,7 +644,6 @@ export function parseAuthSignupInput(body: unknown): AuthSignupInput {
     password,
     displayName: readTrimmedString(body.displayName, 'displayName', false),
     tenantName,
-    tenantSlug,
     tenantDomain,
     seatLimit,
     defaultSeatLimit
@@ -647,5 +674,35 @@ export function parseSetActiveTenantInput(body: unknown): SetActiveTenantInput {
 
   return {
     tenantId: readTrimmedString(body.tenantId, 'tenantId')!
+  };
+}
+
+export function parseAcceptTenantInviteInput(body: unknown): AcceptTenantInviteInput {
+  if (!isRecord(body)) {
+    throw badRequest('Invalid invite accept payload.');
+  }
+  return {
+    token: readTrimmedString(body.token, 'token')!
+  };
+}
+
+export function parsePlatformAuthLoginInput(body: unknown): PlatformAuthLoginInput {
+  if (!isRecord(body)) {
+    throw badRequest('Invalid platform auth payload.');
+  }
+  return {
+    email: readTrimmedString(body.email, 'email')!,
+    password: readTrimmedString(body.password, 'password')!
+  };
+}
+
+export function parsePlatformSupportAssumeTenantInput(body: unknown): PlatformSupportAssumeTenantInput {
+  if (!isRecord(body)) {
+    throw badRequest('Invalid support session payload.');
+  }
+  return {
+    tenantId: readTrimmedString(body.tenantId, 'tenantId')!,
+    reason: readTrimmedString(body.reason, 'reason')!,
+    ttlMinutes: readPositiveInteger(body.ttlMinutes, 'ttlMinutes', false)
   };
 }

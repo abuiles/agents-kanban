@@ -15,9 +15,14 @@ const TENANTS_STORAGE_KEY = 'board-index-tenants';
 const TENANT_MEMBERSHIPS_STORAGE_KEY = 'board-index-tenant-memberships';
 const USERS_STORAGE_KEY = 'board-index-users';
 const USER_SESSIONS_STORAGE_KEY = 'board-index-user-sessions';
+const TENANT_INVITES_STORAGE_KEY = 'board-index-tenant-invites';
+const PLATFORM_ADMINS_STORAGE_KEY = 'board-index-platform-admins';
+const PLATFORM_SUPPORT_SESSIONS_STORAGE_KEY = 'board-index-platform-support-sessions';
+const SECURITY_AUDIT_LOG_STORAGE_KEY = 'board-index-security-audit-log';
 const DEFAULT_SEAT_LIMIT = 5;
 const SYSTEM_USER_ID = 'user_system';
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 30;
+const PLATFORM_SESSION_TTL_MS = 1000 * 60 * 60 * 8;
 
 type StoredScmCredential = ScmCredential & {
   token: string;
@@ -41,6 +46,51 @@ type TenantMemberRecordInput = {
   seatState?: TenantMember['seatState'];
 };
 
+type TenantInvite = {
+  id: string;
+  tenantId: string;
+  email: string;
+  role: TenantMember['role'];
+  status: 'pending' | 'accepted' | 'revoked';
+  tokenHash: string;
+  createdByUserId: string;
+  acceptedByUserId?: string;
+  acceptedAt?: string;
+  revokedAt?: string;
+  expiresAt: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type PlatformAdmin = {
+  id: string;
+  email: string;
+  passwordHash: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type PlatformSupportSession = {
+  id: string;
+  tokenHash: string;
+  adminId: string;
+  tenantId: string;
+  reason: string;
+  createdAt: string;
+  expiresAt: string;
+  releasedAt?: string;
+};
+
+type SecurityAuditLogEntry = {
+  id: string;
+  at: string;
+  actorType: 'tenant_user' | 'platform_admin';
+  actorId: string;
+  action: string;
+  tenantId?: string;
+  metadata?: Record<string, string | number | boolean>;
+};
+
 export class BoardIndexDO extends DurableObject<Env> {
   private repos: Repo[] = [];
   private scmCredentials: StoredScmCredential[] = [];
@@ -48,6 +98,10 @@ export class BoardIndexDO extends DurableObject<Env> {
   private tenantMemberships: TenantMember[] = [];
   private users: StoredUser[] = [];
   private userSessions: UserSession[] = [];
+  private tenantInvites: TenantInvite[] = [];
+  private platformAdmins: PlatformAdmin[] = [];
+  private platformSupportSessions: PlatformSupportSession[] = [];
+  private securityAuditLog: SecurityAuditLogEntry[] = [];
   private ready: Promise<void>;
 
   constructor(ctx: DurableObjectState, env: Env) {
@@ -59,14 +113,25 @@ export class BoardIndexDO extends DurableObject<Env> {
       const storedTenantMemberships = (await this.ctx.storage.get<TenantMember[]>(TENANT_MEMBERSHIPS_STORAGE_KEY)) ?? [];
       const storedUsers = (await this.ctx.storage.get<StoredUser[]>(USERS_STORAGE_KEY)) ?? [];
       const storedSessions = (await this.ctx.storage.get<UserSession[]>(USER_SESSIONS_STORAGE_KEY)) ?? [];
+      const storedInvites = (await this.ctx.storage.get<TenantInvite[]>(TENANT_INVITES_STORAGE_KEY)) ?? [];
+      const storedPlatformAdmins = (await this.ctx.storage.get<PlatformAdmin[]>(PLATFORM_ADMINS_STORAGE_KEY)) ?? [];
+      const storedPlatformSupportSessions = (await this.ctx.storage.get<PlatformSupportSession[]>(PLATFORM_SUPPORT_SESSIONS_STORAGE_KEY)) ?? [];
+      const storedSecurityAuditLog = (await this.ctx.storage.get<SecurityAuditLogEntry[]>(SECURITY_AUDIT_LOG_STORAGE_KEY)) ?? [];
       this.repos = storedRepos.map((repo) => normalizeRepo(repo));
       this.scmCredentials = storedScmCredentials.map((credential) => normalizeStoredScmCredential(credential));
       this.tenants = storedTenants.map((tenant) => normalizeTenantRecord(tenant));
       this.tenantMemberships = storedTenantMemberships.map((membership) => normalizeTenantMemberRecord(membership));
       this.users = storedUsers.map((user) => normalizeStoredUserRecord(user));
       this.userSessions = storedSessions.map((session) => normalizeUserSessionRecord(session));
+      this.tenantInvites = storedInvites.map((invite) => normalizeTenantInviteRecord(invite));
+      this.platformAdmins = storedPlatformAdmins.map((admin) => normalizePlatformAdminRecord(admin));
+      this.platformSupportSessions = storedPlatformSupportSessions.map((session) => normalizePlatformSupportSessionRecord(session));
+      this.securityAuditLog = storedSecurityAuditLog.map((entry) => normalizeSecurityAuditLogEntry(entry));
       this.ensureBootstrapTenantAndOwner();
+      await this.ensureBootstrapPlatformAdmin();
       this.pruneExpiredSessions();
+      this.pruneExpiredInvites();
+      this.pruneExpiredPlatformSupportSessions();
       await this.persist();
     });
   }
@@ -143,6 +208,249 @@ export class BoardIndexDO extends DurableObject<Env> {
     return [...this.tenantMemberships]
       .filter((membership) => membership.tenantId === normalizedTenantId)
       .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+  }
+
+  async createTenantInvite(
+    tenantId: string,
+    input: { email: string; role?: TenantMember['role'] },
+    actorUserId: string
+  ): Promise<{ invite: Omit<TenantInvite, 'tokenHash'>; token: string; seatSummary: TenantSeatSummary }> {
+    await this.ready;
+    const tenant = await this.getTenant(tenantId);
+    await this.assertOwnerAccess(tenant.id, actorUserId);
+    const normalizedEmail = normalizeEmail(input.email);
+    const existingPending = this.tenantInvites.find(
+      (invite) => invite.tenantId === tenant.id && invite.email === normalizedEmail && invite.status === 'pending'
+    );
+    if (existingPending) {
+      throw conflict(`Pending invite for ${normalizedEmail} already exists in tenant ${tenant.id}.`);
+    }
+    const role = input.role ?? 'member';
+    if (role === 'owner') {
+      this.assertSeatCapacity(tenant.id);
+    }
+    const now = new Date().toISOString();
+    const token = createAuthToken();
+    const invite: TenantInvite = normalizeTenantInviteRecord({
+      id: `invite_${crypto.randomUUID()}`,
+      tenantId: tenant.id,
+      email: normalizedEmail,
+      role,
+      status: 'pending',
+      tokenHash: await hashSecret(token),
+      createdByUserId: actorUserId,
+      expiresAt: new Date(Date.now() + SESSION_TTL_MS).toISOString(),
+      createdAt: now,
+      updatedAt: now
+    });
+    this.tenantInvites = [invite, ...this.tenantInvites];
+    this.logSecurityEvent({
+      actorType: 'tenant_user',
+      actorId: actorUserId,
+      action: 'tenant.invite.created',
+      tenantId: tenant.id,
+      metadata: { inviteId: invite.id, email: invite.email, role: invite.role }
+    });
+    await this.persist();
+    const { tokenHash, ...safeInvite } = invite;
+    void tokenHash;
+    return { invite: safeInvite, token, seatSummary: await this.getTenantSeatSummary(tenant.id) };
+  }
+
+  async listTenantInvites(tenantId: string, actorUserId: string): Promise<Array<Omit<TenantInvite, 'tokenHash'>>> {
+    await this.ready;
+    const normalizedTenantId = normalizeTenantId(tenantId);
+    await this.assertOwnerAccess(normalizedTenantId, actorUserId);
+    return this.tenantInvites
+      .filter((invite) => invite.tenantId === normalizedTenantId)
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+      .map((invite) => {
+        const { tokenHash, ...safeInvite } = invite;
+        void tokenHash;
+        return safeInvite;
+      });
+  }
+
+  async acceptTenantInvite(token: string, actorUserId: string): Promise<{ membership: TenantMember; invite: Omit<TenantInvite, 'tokenHash'> }> {
+    await this.ready;
+    this.pruneExpiredInvites();
+    const tokenHash = await hashSecret(token);
+    const invite = this.tenantInvites.find((candidate) => candidate.tokenHash === tokenHash && candidate.status === 'pending');
+    if (!invite) {
+      throw unauthorized('Invalid or expired invite.');
+    }
+    const user = this.users.find((candidate) => candidate.id === actorUserId);
+    if (!user || normalizeEmail(user.email) !== invite.email) {
+      throw forbidden('Invite email does not match authenticated user.');
+    }
+    const existingMembership = this.tenantMemberships.find((membership) => membership.tenantId === invite.tenantId && membership.userId === actorUserId);
+    if (existingMembership && existingMembership.seatState === 'active') {
+      throw conflict(`User ${actorUserId} already has an active seat in tenant ${invite.tenantId}.`);
+    }
+    if (!existingMembership || existingMembership.seatState !== 'active') {
+      this.assertSeatCapacity(invite.tenantId);
+    }
+    const now = new Date().toISOString();
+    const membership: TenantMember = normalizeTenantMemberRecord({
+      id: createTenantMemberId(invite.tenantId, actorUserId),
+      tenantId: invite.tenantId,
+      userId: actorUserId,
+      role: invite.role,
+      seatState: 'active',
+      createdAt: existingMembership?.createdAt ?? now,
+      updatedAt: now
+    });
+    this.tenantMemberships = existingMembership
+      ? this.tenantMemberships.map((candidate) => (candidate.id === existingMembership.id ? membership : candidate))
+      : [...this.tenantMemberships, membership];
+    const updatedInvite: TenantInvite = normalizeTenantInviteRecord({
+      ...invite,
+      status: 'accepted',
+      acceptedByUserId: actorUserId,
+      acceptedAt: now,
+      updatedAt: now
+    });
+    this.tenantInvites = this.tenantInvites.map((candidate) => (candidate.id === invite.id ? updatedInvite : candidate));
+    this.logSecurityEvent({
+      actorType: 'tenant_user',
+      actorId: actorUserId,
+      action: 'tenant.invite.accepted',
+      tenantId: invite.tenantId,
+      metadata: { inviteId: invite.id, membershipId: membership.id }
+    });
+    await this.persist();
+    const { tokenHash: _, ...safeInvite } = updatedInvite;
+    void _;
+    return { membership, invite: safeInvite };
+  }
+
+  async platformLogin(input: { email: string; password: string }) {
+    await this.ready;
+    const email = normalizeEmail(input.email);
+    const admin = this.platformAdmins.find((candidate) => normalizeEmail(candidate.email) === email);
+    if (!admin) {
+      throw unauthorized('Invalid platform admin credentials.');
+    }
+    const passwordHash = await hashSecret(input.password);
+    if (passwordHash !== admin.passwordHash) {
+      throw unauthorized('Invalid platform admin credentials.');
+    }
+    const token = createAuthToken();
+    const session: PlatformSupportSession = normalizePlatformSupportSessionRecord({
+      id: `psess_${crypto.randomUUID()}`,
+      tokenHash: await hashSecret(token),
+      adminId: admin.id,
+      tenantId: DEFAULT_TENANT_ID,
+      reason: 'platform-auth',
+      createdAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + PLATFORM_SESSION_TTL_MS).toISOString()
+    });
+    this.platformSupportSessions = [session, ...this.platformSupportSessions];
+    this.logSecurityEvent({
+      actorType: 'platform_admin',
+      actorId: admin.id,
+      action: 'platform.auth.login'
+    });
+    await this.persist();
+    return { admin: { id: admin.id, email: admin.email }, token };
+  }
+
+  async resolvePlatformAdminByToken(token: string): Promise<{ admin: { id: string; email: string } }> {
+    await this.ready;
+    this.pruneExpiredPlatformSupportSessions();
+    const tokenHash = await hashSecret(token);
+    const session = this.platformSupportSessions.find((candidate) => candidate.tokenHash === tokenHash && !candidate.releasedAt);
+    if (!session) {
+      throw unauthorized('Invalid or expired platform session.');
+    }
+    const admin = this.platformAdmins.find((candidate) => candidate.id === session.adminId);
+    if (!admin) {
+      throw unauthorized('Platform admin no longer exists.');
+    }
+    return { admin: { id: admin.id, email: admin.email } };
+  }
+
+  async resolvePlatformSupportSessionByToken(token: string): Promise<{ session: PlatformSupportSession }> {
+    await this.ready;
+    this.pruneExpiredPlatformSupportSessions();
+    const tokenHash = await hashSecret(token);
+    const session = this.platformSupportSessions.find(
+      (candidate) => candidate.tokenHash === tokenHash && !candidate.releasedAt && candidate.reason !== 'platform-auth'
+    );
+    if (!session) {
+      throw unauthorized('Invalid or expired support session.');
+    }
+    return { session };
+  }
+
+  async createPlatformSupportSession(input: { adminId: string; tenantId: string; reason: string; ttlMinutes?: number }): Promise<{ session: PlatformSupportSession; token: string }> {
+    await this.ready;
+    const tenantId = normalizeTenantId(input.tenantId);
+    await this.getTenant(tenantId);
+    const ttlMinutes = Math.min(Math.max(input.ttlMinutes ?? 60, 5), 8 * 60);
+    const token = createAuthToken();
+    const session: PlatformSupportSession = normalizePlatformSupportSessionRecord({
+      id: `support_${crypto.randomUUID()}`,
+      tokenHash: await hashSecret(token),
+      adminId: input.adminId,
+      tenantId,
+      reason: input.reason.trim(),
+      createdAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + ttlMinutes * 60 * 1000).toISOString()
+    });
+    this.platformSupportSessions = [session, ...this.platformSupportSessions];
+    this.logSecurityEvent({
+      actorType: 'platform_admin',
+      actorId: input.adminId,
+      action: 'platform.support.assume_tenant',
+      tenantId,
+      metadata: { reason: input.reason.trim(), ttlMinutes }
+    });
+    await this.persist();
+    return { session, token };
+  }
+
+  async releasePlatformSupportSession(token: string, adminId: string): Promise<{ ok: true }> {
+    await this.ready;
+    const tokenHash = await hashSecret(token);
+    const session = this.platformSupportSessions.find((candidate) => candidate.tokenHash === tokenHash && !candidate.releasedAt);
+    if (!session) {
+      throw unauthorized('Invalid or expired support session.');
+    }
+    if (session.adminId !== adminId) {
+      throw forbidden('Support session belongs to another platform admin.');
+    }
+    const updated: PlatformSupportSession = normalizePlatformSupportSessionRecord({
+      ...session,
+      releasedAt: new Date().toISOString()
+    });
+    this.platformSupportSessions = this.platformSupportSessions.map((candidate) => (candidate.id === session.id ? updated : candidate));
+    this.logSecurityEvent({
+      actorType: 'platform_admin',
+      actorId: adminId,
+      action: 'platform.support.release_tenant',
+      tenantId: session.tenantId,
+      metadata: { sessionId: session.id }
+    });
+    await this.persist();
+    return { ok: true };
+  }
+
+  async listPlatformSupportSessions(adminId: string): Promise<PlatformSupportSession[]> {
+    await this.ready;
+    this.pruneExpiredPlatformSupportSessions();
+    return this.platformSupportSessions
+      .filter((session) => session.adminId === adminId)
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  }
+
+  async listSecurityAuditLog(adminId: string): Promise<SecurityAuditLogEntry[]> {
+    await this.ready;
+    const exists = this.platformAdmins.some((candidate) => candidate.id === adminId);
+    if (!exists) {
+      throw forbidden('Only platform admins may view security audit log.');
+    }
+    return [...this.securityAuditLog].sort((left, right) => right.at.localeCompare(left.at));
   }
 
   async getTenantSeatSummary(tenantId: string): Promise<TenantSeatSummary> {
@@ -700,6 +1008,10 @@ export class BoardIndexDO extends DurableObject<Env> {
     await this.ctx.storage.put(TENANT_MEMBERSHIPS_STORAGE_KEY, this.tenantMemberships);
     await this.ctx.storage.put(USERS_STORAGE_KEY, this.users);
     await this.ctx.storage.put(USER_SESSIONS_STORAGE_KEY, this.userSessions);
+    await this.ctx.storage.put(TENANT_INVITES_STORAGE_KEY, this.tenantInvites);
+    await this.ctx.storage.put(PLATFORM_ADMINS_STORAGE_KEY, this.platformAdmins);
+    await this.ctx.storage.put(PLATFORM_SUPPORT_SESSIONS_STORAGE_KEY, this.platformSupportSessions);
+    await this.ctx.storage.put(SECURITY_AUDIT_LOG_STORAGE_KEY, this.securityAuditLog);
   }
 
   private ensureBootstrapTenantAndOwner() {
@@ -773,6 +1085,63 @@ export class BoardIndexDO extends DurableObject<Env> {
   private pruneExpiredSessions() {
     const now = Date.now();
     this.userSessions = this.userSessions.filter((session) => Date.parse(session.expiresAt) > now);
+  }
+
+  private pruneExpiredInvites() {
+    const now = Date.now();
+    this.tenantInvites = this.tenantInvites.map((invite) => {
+      if (invite.status !== 'pending') {
+        return invite;
+      }
+      if (Date.parse(invite.expiresAt) <= now) {
+        return { ...invite, status: 'revoked', revokedAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+      }
+      return invite;
+    });
+  }
+
+  private pruneExpiredPlatformSupportSessions() {
+    const now = Date.now();
+    this.platformSupportSessions = this.platformSupportSessions.filter((session) => {
+      if (session.releasedAt) {
+        return false;
+      }
+      return Date.parse(session.expiresAt) > now;
+    });
+  }
+
+  private logSecurityEvent(entry: Omit<SecurityAuditLogEntry, 'id' | 'at'>) {
+    this.securityAuditLog = [
+      {
+        id: `audit_${crypto.randomUUID()}`,
+        at: new Date().toISOString(),
+        ...entry
+      },
+      ...this.securityAuditLog
+    ].slice(0, 2_000);
+  }
+
+  private async ensureBootstrapPlatformAdmin() {
+    const record = this.env as unknown as Record<string, unknown>;
+    const email = typeof record.PLATFORM_ADMIN_EMAIL === 'string' ? record.PLATFORM_ADMIN_EMAIL.trim().toLowerCase() : '';
+    const password = typeof record.PLATFORM_ADMIN_PASSWORD === 'string' ? record.PLATFORM_ADMIN_PASSWORD : '';
+    if (!email || !password) {
+      return;
+    }
+    if (this.platformAdmins.some((candidate) => normalizeEmail(candidate.email) === email)) {
+      return;
+    }
+    const now = new Date().toISOString();
+    this.platformAdmins = [
+      normalizePlatformAdminRecord({
+        id: `admin_${crypto.randomUUID()}`,
+        email,
+        passwordHash: await hashSecret(password),
+        createdAt: now,
+        updatedAt: now
+      }),
+      ...this.platformAdmins
+    ];
   }
 
   private async createSession(userId: string, activeTenantId: string): Promise<{ session: UserSession; token: string }> {
@@ -920,6 +1289,61 @@ function normalizeUserSessionRecord(session: UserSession): UserSession {
     tenantId: normalizeTenantId(session.tenantId),
     activeTenantId: normalizeTenantId(session.activeTenantId),
     tokenHash: session.tokenHash.trim()
+  };
+}
+
+function normalizeTenantInviteRecord(invite: TenantInvite): TenantInvite {
+  return {
+    ...invite,
+    id: invite.id.trim(),
+    tenantId: normalizeTenantId(invite.tenantId),
+    email: normalizeEmail(invite.email),
+    role: invite.role === 'owner' ? 'owner' : 'member',
+    status: invite.status === 'accepted' || invite.status === 'revoked' ? invite.status : 'pending',
+    tokenHash: invite.tokenHash.trim(),
+    createdByUserId: invite.createdByUserId.trim(),
+    acceptedByUserId: invite.acceptedByUserId?.trim(),
+    acceptedAt: invite.acceptedAt,
+    revokedAt: invite.revokedAt,
+    expiresAt: invite.expiresAt,
+    createdAt: invite.createdAt,
+    updatedAt: invite.updatedAt
+  };
+}
+
+function normalizePlatformAdminRecord(admin: PlatformAdmin): PlatformAdmin {
+  return {
+    ...admin,
+    id: admin.id.trim(),
+    email: normalizeEmail(admin.email),
+    passwordHash: admin.passwordHash.trim()
+  };
+}
+
+function normalizePlatformSupportSessionRecord(session: PlatformSupportSession): PlatformSupportSession {
+  return {
+    ...session,
+    id: session.id.trim(),
+    tokenHash: session.tokenHash.trim(),
+    adminId: session.adminId.trim(),
+    tenantId: normalizeTenantId(session.tenantId),
+    reason: session.reason.trim(),
+    createdAt: session.createdAt,
+    expiresAt: session.expiresAt,
+    releasedAt: session.releasedAt
+  };
+}
+
+function normalizeSecurityAuditLogEntry(entry: SecurityAuditLogEntry): SecurityAuditLogEntry {
+  return {
+    ...entry,
+    id: entry.id.trim(),
+    at: entry.at,
+    actorType: entry.actorType === 'platform_admin' ? 'platform_admin' : 'tenant_user',
+    actorId: entry.actorId.trim(),
+    action: entry.action.trim(),
+    tenantId: entry.tenantId ? normalizeTenantId(entry.tenantId) : undefined,
+    metadata: entry.metadata
   };
 }
 

@@ -1,4 +1,4 @@
-import type { ChangeEvent } from 'react';
+import type { ChangeEvent, FormEvent } from 'react';
 import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { Board } from './components/Board';
 import { ControlSurfaceHeader, SummaryRow } from './components/ControlSurface';
@@ -8,7 +8,7 @@ import { Modal } from './components/Modal';
 import { RunTerminal } from './components/RunTerminal';
 import { getTaskDetail, getTasksByColumn, getTasksForRepo } from './domain/selectors';
 import type { RunCommand, RunEvent, RunLogEntry, TaskStatus, TerminalBootstrap } from './domain/types';
-import type { AgentBoardApi } from './domain/api';
+import type { AgentBoardApi, AuthSession } from './domain/api';
 import { getAgentBoardApi } from './api';
 import { downloadJson } from './store/import-export';
 import { getSelectedTaskIdFromUrl, setSelectedTaskIdInUrl } from './url-state';
@@ -32,6 +32,14 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
   const [terminalModalRunId, setTerminalModalRunId] = useState<string | undefined>();
   const [terminalResumeCopied, setTerminalResumeCopied] = useState(false);
   const [notice, setNotice] = useState<string | undefined>();
+  const [authSession, setAuthSession] = useState<AuthSession | undefined>();
+  const [authLoading, setAuthLoading] = useState(true);
+  const [authMode, setAuthMode] = useState<'login' | 'signup'>('login');
+  const [authEmail, setAuthEmail] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+  const [authDisplayName, setAuthDisplayName] = useState('');
+  const [authTenantName, setAuthTenantName] = useState('');
+  const [authError, setAuthError] = useState<string | undefined>();
   const [taskSelectionHydrated, setTaskSelectionHydrated] = useState(false);
 
   const selectedRepoId = snapshot.ui.selectedRepoId;
@@ -50,6 +58,25 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
   const terminalLogs = terminalModalRunId ? snapshot.logs.filter((entry) => entry.runId === terminalModalRunId) : [];
   const terminalExecutorLogs = terminalLogs.filter((entry) => entry.phase === 'codex');
   const terminalStreamLogs = terminalExecutorLogs.length ? terminalExecutorLogs : terminalLogs;
+
+  useEffect(() => {
+    let cancelled = false;
+    void api.getAuthSession()
+      .then((session) => {
+        if (!cancelled) {
+          setAuthSession(session);
+          setAuthLoading(false);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setAuthLoading(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [api]);
 
   useEffect(() => {
     const runId = detail?.latestRun?.runId;
@@ -213,9 +240,96 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
     }
   }
 
+  async function handleAuthSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setAuthError(undefined);
+    try {
+      const session = authMode === 'login'
+        ? await api.login({ email: authEmail.trim(), password: authPassword })
+        : await api.signup({
+            email: authEmail.trim(),
+            password: authPassword,
+            displayName: authDisplayName.trim() || undefined,
+            tenantName: authTenantName.trim()
+          });
+      setAuthSession(session);
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : 'Authentication failed.');
+    }
+  }
+
+  async function handleLogout() {
+    await api.logout();
+    setAuthSession(undefined);
+    setNotice('Signed out.');
+  }
+
+  async function handleTenantChange(tenantId: string) {
+    try {
+      const session = await api.setActiveTenant(tenantId);
+      setAuthSession(session);
+      setNotice(`Switched to ${session.tenants.find((tenant) => tenant.id === tenantId)?.name ?? tenantId}.`);
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : 'Failed to switch tenant.');
+    }
+  }
+
+  if (authLoading) {
+    return <div className="min-h-screen px-4 py-8 text-slate-100">Loading...</div>;
+  }
+
+  if (!authSession) {
+    return (
+      <div className="min-h-screen px-4 py-8 text-slate-100 sm:px-6 xl:px-8">
+        <div className="mx-auto w-full max-w-lg rounded-xl border border-slate-700 bg-slate-900/80 p-6 shadow-xl">
+          <h1 className="text-2xl font-semibold">{authMode === 'login' ? 'Sign in' : 'Sign up'}</h1>
+          <p className="mt-1 text-sm text-slate-400">Authenticate to access your organization board.</p>
+          <form className="mt-5 space-y-3" onSubmit={(event) => void handleAuthSubmit(event)}>
+            <input className="h-11 w-full rounded-xl border border-slate-700 bg-slate-900/90 px-3 text-sm" placeholder="Email" value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} required />
+            <input className="h-11 w-full rounded-xl border border-slate-700 bg-slate-900/90 px-3 text-sm" placeholder="Password" type="password" value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} required />
+            {authMode === 'signup' ? (
+              <>
+                <input className="h-11 w-full rounded-xl border border-slate-700 bg-slate-900/90 px-3 text-sm" placeholder="Display name (optional)" value={authDisplayName} onChange={(event) => setAuthDisplayName(event.target.value)} />
+                <input className="h-11 w-full rounded-xl border border-slate-700 bg-slate-900/90 px-3 text-sm" placeholder="Organization name" value={authTenantName} onChange={(event) => setAuthTenantName(event.target.value)} required />
+              </>
+            ) : null}
+            {authError ? <div className="text-sm text-rose-300">{authError}</div> : null}
+            <button type="submit" className="h-11 w-full rounded-xl border border-cyan-400/35 bg-cyan-500/15 text-sm font-medium text-cyan-50">
+              {authMode === 'login' ? 'Sign in' : 'Create account'}
+            </button>
+          </form>
+          <button className="mt-3 text-sm text-cyan-200" onClick={() => setAuthMode(authMode === 'login' ? 'signup' : 'login')}>
+            {authMode === 'login' ? 'Need an account? Sign up' : 'Have an account? Sign in'}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen px-4 py-4 text-slate-100 sm:px-6 xl:px-8">
       <div className="mx-auto flex w-full max-w-[1900px] flex-col gap-3">
+        <div className="flex items-center justify-between rounded-xl border border-slate-700 bg-slate-900/70 px-3 py-2 text-sm">
+          <div className="flex items-center gap-3">
+            <span className="text-slate-300">Signed in as <span className="text-slate-100">{authSession.user.email}</span></span>
+            {authSession.tenants.length > 1 ? (
+              <select
+                className="h-9 rounded-lg border border-slate-700 bg-slate-900 px-2"
+                value={authSession.activeTenantId}
+                onChange={(event) => void handleTenantChange(event.target.value)}
+              >
+                {authSession.tenants.map((tenant) => (
+                  <option key={tenant.id} value={tenant.id}>{tenant.name}</option>
+                ))}
+              </select>
+            ) : (
+              <span className="text-slate-400">{authSession.tenants[0]?.name ?? authSession.activeTenantId}</span>
+            )}
+          </div>
+          <button className="rounded-lg border border-slate-700 px-3 py-1.5 text-slate-200 hover:bg-slate-800" onClick={() => void handleLogout()}>
+            Sign out
+          </button>
+        </div>
         <ControlSurfaceHeader
           repos={repos}
           selectedRepoId={selectedRepoId}

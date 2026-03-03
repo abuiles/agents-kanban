@@ -20,6 +20,9 @@ The runtime resolves credentials in this order:
 
 1. Provider credential registry (`/api/scm/credentials`) keyed by provider + host
 2. (GitHub only) legacy fallback in KV key `github_pat`
+3. Optional platform support-admin bootstrap via worker env:
+   - `PLATFORM_ADMIN_EMAIL`
+   - `PLATFORM_ADMIN_PASSWORD`
 
 Set this for local examples:
 
@@ -101,6 +104,7 @@ These are mandatory for non-mocked runs:
 
 - KV: `SECRETS_KV`
 - R2 bucket: `RUN_ARTIFACTS` (artifacts + optional Codex auth bundle)
+- D1: `TENANT_DB` (tenant/auth/admin persistence)
 - Workflow: `RUN_WORKFLOW`
 - Durable Objects: `BOARD_INDEX`, `REPO_BOARD`, `Sandbox`
 
@@ -108,6 +112,34 @@ If bindings changed, run:
 
 ```bash
 npx wrangler types
+```
+
+## 3.5) D1 migrations (required)
+
+Tenant/auth/admin tables are versioned in [`migrations/`](../migrations).
+
+Create a new migration:
+
+```bash
+npx wrangler d1 migrations create TENANT_DB <message>
+```
+
+List pending migrations:
+
+```bash
+npx wrangler d1 migrations list TENANT_DB --local
+```
+
+Apply locally (for local dev DB):
+
+```bash
+npx wrangler d1 migrations apply TENANT_DB --local
+```
+
+Apply remotely (for deployed DB):
+
+```bash
+npx wrangler d1 migrations apply TENANT_DB --remote
 ```
 
 ## 4) `.codex` auth bundle (for Codex execution)
@@ -167,6 +199,14 @@ You can continue to use `npx wrangler dev` for Worker-only execution on the lega
    - `POST /api/me/tenant-context` to set active tenant if multiple memberships exist
    - Confirm the response contains no `tenant_legacy` fallback tenant and requires an explicit tenant selection.
    - `GET /api/tenants` to verify tenant visibility
+
+0.5 Optional support-admin smoke test (Stage 4.6):
+
+   - `POST /api/platform/auth/login`
+   - `POST /api/platform/support/assume-tenant` with `tenantId` and a `reason`
+   - Re-run a tenant-scoped endpoint using `x-support-session-token`
+   - `POST /api/platform/support/release-tenant`
+   - `GET /api/platform/audit-log` to verify audit entries
 
 1. Create/get board and repo
    - `GET /api/board?repoId=all`

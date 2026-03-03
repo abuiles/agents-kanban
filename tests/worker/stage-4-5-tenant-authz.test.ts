@@ -1,6 +1,7 @@
 import { env } from 'cloudflare:test';
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import worker from '../../src/index';
+import { ensureTenantDbSchema } from './helpers';
 
 function createExecutionContext(): ExecutionContext {
   return {
@@ -46,6 +47,10 @@ function uniqueSlug(prefix: string): string {
 }
 
 describe('Stage 4.5 tenant auth context + cross-tenant authorization', () => {
+  beforeEach(async () => {
+    await ensureTenantDbSchema();
+  });
+
   it('implements signup/login/me and active tenant context resolution from session', async () => {
     const signup = await api<{
       user: { id: string; email: string };
@@ -59,7 +64,6 @@ describe('Stage 4.5 tenant auth context + cross-tenant authorization', () => {
         password: 'secret-pass',
         displayName: 'Owner One',
         tenantName: 'Tenant Auth Org',
-        tenantSlug: uniqueSlug('tenant-auth-org'),
         seatLimit: 3
       })
     });
@@ -132,8 +136,7 @@ describe('Stage 4.5 tenant auth context + cross-tenant authorization', () => {
       body: JSON.stringify({
         email: `${uniqueSlug('operator')}@example.com`,
         password: 'secret-pass',
-        tenantName: 'Primary Org',
-        tenantSlug: uniqueSlug('primary-org')
+        tenantName: 'Primary Org'
       })
     });
     expect(signup.status).toBe(201);
@@ -218,8 +221,7 @@ describe('Stage 4.5 tenant auth context + cross-tenant authorization', () => {
       body: JSON.stringify({
         email: `${uniqueSlug('viewer')}@example.com`,
         password: 'secret-pass',
-        tenantName: 'Tenant List A',
-        tenantSlug: uniqueSlug('tenant-list-a')
+        tenantName: 'Tenant List A'
       })
     });
     expect(signup.status).toBe(201);
