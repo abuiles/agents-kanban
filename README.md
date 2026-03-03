@@ -9,6 +9,10 @@ AgentsKanban is a Cloudflare Workers application for multi-repo task orchestrati
 - Run orchestration with status, logs, artifacts, and retry actions
 - Cloudflare-native runtime components (Durable Objects, Workflows, R2, D1, KV, Containers)
 
+## Screenshot
+
+![AgentsKanban board overview](docs/assets/screenshots/agentskanban-abuiles-minions-overview.png)
+
 ## Architecture Summary
 
 - UI: React + Vite static assets served by Workers assets binding
@@ -89,6 +93,44 @@ Use Worker secrets for sensitive values (do not store secrets in `vars`). For lo
 ## API Workflow
 
 For operator/API flow and request sequence, use [docs/api_prompt.md](docs/api_prompt.md).
+
+## Codex Auth (ChatGPT Account)
+
+If you want sandbox runs to use your ChatGPT-linked Codex CLI auth, upload a `.codex` auth bundle to R2 and point the Worker at it.
+
+1. Build a minimal `.codex` bundle from your local machine:
+
+```bash
+tmp_dir="$(mktemp -d)"
+mkdir -p "$tmp_dir/.codex"
+cp "$HOME/.codex/auth.json" "$tmp_dir/.codex/auth.json"
+cp "$HOME/.codex/config.toml" "$tmp_dir/.codex/config.toml"
+tar -czf codex-auth.tgz -C "$tmp_dir" .codex
+rm -rf "$tmp_dir"
+```
+
+2. Upload it to the run artifacts bucket:
+
+```bash
+npx wrangler r2 object put my-sandbox-run-artifacts/auth/codex-auth.tgz --file ./codex-auth.tgz --remote
+```
+
+3. Set the global bundle key secret used by the Worker:
+
+```bash
+npx wrangler secret put CODEX_AUTH_BUNDLE_R2_KEY
+```
+
+Use this value:
+
+```text
+auth/codex-auth.tgz
+```
+
+Notes:
+- The Worker restores this bundle into the sandbox before invoking `codex`.
+- Keep `auth.json` private; never commit or share it.
+- If auth fails, check `docs/local-testing.md` troubleshooting for Codex bundle diagnostics.
 
 ## Key Docs
 
