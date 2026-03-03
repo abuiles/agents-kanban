@@ -1,0 +1,17 @@
+{
+  "tenant": {
+    "externalId": "tenant_local",
+    "slug": "local",
+    "name": "Local deployment",
+    "domain": "localhost",
+    "seatLimit": 25,
+    "createdByUserId": "system"
+  },
+  "owners": [
+    {
+      "email": "owner@example.com",
+      "password": "change-me-now",
+      "displayName": "Primary Owner"
+    }
+  ]
+}

@@ -136,6 +136,18 @@ Apply locally (for local dev DB):
 npx wrangler d1 migrations apply TENANT_DB --local
 ```
 
+Bootstrap single-tenant config + owner users from JSON (idempotent upsert):
+
+```bash
+npm run bootstrap:single-tenant -- --input ./scripts/bootstrap-single-tenant.example.json --local
+```
+
+Dry-run SQL generation:
+
+```bash
+npm run bootstrap:single-tenant -- --input ./scripts/bootstrap-single-tenant.example.json --dry-run
+```
+
 Apply remotely (for deployed DB):
 
 ```bash
