@@ -103,6 +103,33 @@ This project was inspired by Stripe's Minions work on one-shot, end-to-end codin
   - `GITHUB_TOKEN` and/or `GITLAB_TOKEN`
   - `OPENAI_API_KEY`
 
+## GitHub PAT Setup (`GITHUB_TOKEN`)
+
+If you use GitHub repos, create a GitHub Personal Access Token and provide it as `GITHUB_TOKEN`.
+
+Recommended: Fine-grained personal access token
+
+1. GitHub: **Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate new token**
+2. Resource owner: your user/org that owns the target repo
+3. Repository access: select the target repo(s)
+4. Repository permissions (minimum practical set):
+   - Contents: **Read and write**
+   - Pull requests: **Read and write**
+   - Metadata: **Read-only** (usually default)
+5. Copy the token once (GitHub will not show it again)
+
+Set it for local development in `.dev.vars`:
+
+```text
+GITHUB_TOKEN=<your_github_pat>
+```
+
+Set it for deployed Worker runtime:
+
+```bash
+npx wrangler secret put GITHUB_TOKEN
+```
+
 ## Local Setup
 
 1. Install dependencies:
@@ -171,6 +198,15 @@ npm run bootstrap:single-tenant -- --input ./scripts/bootstrap-single-tenant.exa
 ```
 
 For deeper setup and troubleshooting, see [docs/local-testing.md](docs/local-testing.md) and [docs/features-and-api.md](docs/features-and-api.md).
+
+## Onboarding Prompts
+
+Use these prompt docs when you want guided setup/testing or task-creation workflows with an LLM:
+
+- Local setup Q&A (local-only, no `--remote` flow):
+  [docs/prompts/local-onboarding-qa-prompt.md](docs/prompts/local-onboarding-qa-prompt.md)
+- Empty-repo task bootstrap for Minions Snake demo (plan-first task prompts + dependency graph):
+  [docs/prompts/minions-snake-empty-repo-onboarding.md](docs/prompts/minions-snake-empty-repo-onboarding.md)
 
 ## Commands
 
