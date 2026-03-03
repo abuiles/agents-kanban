@@ -6,12 +6,54 @@ AgentsKanban is a Cloudflare Workers application for multi-repo task orchestrati
 
 ## Overview
 
-- Multi-repo board for planning and execution
-- Task lifecycle across kanban columns (`INBOX` to `DONE` / `FAILED`)
-- Run orchestration with status, logs, artifacts, and retry actions
-- SCM compatibility: works with both GitHub and GitLab repositories
-- Human-in-the-loop control: operators can attach to a live run, take over the sandbox, and steer agent behavior when needed
-- Cloudflare-native runtime components (Durable Objects, Workflows, R2, D1, KV, Containers)
+- Plan and track work across multiple repositories in one Kanban board
+- Move tasks from `INBOX` to `DONE` and see exactly where each task stands
+- Link tasks together with dependencies so downstream work waits until upstream work is ready
+- Run tasks with background agents and review logs, artifacts, previews, and retries in one place
+- Use either GitHub or GitLab repositories
+- Let a human step in at any point: observe, open a terminal, and take over a live run
+
+## Features
+
+### Board & Task Management
+
+- A single board to manage work across multiple repos
+- Clear task stages: `INBOX`, `READY`, `ACTIVE`, `REVIEW`, `DONE`, `FAILED`
+- Create and edit tasks with goal, instructions, links, and acceptance criteria
+- Filter the board by repo when you want to focus on one codebase
+
+### Dependency-Aware Execution
+
+- Set upstream/downstream relationships between tasks in the same repo
+- Keep dependent work blocked until upstream work is truly review-ready
+- See why a task is blocked and when it becomes unblocked
+- Choose a primary upstream task when multiple dependencies exist
+
+### Run Lifecycle, Preview, and Evidence
+
+- Every run has a clear lifecycle and timeline, from queued to done/failed
+- Start runs, retry runs, retry preview discovery, and retry evidence capture
+- Automatically discover preview URLs and collect before/after evidence
+- Review logs and artifacts for each run
+
+### Operator Controls
+
+- Watch live run events and command history
+- Open a live console (terminal) session into an active run sandbox
+- Connect directly to the sandbox over websocket and inspect the live environment
+- Take control from the agent when manual intervention is needed
+
+### Repository & SCM Support
+
+- Works with both GitHub and GitLab
+- Store and manage SCM credentials per provider/repo
+- Configure preview/evidence behavior at the repo level
+
+### Tenant and Access Foundations
+
+- Built-in tenant, login, and membership foundations
+- Invite-based onboarding and support-session workflows
+- Usage reporting at tenant and run level
 
 ## Inspiration
 
@@ -202,6 +244,11 @@ Current roadmap is organized as P1-P4:
 - P3: Scale and scheduling
 - P4: Security and governance
 
+Near-term planned capabilities (not fully implemented yet):
+
+- P2 (Control and explainability): run audit endpoint, richer transition rationale, safe cancel semantics
+- P3 (Scale and scheduling): queued/blocked reason codes, per-repo and global concurrency behavior, fairness/backpressure controls
+
 See [docs/roadmap.md](docs/roadmap.md) for details and [docs/plans/current/README.md](docs/plans/current/README.md) for active plan docs.
 
 ## Codex Auth (ChatGPT Account)
@@ -246,7 +293,11 @@ Notes:
 
 - [docs/plans/current/README.md](docs/plans/current/README.md)
 - [docs/plans/current/p1-single-tenant-foundation.md](docs/plans/current/p1-single-tenant-foundation.md)
+- [docs/plans/current/p2-control-and-explainability.md](docs/plans/current/p2-control-and-explainability.md)
+- [docs/plans/current/p3-scale-and-scheduling.md](docs/plans/current/p3-scale-and-scheduling.md)
 - [docs/features-and-api.md](docs/features-and-api.md)
+- [docs/tenant-auth-api.md](docs/tenant-auth-api.md)
+- [docs/api_prompt.md](docs/api_prompt.md)
 - [docs/local-testing.md](docs/local-testing.md)
 - [docs/roadmap.md](docs/roadmap.md)
 - Cloudflare Workers docs: https://developers.cloudflare.com/workers/
