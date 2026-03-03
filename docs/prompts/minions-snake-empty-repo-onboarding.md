@@ -1,19 +1,30 @@
-# Minions Snake Demo: Empty-Repo Onboarding Playbook
+# Minions Snake (Single-File JS): Empty-Repo Onboarding Playbook
 
-This playbook defines how to bootstrap a brand-new repo and create a dependency-aware 10-task backlog in AgentsKanban.
+This playbook defines how to bootstrap a brand-new repo and create a dependency-aware 10-task backlog in AgentsKanban to deliver a full playable minion-themed snake game using only:
+- `index.html`
+- inline or linked vanilla JavaScript
+- optional CSS in `index.html` (or a tiny `styles.css` if you choose)
+
+## Hard constraints for the game implementation
+
+- No backend/API for gameplay logic.
+- No framework required (no React/Vue/Angular).
+- No server required for gameplay state.
+- Must be deployable to GitHub Pages.
+- Keep architecture simple and readable.
 
 Scope for this playbook:
 - Create repo + tasks only.
-- Do not implement gameplay in this phase.
+- Plan work for full game implementation in later runs.
 - Tasks are written so Codex must plan first, then implement.
 
 ## 1) Preconditions
 
-- Local API base: `http://127.0.0.1:5173/api`
+- Local API base for task orchestration: `http://127.0.0.1:5173/api`
 - Auth header on all requests:
 
 ```text
-Authorization: Bearer <AGENTS_KANBAN_TOKEN>
+x-api-token: <AGENTS_KANBAN_TOKEN>
 ```
 
 - Ask the user to create a new empty GitHub test repository first (public or private), then provide:
@@ -21,9 +32,13 @@ Authorization: Bearer <AGENTS_KANBAN_TOKEN>
   - full repo URL (for `baselineUrl`)
 - Starting assumption: target repo has no game implementation yet.
 
-## 2) Create Repo (Empty-Repo Bootstrap)
+## 2) Create Repo (Task Orchestration Bootstrap)
 
 Only after the user confirms the GitHub test repo exists, create the repo record in AgentsKanban.
+Example used in this session:
+- `projectPath`: `abuiles/minions-demo-2`
+- `baselineUrl`: `https://github.com/abuiles/minions-demo-2`
+- returned `repoId`: `repo_abuiles_minions_demo_2`
 
 ```json
 {
@@ -40,138 +55,143 @@ Endpoint:
 
 Capture returned `repoId` and use it in all task payloads.
 
-## 3) Task Prompt Standard (Required in Every Task)
+## 3) Task Prompt Style (Put This at the Top of Each `taskPrompt`)
 
-Every task `taskPrompt` must include this execution contract:
-
-1. Plan first:
-- Produce a decision-complete implementation plan before writing code.
-- Plan must include files to change, data/control flow, edge cases, tests, and acceptance mapping.
-
-2. Implement second:
-- Execute the approved plan end-to-end.
-- If assumptions are needed, state them and proceed with safest default.
-
-3. Validate and report:
-- Run relevant tests/checks.
-- Report files changed, tests run/results, and residual risks.
-
-Use this exact directive block in each `taskPrompt`:
+Use this friendlier prompt snippet in each `taskPrompt` so tasks stay consistent but not over-constrained:
 
 ```text
-Execution mode requirements:
-1) PLAN FIRST: Before writing code, produce a detailed, decision-complete plan covering architecture, files, data flow, edge cases, and tests mapped to acceptance criteria.
-2) IMPLEMENT SECOND: After planning, implement the plan fully. Do not stop at partial scaffolding.
-3) VALIDATE: Run relevant tests/checks and include results.
-4) REPORT: Summarize files changed, validation output, and any remaining risks.
+You are implementing this task for the minions game.
+
+First, plan:
+- what files you will touch
+- how data and state should flow
+- edge cases and assumptions
+- the exact checks you will run
+
+Then implement the task end-to-end in one pass (no partial scaffolding).
+
+After implementing, run the checks and report what passed/failed, files changed, and any risk you could not fully resolve.
+
+Constraints:
+- Frontend-only gameplay logic
+- No backend game API
+- Must be deployable to GitHub Pages
 ```
 
-## 4) 10-Task Backlog (Detailed)
+## 4) 10-Task Backlog (Full Game, Simple HTML/JS)
 
-Task keys here (`T1..T10`) are for planning; real `taskId` values come from API responses.
+Task keys (`T1..T10`) are planning labels; real `taskId` values come from API responses.
 
-### T1 — Bootstrap initial game skeleton and tooling
+### T1 — Bootstrap shell + GitHub Pages (`index.html`, pages deployability)
 Type: build
 Depends on: none
 Parallel lane: foundation
 Acceptance:
-- A runnable game shell exists in the repo.
-- Basic project scripts for run/build/test are present.
-- README has local run instructions.
-- At least one smoke test target exists.
+- `index.html` exists and loads game canvas/board area.
+- Start/restart controls are visible.
+- No framework dependency required.
+- GitHub Pages is configured for the repo (or clearly documented configuration steps), and the game can be accessed from a Pages URL.
+- The branch-based Pages settings are compatible with a simple static project (`index.html` only).
 
-### T2 — Minion movement loop and entity model
+### T2 — Render board and minion visuals
+Type: build
+Depends on: T1 (required)
+Parallel lane: foundation
+Acceptance:
+- `index.html` canvas/board renders on desktop and mobile.
+- Minion body/head are visually distinct.
+- Layout and spacing are stable across ticks.
+
+### T3 — Deterministic game loop
 Type: build
 Depends on: T1
-Parallel lane: gameplay-core
+Parallel lane: engine
 Acceptance:
-- Minion entities are represented in game state.
-- Tick/update loop moves minions deterministically.
-- Basic movement behavior is testable.
+- Main tick cadence is stable and deterministic.
+- Start/stop/reset transitions are consistent.
+- Loop timing remains stable under active input.
 
-### T3 — Collectible spawn system with deterministic seed controls
+### T4 — Input and direction model
 Type: build
 Depends on: T1
-Parallel lane: gameplay-core
+Parallel lane: engine
 Acceptance:
-- Spawn system supports random placement.
-- Seed or deterministic override path exists for tests.
-- Spawn API distinguishes collectible types.
+- Keyboard direction controls are deterministic.
+- Reverse direction is blocked when illegal.
+- Control state survives pause/resume cleanly.
 
-### T4 — Explosive avocado trigger mechanic
+### T5 — Item system and spawn logic (banana/avocado/explosive)
 Type: build
 Depends on: T1
-Parallel lane: feature
+Parallel lane: gameplay
 Acceptance:
-- Explosive avocado can spawn as collectible type.
-- Consumption trigger event fires for explosive avocado.
-- Trigger can be simulated deterministically.
+- Items spawn only in free cells.
+- Banana, avocado, and explosive avocado are all supported.
+- Deterministic spawn mode is configurable for tests.
 
-### T5 — Consumption/collision pipeline
+### T6 — Core mechanics integration
 Type: build
-Depends on: T2 (primary), T3
+Depends on: T2 (primary), T3, T4, T5
 Parallel lane: integration
 Acceptance:
-- Collision/consumption flow processes collectible events.
-- Event pipeline integrates with entity state updates.
-- Non-explosive and explosive paths are distinguishable.
+- Movement, collision, scoring, and growth are unified per tick.
+- Wall/self-collision rules are enforced.
+- Mechanics are deterministic with stable state transitions.
 
-### T6 — Survivor resolution: all minions die except one
-Type: qa/rules
-Depends on: T4 (primary), T5
-Parallel lane: rules
+### T7 — Multi-minion game model
+Type: build
+Depends on: T6
+Parallel lane: mechanics
 Acceptance:
-- On explosive avocado consumption, exactly one minion survives.
-- Survivor selection rule is deterministic/documented.
-- Invalid states (0 survivors, >1 survivors) are guarded.
+- Multiple minions share one world and update deterministically.
+- Minion life/death state is explicit and traceable.
+- No minion behavior regresses existing loop assumptions.
 
-### T7 — Deterministic simulation harness
+### T8 — Explosive avocado survival rule
+Type: rules
+Depends on: T7
+Parallel lane: mechanics
+Acceptance:
+- On explosive avocado, only one minion survives.
+- Survivor selection is deterministic.
+- Edge conditions (single minion, concurrent collisions) are safe.
+
+### T9 — Persistence + deterministic QA mode
 Type: qa
-Depends on: T3 (primary), T5
+Depends on: T6 (primary), T8
 Parallel lane: qa
 Acceptance:
-- Headless or scripted simulation path exists.
-- Seeded scenarios replay consistently.
-- Harness can produce artifacts/logs for review.
+- High score and last run summary persist locally.
+- Deterministic scenario checks are reproducible.
+- Corrupt/missing saved state degrades safely.
 
-### T8 — Automated tests for explosive-avocado scenarios
-Type: qa
-Depends on: T6 (primary), T7
-Parallel lane: qa
-Acceptance:
-- Tests cover happy path and edge cases for survivor rule.
-- Tests validate deterministic replay behavior.
-- Failure messages are actionable.
-
-### T9 — Demo walkthrough and acceptance checklist
-Type: docs
-Depends on: T8
-Parallel lane: docs
-Acceptance:
-- Step-by-step demo script exists for showcasing feature behavior.
-- Checklist maps to task acceptance criteria.
-- Includes expected outputs/screens/log markers.
-
-### T10 — Final onboarding/API execution guide
-Type: docs
+### T10 — GitHub Pages deployment and operator playbook
+Type: docs/devops
 Depends on: T9
-Parallel lane: docs
+Parallel lane: release
 Acceptance:
-- Clear guide for creating same backlog via API in new environments.
-- Includes payload examples and dependency wiring instructions.
-- Includes troubleshooting and validation checklist.
+- Repo is deployable on GitHub Pages.
+- README includes Pages deployment steps and live URL pattern.
+- Playbook includes how to demo the game end-to-end.
 
 ## 5) Dependency Graph
 
-- T2 <- T1
-- T3 <- T1
-- T4 <- T1
-- T5 <- T2 (primary), T3
-- T6 <- T4 (primary), T5
-- T7 <- T3 (primary), T5
-- T8 <- T6 (primary), T7
-- T9 <- T8
-- T10 <- T9
+- T1: Setup
+- T2: Render ← T1
+- T3: Loop ← T1
+- T4: Input ← T1
+- T5: Spawn ← T1
+- T6: Core integration ← T2 (primary), T3, T4, T5
+- T7: Multi-minion ← T6
+- T8: Explosive rule ← T7
+- T9: Persistence + QA ← T6 (primary), T8
+- T10: GitHub Pages playbook ← T9
+
+## 5a) Suggested parallel run lanes
+
+- T2, T3, T4, T5 are safe to run in parallel after `T1`.
+- T7 and T8 branch from `T6` and can be staged in READY at similar time.
+- T9 waits on `T6` and `T8`; `T10` waits on `T9`.
 
 ## 6) API Payload Templates
 
@@ -184,7 +204,7 @@ All tasks should start as `INBOX`.
   "repoId": "<repoId>",
   "title": "<task title>",
   "description": "<short operator-facing description>",
-  "taskPrompt": "<detailed prompt including required execution mode block>",
+  "taskPrompt": "<include the task prompt style block from section 3>",
   "acceptanceCriteria": [
     "<criterion 1>",
     "<criterion 2>",
@@ -192,7 +212,7 @@ All tasks should start as `INBOX`.
   ],
   "context": {
     "links": [],
-    "notes": "Keep implementation scoped. Do not add unnecessary dependencies."
+    "notes": "Frontend-only game. No backend game API. Keep it GitHub Pages deployable."
   },
   "status": "INBOX"
 }
@@ -203,13 +223,13 @@ All tasks should start as `INBOX`.
 ```json
 {
   "repoId": "<repoId>",
-  "title": "Consumption/collision pipeline",
-  "description": "Integrate movement + spawns into collectible consumption handling.",
-  "taskPrompt": "Implement collision/consumption event processing that integrates movement and spawn systems.\n\nExecution mode requirements:\n1) PLAN FIRST: Before writing code, produce a detailed, decision-complete plan covering architecture, files, data flow, edge cases, and tests mapped to acceptance criteria.\n2) IMPLEMENT SECOND: After planning, implement the plan fully. Do not stop at partial scaffolding.\n3) VALIDATE: Run relevant tests/checks and include results.\n4) REPORT: Summarize files changed, validation output, and any remaining risks.",
+  "title": "Consumption/collision event pipeline",
+  "description": "Integrate movement and item systems into one event flow.",
+  "taskPrompt": "You are implementing this task for the minions game.\n\nFirst, plan what files to touch, state flow, edge cases, and checks. Then implement the task end-to-end. After implementation, run checks and report outcomes, changed files, and risks. Keep frontend-only gameplay, no backend game API, and GitHub Pages compatibility.",
   "acceptanceCriteria": [
-    "Collision and consumption events are processed correctly.",
-    "Explosive and non-explosive collectibles are distinguished in logic.",
-    "Tests or deterministic validation cover core event flow."
+    "Consumption/collision events are processed correctly.",
+    "Explosive and non-explosive item outcomes are separated.",
+    "State updates remain consistent per game tick."
   ],
   "dependencies": [
     { "upstreamTaskId": "<taskId_T2>", "mode": "review_ready", "primary": true },
@@ -217,7 +237,7 @@ All tasks should start as `INBOX`.
   ],
   "context": {
     "links": [],
-    "notes": "Integrate existing modules; avoid unnecessary refactors."
+    "notes": "No framework requirement. Keep logic readable and testable."
   },
   "status": "INBOX"
 }
@@ -228,12 +248,11 @@ All tasks should start as `INBOX`.
 Because dependencies require real `taskId`s, create tasks in topological order:
 
 1. T1
-2. T2, T3, T4
-3. T5, T7
-4. T6
-5. T8
-6. T9
-7. T10
+2. T2, T3, T4, T5
+3. T6
+4. T7, T8
+5. T9
+6. T10
 
 Alternative:
 - Create all tasks without dependencies first.
@@ -255,6 +274,10 @@ Alternative:
 - No task depends on itself.
 - At most one `primary: true` dependency per task.
 - All tasks include plan-first/implement-second directive.
+- Graph has intended fork/join shape:
+  - `T2/T3/T4/T5` parallel after `T1`.
+  - `T7` and `T8` parallel after `T6`.
+- All task prompts enforce frontend-only + GitHub Pages constraints.
 - All tasks start in `INBOX` (unless intentionally changed).
 
 ## 10) Troubleshooting
@@ -268,9 +291,9 @@ Alternative:
 - `Invalid dependencies: only one primary dependency is allowed.`
   - Keep exactly one primary upstream in multi-dependency tasks.
 
-- Dependency not unlocking as expected:
-  - Current mode is `review_ready`; ensure upstream task reaches review-ready conditions.
+- Game task drifts into backend/API design:
+  - Re-assert constraints in prompt: no backend game API, keep single-file JS approach.
 
 ---
 
-This playbook is the canonical onboarding artifact for creating the minion snake demo backlog in an empty repo environment.
+This playbook is the canonical onboarding artifact for creating the full minion snake game backlog (simple HTML/JS, GitHub Pages deployable) in an empty repo environment.

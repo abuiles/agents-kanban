@@ -76,7 +76,7 @@ function asD1Database(value: unknown): D1Database | undefined {
 
 function resolveUsageDatabase(env: Env): D1Database | undefined {
   const record = env as unknown as Record<string, unknown>;
-  for (const preferred of ['USAGE_DB', 'TENANT_USAGE_DB', 'APP_DB', 'DB']) {
+  for (const preferred of ['USAGE_DB', 'TENANT_USAGE_DB', 'TENANT_DB', 'APP_DB', 'DB']) {
     const db = asD1Database(record[preferred]);
     if (db) {
       return db;
@@ -104,32 +104,46 @@ function selectColumn(columns: Set<string>, candidates: string[], required = fal
 }
 
 async function resolveUsageTable(db: D1Database): Promise<UsageTableConfig | undefined> {
-  const tables = await db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table'`).all<{ name: string }>();
-  const tableNames = new Set((tables.results ?? []).map((row) => row.name));
-  const table = TABLE_CANDIDATES.find((candidate) => tableNames.has(candidate));
-  if (!table) {
+  try {
+    const tables = await db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table'`).all<{ name: string }>();
+    const tableNames = new Set((tables.results ?? []).map((row) => row.name));
+    const table = TABLE_CANDIDATES.find((candidate) => tableNames.has(candidate));
+    if (!table) {
+      return undefined;
+    }
+
+    const pragmaRows = await db.prepare(`PRAGMA table_info(${quoteIdentifier(table)})`).all<{ name: string }>();
+    const columnNames = new Set((pragmaRows.results ?? []).map((row) => row.name));
+    const tenantId = selectColumn(columnNames, ['tenant_id', 'tenantId'], true);
+    const at = selectColumn(columnNames, ['at', 'created_at', 'recorded_at'], true);
+    const category = selectColumn(columnNames, ['category', 'usage_category'], true);
+    const quantity = selectColumn(columnNames, ['quantity', 'amount'], true);
+
+    if (!tenantId || !at || !category || !quantity) {
+      return undefined;
+    }
+
+    const columns = {
+      id: selectColumn(columnNames, ['id', 'entry_id']),
+      tenantId,
+      repoId: selectColumn(columnNames, ['repo_id', 'repoId']),
+      taskId: selectColumn(columnNames, ['task_id', 'taskId']),
+      runId: selectColumn(columnNames, ['run_id', 'runId']),
+      at,
+      category,
+      quantity,
+      unit: selectColumn(columnNames, ['unit']),
+      source: selectColumn(columnNames, ['source']),
+      metadata: selectColumn(columnNames, ['metadata']),
+      rateVersion: selectColumn(columnNames, ['rate_version', 'rateVersion']),
+      estimatedCostUsd: selectColumn(columnNames, ['estimated_cost_usd', 'estimatedCostUsd', 'estimated_usd']),
+      unitRateUsd: selectColumn(columnNames, ['unit_rate_usd', 'rate_usd', 'cost_rate_usd'])
+    } satisfies UsageTableConfig['columns'];
+    return { table, columns };
+  } catch (error) {
+    console.warn('Usage ledger table resolution failed', { error });
     return undefined;
   }
-
-  const pragmaRows = await db.prepare(`PRAGMA table_info(${quoteIdentifier(table)})`).all<{ name: string }>();
-  const columnNames = new Set((pragmaRows.results ?? []).map((row) => row.name));
-  const columns = {
-    id: selectColumn(columnNames, ['id', 'entry_id']),
-    tenantId: selectColumn(columnNames, ['tenant_id', 'tenantId'], true)!,
-    repoId: selectColumn(columnNames, ['repo_id', 'repoId']),
-    taskId: selectColumn(columnNames, ['task_id', 'taskId']),
-    runId: selectColumn(columnNames, ['run_id', 'runId']),
-    at: selectColumn(columnNames, ['at', 'created_at', 'recorded_at'], true)!,
-    category: selectColumn(columnNames, ['category', 'usage_category'], true)!,
-    quantity: selectColumn(columnNames, ['quantity', 'amount'], true)!,
-    unit: selectColumn(columnNames, ['unit']),
-    source: selectColumn(columnNames, ['source']),
-    metadata: selectColumn(columnNames, ['metadata']),
-    rateVersion: selectColumn(columnNames, ['rate_version', 'rateVersion']),
-    estimatedCostUsd: selectColumn(columnNames, ['estimated_cost_usd', 'estimatedCostUsd', 'estimated_usd']),
-    unitRateUsd: selectColumn(columnNames, ['unit_rate_usd', 'rate_usd', 'cost_rate_usd'])
-  } satisfies UsageTableConfig['columns'];
-  return { table, columns };
 }
 
 function toFiniteNumber(value: number) {
