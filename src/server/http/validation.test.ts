@@ -1,5 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { parseCreateRepoInput, parseCreateTaskInput, parseUpdateRepoInput, parseUpdateTaskInput, parseUpsertScmCredentialInput } from './validation';
+import {
+  parseAcceptTenantInviteInput,
+  parseAuthLoginInput,
+  parseAuthSignupInput,
+  parseCreateRepoInput,
+  parseCreateTaskInput,
+  parseCreateUserApiTokenInput,
+  parseUpdateRepoInput,
+  parseUpdateTaskInput,
+  parseUpsertScmCredentialInput
+} from './validation';
 
 function createTaskPayload(overrides: Record<string, unknown> = {}) {
   return {
@@ -325,5 +335,48 @@ describe('SCM credential validation', () => {
         token: 'secret-token'
       })
     ).toThrow('Invalid scmProvider.');
+  });
+});
+
+describe('auth and token validation', () => {
+  it('preserves password whitespace for signup/login/invite acceptance', () => {
+    expect(parseAuthSignupInput({
+      email: 'owner@example.com',
+      password: '  pass with spaces  ',
+      tenantName: 'Local'
+    }).password).toBe('  pass with spaces  ');
+
+    expect(parseAuthLoginInput({
+      email: 'owner@example.com',
+      password: '  pass with spaces  '
+    }).password).toBe('  pass with spaces  ');
+
+    expect(parseAcceptTenantInviteInput({
+      token: 'invite_token',
+      password: '  invited secret  '
+    }).password).toBe('  invited secret  ');
+  });
+
+  it('rejects empty invite token values', () => {
+    expect(() =>
+      parseAcceptTenantInviteInput({
+        token: '',
+        password: 'secret'
+      })
+    ).toThrow('Invalid token.');
+  });
+
+  it('normalizes API token expiration timestamps and rejects invalid values', () => {
+    expect(parseCreateUserApiTokenInput({
+      name: 'CI token',
+      expiresAt: '2026-03-02T00:00:00Z'
+    }).expiresAt).toBe('2026-03-02T00:00:00.000Z');
+
+    expect(() =>
+      parseCreateUserApiTokenInput({
+        name: 'CI token',
+        expiresAt: 'not-a-date'
+      })
+    ).toThrow('Invalid expiresAt.');
   });
 });

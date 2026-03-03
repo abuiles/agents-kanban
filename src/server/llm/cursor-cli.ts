@@ -2,6 +2,7 @@ import type { LlmAdapter } from './adapter';
 import { LineLogBuffer } from '../line-log-buffer';
 import { buildRunLog } from '../shared/real-run';
 import type { Repo, RunCommand, RunCommandPhase, RunEvent } from '../../ui/domain/types';
+import { redactSensitiveText } from '../security/redaction';
 
 const CURSOR_STREAM_INACTIVITY_TIMEOUT_MS = 120_000;
 type LoggableRunPhase = NonNullable<ReturnType<typeof buildRunLog>['phase']>;
@@ -194,7 +195,7 @@ run_with_timeout "$CURSOR_BIN" -p --force --output-format text --model ${shellQu
       context.repoBoard,
       context.runId,
       phase,
-      command,
+      redactSensitiveText(command),
       () => context.sandbox.exec(command)
     );
     const elapsedMs = Date.now() - startedAt;
@@ -250,7 +251,7 @@ async function runCursorProcessWithLogs(context: Parameters<LlmAdapter['run']>[0
     phase,
     startedAt,
     status: 'running',
-    command,
+    command: redactSensitiveText(command),
     source: 'system'
   }]);
   await repoBoard.appendRunEvents(runId, [
@@ -264,7 +265,7 @@ async function runCursorProcessWithLogs(context: Parameters<LlmAdapter['run']>[0
     appendQueue = appendQueue.then(() =>
       repoBoard.appendRunLogs(
         runId,
-        logs.map((log) => buildRunLog(runId, log.message, phase, log.level))
+        logs.map((log) => buildRunLog(runId, redactSensitiveText(log.message), phase, log.level))
       )
     );
   };
@@ -321,7 +322,7 @@ async function runCursorProcessWithLogs(context: Parameters<LlmAdapter['run']>[0
         // best effort
       }
       await repoBoard.appendRunLogs(runId, [
-        buildRunLog(runId, `${streamError} Killed Cursor process and failing run for retry.`, phase, 'error')
+        buildRunLog(runId, redactSensitiveText(`${streamError} Killed Cursor process and failing run for retry.`), phase, 'error')
       ]);
     } else {
       throw error;
@@ -346,10 +347,10 @@ async function runCursorProcessWithLogs(context: Parameters<LlmAdapter['run']>[0
     completedAt: new Date().toISOString(),
     exitCode,
     status: success || stoppedForTakeover ? 'completed' : 'failed',
-    command,
+    command: redactSensitiveText(command),
     source: 'system',
-    stdoutPreview: summarizeOutput(stdout),
-    stderrPreview: summarizeOutput(stderr)
+    stdoutPreview: summarizeOutput(redactSensitiveText(stdout)),
+    stderrPreview: summarizeOutput(redactSensitiveText(stderr))
   }]);
   await repoBoard.appendRunEvents(runId, [
     buildRunEvent(
@@ -393,7 +394,7 @@ async function emitCommandLifecycle(
     phase,
     startedAt,
     status: 'running',
-    command,
+    command: redactSensitiveText(command),
     source: 'system'
   };
   await repoBoard.upsertRunCommands(runId, [startedCommand]);
@@ -408,8 +409,8 @@ async function emitCommandLifecycle(
     completedAt: new Date().toISOString(),
     exitCode: result.exitCode,
     status: result.success ? 'completed' : 'failed',
-    stdoutPreview: summarizeOutput(result.stdout),
-    stderrPreview: summarizeOutput(result.stderr)
+    stdoutPreview: summarizeOutput(result.stdout ? redactSensitiveText(result.stdout) : result.stdout),
+    stderrPreview: summarizeOutput(result.stderr ? redactSensitiveText(result.stderr) : result.stderr)
   };
   await repoBoard.upsertRunCommands(runId, [completedCommand]);
   await repoBoard.appendRunEvents(runId, [
@@ -433,8 +434,8 @@ async function appendCommandLogs(
   stderr?: string
 ) {
   const logs = [];
-  if (stdout?.trim()) logs.push(buildRunLog(runId, stdout.trim(), phase));
-  if (stderr?.trim()) logs.push(buildRunLog(runId, stderr.trim(), phase, 'error'));
+  if (stdout?.trim()) logs.push(buildRunLog(runId, redactSensitiveText(stdout.trim()), phase));
+  if (stderr?.trim()) logs.push(buildRunLog(runId, redactSensitiveText(stderr.trim()), phase, 'error'));
   if (logs.length) await repoBoard.appendRunLogs(runId, logs);
 }
 

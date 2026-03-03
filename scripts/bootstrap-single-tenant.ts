@@ -3,7 +3,11 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, pbkdf2Sync, randomBytes } from 'node:crypto';
+
+const PASSWORD_HASH_SCHEME = 'pbkdf2_sha256';
+const PASSWORD_HASH_ITERATIONS = 210_000;
+const PASSWORD_SALT_BYTES = 16;
 
 type OwnerInput = {
   email: string;
@@ -192,7 +196,9 @@ function ownerExternalId(owner: OwnerInput): string {
 }
 
 function passwordHash(password: string): string {
-  return createHash('sha256').update(password).digest('hex');
+  const saltHex = randomBytes(PASSWORD_SALT_BYTES).toString('hex');
+  const digestHex = pbkdf2Sync(password, Buffer.from(saltHex, 'hex'), PASSWORD_HASH_ITERATIONS, 32, 'sha256').toString('hex');
+  return `${PASSWORD_HASH_SCHEME}$${PASSWORD_HASH_ITERATIONS}$${saltHex}$${digestHex}`;
 }
 
 function buildSql(input: BootstrapInput): string {

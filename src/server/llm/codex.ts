@@ -7,6 +7,7 @@ import {
   type CodexRateLimitsResponse
 } from '../codex-rate-limit';
 import type { LlmAdapter } from './adapter';
+import { redactSensitiveText } from '../security/redaction';
 
 const CODEX_STREAM_INACTIVITY_TIMEOUT_MS = 120_000;
 let parseSSEStreamFn: (<T>(stream: unknown) => AsyncIterable<T>) | undefined;
@@ -198,7 +199,7 @@ fi
       context.repoBoard,
       context.runId,
       phase,
-      command,
+      redactSensitiveText(command),
       () => context.sandbox.exec(command)
     );
 
@@ -280,7 +281,7 @@ async function runCodexProcessWithLogs(context: Parameters<LlmAdapter['run']>[0]
     phase,
     startedAt,
     status: 'running',
-    command,
+    command: redactSensitiveText(command),
     source: 'system'
   }]);
   await repoBoard.appendRunEvents(runId, [
@@ -295,7 +296,7 @@ async function runCodexProcessWithLogs(context: Parameters<LlmAdapter['run']>[0]
     appendQueue = appendQueue.then(() =>
       repoBoard.appendRunLogs(
         runId,
-        logs.map((log) => buildRunLog(runId, log.message, phase, log.level))
+        logs.map((log) => buildRunLog(runId, redactSensitiveText(log.message), phase, log.level))
       )
     );
   };
@@ -388,7 +389,7 @@ async function runCodexProcessWithLogs(context: Parameters<LlmAdapter['run']>[0]
         // best effort
       }
       await repoBoard.appendRunLogs(runId, [
-        buildRunLog(runId, `${streamError} Killed Codex process and failing run for retry.`, phase, 'error')
+        buildRunLog(runId, redactSensitiveText(`${streamError} Killed Codex process and failing run for retry.`), phase, 'error')
       ]);
     } else {
       throw error;
@@ -414,10 +415,10 @@ async function runCodexProcessWithLogs(context: Parameters<LlmAdapter['run']>[0]
     completedAt: new Date().toISOString(),
     exitCode,
     status: success || stoppedForTakeover ? 'completed' : 'failed',
-    command,
+    command: redactSensitiveText(command),
     source: 'system',
-    stdoutPreview: summarizeOutput(stdout),
-    stderrPreview: summarizeOutput(stderr)
+    stdoutPreview: summarizeOutput(redactSensitiveText(stdout)),
+    stderrPreview: summarizeOutput(redactSensitiveText(stderr))
   }]);
   await repoBoard.appendRunEvents(runId, [
     buildRunEvent(
@@ -461,7 +462,7 @@ async function emitCommandLifecycle(
     phase,
     startedAt,
     status: 'running',
-    command,
+    command: redactSensitiveText(command),
     source: 'system'
   };
   await repoBoard.upsertRunCommands(runId, [startedCommand]);
@@ -476,8 +477,8 @@ async function emitCommandLifecycle(
     completedAt: new Date().toISOString(),
     exitCode: result.exitCode,
     status: result.success ? 'completed' : 'failed',
-    stdoutPreview: summarizeOutput(result.stdout),
-    stderrPreview: summarizeOutput(result.stderr)
+    stdoutPreview: summarizeOutput(result.stdout ? redactSensitiveText(result.stdout) : result.stdout),
+    stderrPreview: summarizeOutput(result.stderr ? redactSensitiveText(result.stderr) : result.stderr)
   };
   await repoBoard.upsertRunCommands(runId, [completedCommand]);
   await repoBoard.appendRunEvents(runId, [
@@ -537,13 +538,13 @@ if (fs.existsSync(configPath) && fs.statSync(configPath).isFile()) {
   console.log('Cloudflare MCP configured: no');
 }
 const apiKey = typeof data.OPENAI_API_KEY === 'string' && data.OPENAI_API_KEY ? data.OPENAI_API_KEY : null;
-console.log(\`Codex OPENAI_API_KEY suffix: \${apiKey ? apiKey.slice(-4) : 'missing'}\`);
+console.log(\`Codex OPENAI_API_KEY present: \${apiKey ? 'yes' : 'no'}\`);
 const runtimeApiKey = typeof process.env.OPENAI_API_KEY === 'string' && process.env.OPENAI_API_KEY ? process.env.OPENAI_API_KEY : null;
-console.log(\`Runtime OPENAI_API_KEY suffix: \${runtimeApiKey ? runtimeApiKey.slice(-4) : 'missing'}\`);
+console.log(\`Runtime OPENAI_API_KEY present: \${runtimeApiKey ? 'yes' : 'no'}\`);
 const accessToken = data.tokens && typeof data.tokens.access_token === 'string' && data.tokens.access_token
   ? data.tokens.access_token
   : null;
-console.log(\`Codex access_token suffix: \${accessToken ? accessToken.slice(-4) : 'missing'}\`);
+console.log(\`Codex access_token present: \${accessToken ? 'yes' : 'no'}\`);
 `
   );
   const diagnostics = await sandbox.exec(
@@ -570,9 +571,9 @@ node /workspace/codex-auth-diagnostics.mjs
     throw await createNonRetryableError('Cloudflare MCP is not configured in sandbox codex config.');
   }
   if (
-    stdout.includes('Codex OPENAI_API_KEY suffix: missing')
-    && stdout.includes('Runtime OPENAI_API_KEY suffix: missing')
-    && stdout.includes('Codex access_token suffix: missing')
+    stdout.includes('Codex OPENAI_API_KEY present: no')
+    && stdout.includes('Runtime OPENAI_API_KEY present: no')
+    && stdout.includes('Codex access_token present: no')
   ) {
     throw await createNonRetryableError('Codex auth file is present but contains no usable credentials.');
   }
@@ -723,8 +724,8 @@ async function appendCommandLogs(
   stderr?: string
 ) {
   const logs = [];
-  if (stdout?.trim()) logs.push(buildRunLog(runId, stdout.trim(), phase));
-  if (stderr?.trim()) logs.push(buildRunLog(runId, stderr.trim(), phase, 'error'));
+  if (stdout?.trim()) logs.push(buildRunLog(runId, redactSensitiveText(stdout.trim()), phase));
+  if (stderr?.trim()) logs.push(buildRunLog(runId, redactSensitiveText(stderr.trim()), phase, 'error'));
   if (logs.length) await repoBoard.appendRunLogs(runId, logs);
 }
 
