@@ -10,6 +10,7 @@ import {
   parseAcceptTenantInviteInput,
   parseAuthLoginInput,
   parseCreateTenantInviteInput,
+  parseCreateUserApiTokenInput,
   parseAuthSignupInput,
   parseCreateRepoInput,
   parseCreateTaskInput,
@@ -37,6 +38,7 @@ type RouteParams = {
   tenantId?: string;
   memberId?: string;
   inviteId?: string;
+  tokenId?: string;
   repoId?: string;
   provider?: 'github' | 'gitlab';
   credentialId?: string;
@@ -263,6 +265,16 @@ export async function handleCreateTenantInvite(request: Request, env: Env, param
   });
 }
 
+export async function handleCreateInvite(request: Request, env: Env): Promise<Response> {
+  return withApiError(async () => {
+    const board = getBoard(env);
+    const requestContext = await resolveRequestTenantContext(env, board, request, { requireSession: true });
+    const input = parseCreateTenantInviteInput(await readJson(request));
+    await requireOwnerTenantAccess(env, board, requestContext);
+    return json(await tenantAuthDb.createTenantInvite(env, requestContext.activeTenantId, input, requestContext.userId), { status: 201 });
+  });
+}
+
 export async function handleListTenantInvites(request: Request, env: Env, params: RouteParams): Promise<Response> {
   return withApiError(async () => {
     const board = getBoard(env);
@@ -273,17 +285,66 @@ export async function handleListTenantInvites(request: Request, env: Env, params
   });
 }
 
+export async function handleListInvites(request: Request, env: Env): Promise<Response> {
+  return withApiError(async () => {
+    const board = getBoard(env);
+    const requestContext = await resolveRequestTenantContext(env, board, request, { requireSession: true });
+    await requireOwnerTenantAccess(env, board, requestContext);
+    return json(await tenantAuthDb.listTenantInvites(env, requestContext.activeTenantId, requestContext.userId));
+  });
+}
+
 export async function handleAcceptInvite(request: Request, env: Env, params: RouteParams): Promise<Response> {
   return withApiError(async () => {
-    const { requestContext } = await resolveTenantContextFromRequest(env, request, { requireSession: true });
     const body = parseAcceptTenantInviteInput(await readJson(request));
     const inviteId = parsePathParam(params.inviteId);
     const resolvedInvite = await tenantAuthDb.resolvePendingTenantInviteByToken(env, body.token);
     if (resolvedInvite.invite.id !== inviteId) {
       throw forbidden('Invite token does not match requested invite id.');
     }
-    const result = await tenantAuthDb.acceptTenantInvite(env, body.token, requestContext.userId);
-    return json(result);
+    const signup = await tenantAuthDb.signup(env, {
+      email: resolvedInvite.invite.email,
+      password: body.password,
+      displayName: body.displayName,
+      tenant: { name: 'Local deployment' }
+    });
+    const accepted = await tenantAuthDb.acceptTenantInvite(env, body.token, signup.user.id);
+    const response = json({
+      user: signup.user,
+      session: signup.session,
+      token: signup.token,
+      activeTenantId: signup.activeTenantId,
+      memberships: [accepted.membership],
+      invite: accepted.invite
+    }, { status: 201 });
+    response.headers.append('Set-Cookie', buildSessionCookie(signup.token));
+    return response;
+  });
+}
+
+export async function handleCreateApiToken(request: Request, env: Env): Promise<Response> {
+  return withApiError(async () => {
+    const { board, requestContext } = await resolveTenantContextFromRequest(env, request, { requireSession: true });
+    await requireActiveTenantAccess(env, board, requestContext);
+    const input = parseCreateUserApiTokenInput(await readJson(request));
+    return json(await tenantAuthDb.createUserApiToken(env, requestContext.userId, input), { status: 201 });
+  });
+}
+
+export async function handleListApiTokens(request: Request, env: Env): Promise<Response> {
+  return withApiError(async () => {
+    const { board, requestContext } = await resolveTenantContextFromRequest(env, request, { requireSession: true });
+    await requireActiveTenantAccess(env, board, requestContext);
+    return json(await tenantAuthDb.listUserApiTokens(env, requestContext.userId));
+  });
+}
+
+export async function handleDeleteApiToken(request: Request, env: Env, params: RouteParams): Promise<Response> {
+  return withApiError(async () => {
+    const { board, requestContext } = await resolveTenantContextFromRequest(env, request, { requireSession: true });
+    await requireActiveTenantAccess(env, board, requestContext);
+    const tokenId = parsePathParam(params.tokenId);
+    return json(await tenantAuthDb.revokeUserApiToken(env, requestContext.userId, tokenId));
   });
 }
 
@@ -852,8 +913,7 @@ export type RequestTenantContext = {
   activeTenantId: string;
   sessionId?: string;
   sessionToken?: string;
-  platformAdminId?: string;
-  supportSessionId?: string;
+  apiTokenId?: string;
 };
 
 type RequestTenantContextOptions = {
@@ -870,18 +930,6 @@ export async function resolveRequestTenantContext(
   request: Request,
   options: RequestTenantContextOptions = {}
 ): Promise<RequestTenantContext> {
-  const supportToken = readPlatformSupportToken(request);
-  if (supportToken) {
-    const support = await tenantAuthDb.resolvePlatformSupportSessionByToken(env, supportToken);
-    return {
-      userId: `platform_admin:${support.session.adminId}`,
-      activeTenantId: normalizeTenantIdStrict(support.session.tenantId),
-      sessionToken: supportToken,
-      platformAdminId: support.session.adminId,
-      supportSessionId: support.session.id
-    };
-  }
-
   const sessionToken = readSessionToken(request);
   if (sessionToken) {
     const resolved = await tenantAuthDb.resolveSessionByToken(env, sessionToken);
@@ -890,6 +938,49 @@ export async function resolveRequestTenantContext(
       activeTenantId: normalizeTenantIdStrict(resolved.session.activeTenantId),
       sessionId: resolved.session.id,
       sessionToken
+    };
+  }
+
+  const apiToken = readApiToken(request);
+  if (apiToken) {
+    const resolved = await tenantAuthDb.resolveApiToken(env, apiToken);
+    const memberships = await tenantAuthDb.listUserMemberships(env, resolved.user.id);
+    const membership = memberships.find((entry) => entry.seatState === 'active');
+    if (!membership) {
+      throw unauthorized(`User ${resolved.user.id} does not have an active tenant membership.`);
+    }
+    return {
+      userId: resolved.user.id,
+      activeTenantId: normalizeTenantIdStrict(membership.tenantId),
+      apiTokenId: resolved.tokenRecord.id
+    };
+  }
+
+  const bearerToken = readBearerToken(request);
+  if (bearerToken) {
+    try {
+      const resolvedSession = await tenantAuthDb.resolveSessionByToken(env, bearerToken);
+      return {
+        userId: resolvedSession.user.id,
+        activeTenantId: normalizeTenantIdStrict(resolvedSession.session.activeTenantId),
+        sessionId: resolvedSession.session.id,
+        sessionToken: bearerToken
+      };
+    } catch (error) {
+      if (!isUnauthorizedError(error)) {
+        throw error;
+      }
+    }
+    const resolvedPat = await tenantAuthDb.resolveApiToken(env, bearerToken);
+    const memberships = await tenantAuthDb.listUserMemberships(env, resolvedPat.user.id);
+    const membership = memberships.find((entry) => entry.seatState === 'active');
+    if (!membership) {
+      throw unauthorized(`User ${resolvedPat.user.id} does not have an active tenant membership.`);
+    }
+    return {
+      userId: resolvedPat.user.id,
+      activeTenantId: normalizeTenantIdStrict(membership.tenantId),
+      apiTokenId: resolvedPat.tokenRecord.id
     };
   }
 
@@ -930,12 +1021,6 @@ export async function requireActiveTenantAccess(
   if (!context.userId) {
     throw unauthorized('Missing user identity.');
   }
-  if (context.supportSessionId) {
-    if (context.activeTenantId !== normalizedTenantId) {
-      throw forbidden(`Support session only grants access to active tenant ${context.activeTenantId}.`);
-    }
-    return;
-  }
   const hasAccess = await tenantAuthDb.hasActiveTenantAccess(env, normalizedTenantId, context.userId);
   if (!hasAccess) {
     throw forbidden(`User ${context.userId} does not have an active seat in tenant ${normalizedTenantId}.`);
@@ -970,14 +1055,6 @@ async function assertRepoAccess(
 }
 
 function readSessionToken(request: Request): string | undefined {
-  const authorization = request.headers.get('authorization')?.trim();
-  if (authorization?.toLowerCase().startsWith('bearer ')) {
-    const token = authorization.slice(7).trim();
-    if (token) {
-      return token;
-    }
-  }
-
   const headerToken = request.headers.get('x-session-token')?.trim();
   if (headerToken) {
     return headerToken;
@@ -999,6 +1076,19 @@ function readSessionToken(request: Request): string | undefined {
   return undefined;
 }
 
+function readApiToken(request: Request): string | undefined {
+  return request.headers.get('x-api-token')?.trim() || undefined;
+}
+
+function readBearerToken(request: Request): string | undefined {
+  const authorization = request.headers.get('authorization')?.trim();
+  if (authorization?.toLowerCase().startsWith('bearer ')) {
+    const token = authorization.slice(7).trim();
+    return token || undefined;
+  }
+  return undefined;
+}
+
 function readPlatformAdminToken(request: Request): string | undefined {
   const authorization = request.headers.get('authorization')?.trim();
   if (authorization?.toLowerCase().startsWith('bearer ')) {
@@ -1016,6 +1106,13 @@ function readPlatformSupportToken(request: Request): string | undefined {
     return headerToken;
   }
   return undefined;
+}
+
+function isUnauthorizedError(error: unknown) {
+  return typeof error === 'object'
+    && error !== null
+    && 'status' in error
+    && (error as { status?: unknown }).status === 401;
 }
 
 function buildSessionCookie(token: string) {

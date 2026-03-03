@@ -559,6 +559,14 @@ export type SetActiveTenantInput = {
 
 export type AcceptTenantInviteInput = {
   token: string;
+  password: string;
+  displayName?: string;
+};
+
+export type CreateUserApiTokenInput = {
+  name: string;
+  scopes?: string[];
+  expiresAt?: string;
 };
 
 export type PlatformAuthLoginInput = {
@@ -681,8 +689,25 @@ export function parseAcceptTenantInviteInput(body: unknown): AcceptTenantInviteI
   if (!isRecord(body)) {
     throw badRequest('Invalid invite accept payload.');
   }
+  const password = readTrimmedString(body.password, 'password')!;
+  if (!password) {
+    throw badRequest('Invalid password.');
+  }
   return {
-    token: readTrimmedString(body.token, 'token')!
+    token: readTrimmedString(body.token, 'token')!,
+    password,
+    displayName: readTrimmedString(body.displayName, 'displayName', false)
+  };
+}
+
+export function parseCreateUserApiTokenInput(body: unknown): CreateUserApiTokenInput {
+  if (!isRecord(body)) {
+    throw badRequest('Invalid API token payload.');
+  }
+  return {
+    name: readTrimmedString(body.name, 'name')!,
+    scopes: readStringArray(body.scopes, 'scopes', false),
+    expiresAt: readTrimmedString(body.expiresAt, 'expiresAt', false)
   };
 }
 
