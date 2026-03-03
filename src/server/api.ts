@@ -1,18 +1,21 @@
 import { Hono, type Context } from 'hono';
 import {
+  handleAcceptInvite,
   handleAuthLogin,
   handleAuthLogout,
   handleAuthSignup,
+  handleBoard,
+  handleBoardWs,
   handleCancelRun,
+  handleCreateApiToken,
+  handleCreateInvite,
   handleCreateRepo,
   handleCreateTask,
-  handleCreateTenant,
-  handleCreateTenantInvite,
-  handleCreateTenantMember,
   handleDebugExport,
   handleDebugImport,
   handleDebugSandboxFile,
   handleDebugSandboxRun,
+  handleDeleteApiToken,
   handleDeleteTask,
   handleGetRun,
   handleGetRunArtifacts,
@@ -24,140 +27,41 @@ import {
   handleGetRunWs,
   handleGetScmCredential,
   handleGetTask,
-  handleGetTenant,
+  handleListApiTokens,
+  handleListInvites,
   handleListRepos,
   handleListScmCredentials,
   handleListTasks,
-  handleListTenantInvites,
-  handleListTenantMembers,
-  handleListTenants,
   handleMe,
-  handlePlatformAuditLog,
-  handlePlatformAuthLogin,
   handleRequestChanges,
   handleRetryEvidence,
   handleRetryPreview,
   handleRetryRun,
   handleRunTask,
-  handleSetTenantContext,
-  handleSupportAssumeTenant,
-  handleSupportReleaseTenant,
-  handleSupportSessions,
   handleTakeoverRun,
   handleTenantRunUsage,
   handleTenantUsageSummary,
   handleUpdateRepo,
   handleUpdateTask,
-  handleUpdateTenantMember,
-  handleUpsertScmCredential,
-  handleAcceptInvite,
-  handleBoard,
-  handleBoardWs,
-  requireActiveTenantAccess,
-  resolvePlatformAdminContext,
-  resolveRequestTenantContext
+  handleUpsertScmCredential
 } from './router';
 import { json } from './http/response';
 
 const apiRouter = new Hono();
 
-const BOARD_OBJECT_NAME = 'agentboard';
-
-function isPublicApiRoute(pathname: string, method: string) {
-  return (
-    (pathname === '/api/auth/signup' && method === 'POST') ||
-    (pathname === '/api/auth/login' && method === 'POST') ||
-    (pathname === '/api/platform/auth/login' && method === 'POST')
-  );
-}
-
-function isPlatformAdminApiRoute(pathname: string, method: string) {
-  return (
-    (pathname === '/api/platform/support/release-tenant' && method === 'POST') ||
-    (pathname === '/api/platform/support/sessions' && method === 'GET') ||
-    (pathname === '/api/platform/support/assume-tenant' && method === 'POST') ||
-    (pathname === '/api/platform/audit-log' && method === 'GET')
-  );
-}
-
-function isDebugRoute(pathname: string, method: string) {
-  return (
-    (pathname === '/api/debug/export' && method === 'GET') ||
-    (pathname === '/api/debug/import' && method === 'POST') ||
-    (pathname === '/api/debug/sandbox/run' && method === 'POST') ||
-    (pathname === '/api/debug/sandbox/file' && method === 'POST')
-  );
-}
-
-apiRouter.use('/api/*', async (c, next) => {
-  const request = c.req.raw;
-  const url = new URL(request.url);
-  const pathname = url.pathname;
-  const method = request.method.toUpperCase();
-
-  if (isPublicApiRoute(pathname, method)) {
-    return next();
-  }
-
-  const env = c.env as Env;
-  const board = env.BOARD_INDEX.getByName(BOARD_OBJECT_NAME);
-
-  if (isPlatformAdminApiRoute(pathname, method)) {
-    await resolvePlatformAdminContext(env, board, request);
-    return next();
-  }
-
-  if (isDebugRoute(pathname, method)) {
-    await resolvePlatformAdminContext(env, board, request);
-    return next();
-  }
-
-  const requestContext = await resolveRequestTenantContext(env, board, request, { requireSession: true });
-  await requireActiveTenantAccess(env, board, requestContext, requestContext.activeTenantId);
-
-  return next();
-});
-
 apiRouter.post('/api/auth/signup', (c: Context) => handleAuthSignup(c.req.raw, c.env as Env));
 apiRouter.post('/api/auth/login', (c: Context) => handleAuthLogin(c.req.raw, c.env as Env));
-apiRouter.post('/api/platform/auth/login', (c: Context) => handlePlatformAuthLogin(c.req.raw, c.env as Env));
-apiRouter.post('/api/platform/support/release-tenant', (c: Context) =>
-  handleSupportReleaseTenant(c.req.raw, c.env as Env)
-);
-apiRouter.get('/api/platform/support/sessions', (c: Context) => handleSupportSessions(c.req.raw, c.env as Env));
-apiRouter.post('/api/platform/support/assume-tenant', (c: Context) =>
-  handleSupportAssumeTenant(c.req.raw, c.env as Env)
-);
-apiRouter.get('/api/platform/audit-log', (c: Context) => handlePlatformAuditLog(c.req.raw, c.env as Env));
-
 apiRouter.post('/api/auth/logout', (c: Context) => handleAuthLogout(c.req.raw, c.env as Env));
 apiRouter.get('/api/me', (c: Context) => handleMe(c.req.raw, c.env as Env));
-apiRouter.post('/api/me/tenant-context', (c: Context) => handleSetTenantContext(c.req.raw, c.env as Env));
-apiRouter.get('/api/tenants', (c: Context) => handleListTenants(c.req.raw, c.env as Env));
-apiRouter.post('/api/tenants', (c: Context) => handleCreateTenant(c.req.raw, c.env as Env));
-apiRouter.get('/api/tenants/:tenantId', (c: Context) =>
-  handleGetTenant(c.req.raw, c.env as Env, { tenantId: c.req.param('tenantId') })
-);
-apiRouter.get('/api/tenants/:tenantId/members', (c: Context) =>
-  handleListTenantMembers(c.req.raw, c.env as Env, { tenantId: c.req.param('tenantId') })
-);
-apiRouter.post('/api/tenants/:tenantId/members', (c: Context) =>
-  handleCreateTenantMember(c.req.raw, c.env as Env, { tenantId: c.req.param('tenantId') })
-);
-apiRouter.get('/api/tenants/:tenantId/invites', (c: Context) =>
-  handleListTenantInvites(c.req.raw, c.env as Env, { tenantId: c.req.param('tenantId') })
-);
-apiRouter.post('/api/tenants/:tenantId/invites', (c: Context) =>
-  handleCreateTenantInvite(c.req.raw, c.env as Env, { tenantId: c.req.param('tenantId') })
-);
+apiRouter.get('/api/invites', (c: Context) => handleListInvites(c.req.raw, c.env as Env));
+apiRouter.post('/api/invites', (c: Context) => handleCreateInvite(c.req.raw, c.env as Env));
 apiRouter.post('/api/invites/:inviteId/accept', (c: Context) =>
   handleAcceptInvite(c.req.raw, c.env as Env, { inviteId: c.req.param('inviteId') })
 );
-apiRouter.patch('/api/tenants/:tenantId/members/:memberId', (c: Context) =>
-  handleUpdateTenantMember(c.req.raw, c.env as Env, {
-    tenantId: c.req.param('tenantId'),
-    memberId: c.req.param('memberId')
-  })
+apiRouter.get('/api/me/api-tokens', (c: Context) => handleListApiTokens(c.req.raw, c.env as Env));
+apiRouter.post('/api/me/api-tokens', (c: Context) => handleCreateApiToken(c.req.raw, c.env as Env));
+apiRouter.delete('/api/me/api-tokens/:tokenId', (c: Context) =>
+  handleDeleteApiToken(c.req.raw, c.env as Env, { tokenId: c.req.param('tokenId') })
 );
 
 apiRouter.get('/api/board', (c: Context) => handleBoard(c.req.raw, c.env as Env));
