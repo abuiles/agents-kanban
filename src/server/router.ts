@@ -650,7 +650,7 @@ async function resolveRepoId(entityId: string, inferred: string | undefined, fal
   return repoId;
 }
 
-type RequestTenantContext = {
+export type RequestTenantContext = {
   userId: string;
   activeTenantId: string;
   sessionId?: string;
@@ -663,11 +663,11 @@ type RequestTenantContextOptions = {
   requireSession?: boolean;
 };
 
-type PlatformAdminContext = {
+export type PlatformAdminContext = {
   platformAdminId: string;
 };
 
-async function resolveRequestTenantContext(
+export async function resolveRequestTenantContext(
   env: Env,
   board: DurableObjectStub<import('./durable/board-index').BoardIndexDO>,
   request: Request,
@@ -708,7 +708,7 @@ async function resolveRequestTenantContext(
   return { userId, activeTenantId: normalizeTenantIdStrict(activeTenantId) };
 }
 
-async function resolvePlatformAdminContext(
+export async function resolvePlatformAdminContext(
   env: Env,
   board: DurableObjectStub<import('./durable/board-index').BoardIndexDO>,
   request: Request
@@ -723,7 +723,7 @@ async function resolvePlatformAdminContext(
   };
 }
 
-async function requireActiveTenantAccess(
+export async function requireActiveTenantAccess(
   env: Env,
   board: DurableObjectStub<import('./durable/board-index').BoardIndexDO>,
   context: RequestTenantContext,
@@ -745,7 +745,7 @@ async function requireActiveTenantAccess(
   }
 }
 
-async function requireOwnerTenantAccess(
+export async function requireOwnerTenantAccess(
   env: Env,
   board: DurableObjectStub<import('./durable/board-index').BoardIndexDO>,
   context: RequestTenantContext,
