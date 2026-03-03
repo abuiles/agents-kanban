@@ -44,6 +44,12 @@ If no session token is present, protected endpoints fail once tenant membership 
 - Set on signup/login
 - Cleared on logout
 
+### Signup tenant slug behavior
+
+- Signup no longer accepts a caller-provided tenant slug.
+- The service derives slug from `tenantName`.
+- If the slug is already taken, the service appends a numeric suffix (for example `acme`, `acme-2`).
+
 ## Tenant Management
 
 ### Endpoints

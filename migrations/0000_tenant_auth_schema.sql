@@ -1,5 +1,6 @@
 CREATE TABLE IF NOT EXISTS users (
-  id TEXT PRIMARY KEY,
+  id INTEGER PRIMARY KEY,
+  external_id TEXT NOT NULL UNIQUE,
   email TEXT NOT NULL UNIQUE,
   display_name TEXT,
   password_hash TEXT NOT NULL,
@@ -8,7 +9,8 @@ CREATE TABLE IF NOT EXISTS users (
 );
 
 CREATE TABLE IF NOT EXISTS tenants (
-  id TEXT PRIMARY KEY,
+  id INTEGER PRIMARY KEY,
+  external_id TEXT NOT NULL UNIQUE,
   slug TEXT NOT NULL UNIQUE,
   name TEXT NOT NULL,
   status TEXT NOT NULL,
@@ -22,7 +24,8 @@ CREATE TABLE IF NOT EXISTS tenants (
 );
 
 CREATE TABLE IF NOT EXISTS tenant_memberships (
-  id TEXT PRIMARY KEY,
+  id INTEGER PRIMARY KEY,
+  external_id TEXT NOT NULL UNIQUE,
   tenant_id TEXT NOT NULL,
   user_id TEXT NOT NULL,
   role TEXT NOT NULL,
@@ -33,7 +36,8 @@ CREATE TABLE IF NOT EXISTS tenant_memberships (
 );
 
 CREATE TABLE IF NOT EXISTS user_sessions (
-  id TEXT PRIMARY KEY,
+  id INTEGER PRIMARY KEY,
+  external_id TEXT NOT NULL UNIQUE,
   user_id TEXT NOT NULL,
   active_tenant_id TEXT NOT NULL,
   token_hash TEXT NOT NULL UNIQUE,
@@ -42,7 +46,8 @@ CREATE TABLE IF NOT EXISTS user_sessions (
 );
 
 CREATE TABLE IF NOT EXISTS tenant_invites (
-  id TEXT PRIMARY KEY,
+  id INTEGER PRIMARY KEY,
+  external_id TEXT NOT NULL UNIQUE,
   tenant_id TEXT NOT NULL,
   email TEXT NOT NULL,
   role TEXT NOT NULL,
@@ -58,7 +63,8 @@ CREATE TABLE IF NOT EXISTS tenant_invites (
 );
 
 CREATE TABLE IF NOT EXISTS platform_admins (
-  id TEXT PRIMARY KEY,
+  id INTEGER PRIMARY KEY,
+  external_id TEXT NOT NULL UNIQUE,
   email TEXT NOT NULL UNIQUE,
   password_hash TEXT NOT NULL,
   created_at TEXT NOT NULL,
@@ -66,7 +72,8 @@ CREATE TABLE IF NOT EXISTS platform_admins (
 );
 
 CREATE TABLE IF NOT EXISTS platform_support_sessions (
-  id TEXT PRIMARY KEY,
+  id INTEGER PRIMARY KEY,
+  external_id TEXT NOT NULL UNIQUE,
   token_hash TEXT NOT NULL UNIQUE,
   admin_id TEXT NOT NULL,
   tenant_id TEXT NOT NULL,
@@ -77,7 +84,8 @@ CREATE TABLE IF NOT EXISTS platform_support_sessions (
 );
 
 CREATE TABLE IF NOT EXISTS security_audit_log (
-  id TEXT PRIMARY KEY,
+  id INTEGER PRIMARY KEY,
+  external_id TEXT NOT NULL UNIQUE,
   at TEXT NOT NULL,
   actor_type TEXT NOT NULL,
   actor_id TEXT NOT NULL,

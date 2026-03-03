@@ -42,7 +42,6 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
         displayName: input.displayName,
         tenant: {
           name: input.tenantName,
-          slug: input.tenantSlug,
           domain: input.tenantDomain,
           seatLimit: input.seatLimit,
           defaultSeatLimit: input.defaultSeatLimit

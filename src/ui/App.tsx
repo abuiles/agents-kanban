@@ -39,7 +39,6 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
   const [authPassword, setAuthPassword] = useState('');
   const [authDisplayName, setAuthDisplayName] = useState('');
   const [authTenantName, setAuthTenantName] = useState('');
-  const [authTenantSlug, setAuthTenantSlug] = useState('');
   const [authError, setAuthError] = useState<string | undefined>();
   const [taskSelectionHydrated, setTaskSelectionHydrated] = useState(false);
 
@@ -251,8 +250,7 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
             email: authEmail.trim(),
             password: authPassword,
             displayName: authDisplayName.trim() || undefined,
-            tenantName: authTenantName.trim(),
-            tenantSlug: authTenantSlug.trim()
+            tenantName: authTenantName.trim()
           });
       setAuthSession(session);
     } catch (error) {
@@ -293,7 +291,6 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
               <>
                 <input className="h-11 w-full rounded-xl border border-slate-700 bg-slate-900/90 px-3 text-sm" placeholder="Display name (optional)" value={authDisplayName} onChange={(event) => setAuthDisplayName(event.target.value)} />
                 <input className="h-11 w-full rounded-xl border border-slate-700 bg-slate-900/90 px-3 text-sm" placeholder="Organization name" value={authTenantName} onChange={(event) => setAuthTenantName(event.target.value)} required />
-                <input className="h-11 w-full rounded-xl border border-slate-700 bg-slate-900/90 px-3 text-sm" placeholder="Organization slug" value={authTenantSlug} onChange={(event) => setAuthTenantSlug(event.target.value)} required />
               </>
             ) : null}
             {authError ? <div className="text-sm text-rose-300">{authError}</div> : null}

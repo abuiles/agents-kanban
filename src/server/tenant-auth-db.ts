@@ -74,94 +74,29 @@ function getDb(env: Env): D1Database {
 
 async function ensureSchema(db: D1Database): Promise<void> {
   if (!schemaReady) {
-    schemaReady = db.exec(`
-      CREATE TABLE IF NOT EXISTS users (
-        id TEXT PRIMARY KEY,
-        email TEXT NOT NULL UNIQUE,
-        display_name TEXT,
-        password_hash TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS tenants (
-        id TEXT PRIMARY KEY,
-        slug TEXT NOT NULL UNIQUE,
-        name TEXT NOT NULL,
-        status TEXT NOT NULL,
-        domain TEXT,
-        created_by_user_id TEXT NOT NULL,
-        default_seat_limit INTEGER NOT NULL,
-        seat_limit INTEGER NOT NULL,
-        settings_json TEXT,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS tenant_memberships (
-        id TEXT PRIMARY KEY,
-        tenant_id TEXT NOT NULL,
-        user_id TEXT NOT NULL,
-        role TEXT NOT NULL,
-        seat_state TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL,
-        UNIQUE(tenant_id, user_id)
-      );
-      CREATE TABLE IF NOT EXISTS user_sessions (
-        id TEXT PRIMARY KEY,
-        user_id TEXT NOT NULL,
-        active_tenant_id TEXT NOT NULL,
-        token_hash TEXT NOT NULL UNIQUE,
-        expires_at TEXT NOT NULL,
-        last_seen_at TEXT NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS tenant_invites (
-        id TEXT PRIMARY KEY,
-        tenant_id TEXT NOT NULL,
-        email TEXT NOT NULL,
-        role TEXT NOT NULL,
-        status TEXT NOT NULL,
-        token_hash TEXT NOT NULL UNIQUE,
-        created_by_user_id TEXT NOT NULL,
-        accepted_by_user_id TEXT,
-        accepted_at TEXT,
-        revoked_at TEXT,
-        expires_at TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS platform_admins (
-        id TEXT PRIMARY KEY,
-        email TEXT NOT NULL UNIQUE,
-        password_hash TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS platform_support_sessions (
-        id TEXT PRIMARY KEY,
-        token_hash TEXT NOT NULL UNIQUE,
-        admin_id TEXT NOT NULL,
-        tenant_id TEXT NOT NULL,
-        reason TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        expires_at TEXT NOT NULL,
-        released_at TEXT
-      );
-      CREATE TABLE IF NOT EXISTS security_audit_log (
-        id TEXT PRIMARY KEY,
-        at TEXT NOT NULL,
-        actor_type TEXT NOT NULL,
-        actor_id TEXT NOT NULL,
-        action TEXT NOT NULL,
-        tenant_id TEXT,
-        metadata_json TEXT
-      );
-      CREATE INDEX IF NOT EXISTS idx_memberships_user ON tenant_memberships(user_id);
-      CREATE INDEX IF NOT EXISTS idx_memberships_tenant ON tenant_memberships(tenant_id);
-      CREATE INDEX IF NOT EXISTS idx_sessions_token ON user_sessions(token_hash);
-      CREATE INDEX IF NOT EXISTS idx_invites_token ON tenant_invites(token_hash);
-      CREATE INDEX IF NOT EXISTS idx_platform_sessions_token ON platform_support_sessions(token_hash);
-      CREATE INDEX IF NOT EXISTS idx_audit_at ON security_audit_log(at);
-    `).then(() => undefined);
+    schemaReady = (async () => {
+      const requiredTables = [
+        'users',
+        'tenants',
+        'tenant_memberships',
+        'user_sessions',
+        'tenant_invites',
+        'platform_admins',
+        'platform_support_sessions',
+        'security_audit_log'
+      ] as const;
+      const quoted = requiredTables.map((table) => `'${table}'`).join(', ');
+      const result = await db.prepare(
+        `SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (${quoted})`
+      ).all<{ name: string }>();
+      const found = new Set((result.results ?? []).map((row) => String(row.name)));
+      const missing = requiredTables.filter((table) => !found.has(table));
+      if (missing.length > 0) {
+        throw new Error(
+          `TENANT_DB schema is missing required tables (${missing.join(', ')}). Apply D1 migrations (npx wrangler d1 migrations apply TENANT_DB).`
+        );
+      }
+    })();
   }
   await schemaReady;
 }
@@ -173,13 +108,13 @@ async function ensurePlatformAdmin(db: D1Database, env: Env): Promise<void> {
   if (!email || !password) {
     return;
   }
-  const existing = await db.prepare('SELECT id FROM platform_admins WHERE email = ? LIMIT 1').bind(email).first<{ id: string }>();
+  const existing = await db.prepare('SELECT external_id FROM platform_admins WHERE email = ? LIMIT 1').bind(email).first<{ external_id: string }>();
   if (existing) {
     return;
   }
   const now = new Date().toISOString();
   await db.prepare(
-    'INSERT INTO platform_admins (id, email, password_hash, created_at, updated_at) VALUES (?, ?, ?, ?, ?)'
+    'INSERT INTO platform_admins (external_id, email, password_hash, created_at, updated_at) VALUES (?, ?, ?, ?, ?)'
   ).bind(`admin_${crypto.randomUUID()}`, email, await hashSecret(password), now, now).run();
 }
 
@@ -220,9 +155,13 @@ function parseSettings(raw: string | null): Tenant['settings'] | undefined {
   }
 }
 
+function externalId(row: Record<string, unknown>): string {
+  return String(row.external_id ?? row.id);
+}
+
 function mapTenant(row: Record<string, unknown>): Tenant {
   return {
-    id: String(row.id),
+    id: externalId(row),
     slug: String(row.slug),
     name: String(row.name),
     status: row.status === 'suspended' ? 'suspended' : 'active',
@@ -238,7 +177,7 @@ function mapTenant(row: Record<string, unknown>): Tenant {
 
 function mapMember(row: Record<string, unknown>): TenantMember {
   return {
-    id: String(row.id),
+    id: externalId(row),
     tenantId: String(row.tenant_id),
     userId: String(row.user_id),
     role: row.role === 'owner' ? 'owner' : 'member',
@@ -250,7 +189,7 @@ function mapMember(row: Record<string, unknown>): TenantMember {
 
 function mapUser(row: Record<string, unknown>): User {
   return {
-    id: String(row.id),
+    id: externalId(row),
     email: String(row.email),
     displayName: row.display_name ? String(row.display_name) : undefined,
     createdAt: String(row.created_at),
@@ -267,7 +206,7 @@ function mapStoredUser(row: Record<string, unknown>): StoredUser {
 
 function mapSession(row: Record<string, unknown>): UserSession {
   return {
-    id: String(row.id),
+    id: externalId(row),
     userId: String(row.user_id),
     tenantId: String(row.active_tenant_id),
     activeTenantId: String(row.active_tenant_id),
@@ -302,9 +241,22 @@ function createTenantMemberId(tenantId: string, userId: string): string {
   return `${tenantId}:${userId}`;
 }
 
+async function nextAvailableTenantSlug(db: D1Database, baseSlug: string): Promise<string> {
+  let candidate = baseSlug;
+  let suffix = 2;
+  while (true) {
+    const existing = await db.prepare('SELECT external_id FROM tenants WHERE slug = ? LIMIT 1').bind(candidate).first<{ external_id: string }>();
+    if (!existing) {
+      return candidate;
+    }
+    candidate = `${baseSlug}-${suffix}`;
+    suffix += 1;
+  }
+}
+
 async function writeAuditLog(db: D1Database, entry: Omit<SecurityAuditLogEntry, 'id' | 'at'>): Promise<void> {
   await db.prepare(
-    'INSERT INTO security_audit_log (id, at, actor_type, actor_id, action, tenant_id, metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?)'
+    'INSERT INTO security_audit_log (external_id, at, actor_type, actor_id, action, tenant_id, metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?)'
   ).bind(
     `audit_${crypto.randomUUID()}`,
     new Date().toISOString(),
@@ -320,21 +272,21 @@ export async function signup(env: Env, input: {
   email: string;
   password: string;
   displayName?: string;
-  tenant: TenantRecordInput;
+  tenant: Omit<TenantRecordInput, 'slug'>;
 }) {
   const db = getDb(env);
   await ensureSchema(db);
   await ensurePlatformAdmin(db, env);
   const email = normalizeEmail(input.email);
-  const existing = await db.prepare('SELECT id FROM users WHERE email = ? LIMIT 1').bind(email).first<{ id: string }>();
+  const existing = await db.prepare('SELECT external_id FROM users WHERE email = ? LIMIT 1').bind(email).first<{ external_id: string }>();
   if (existing) {
     throw conflict(`User with email ${email} already exists.`);
   }
-  const slug = normalizeTenantSlug(input.tenant.slug);
-  const existingTenant = await db.prepare('SELECT id FROM tenants WHERE slug = ? LIMIT 1').bind(slug).first<{ id: string }>();
-  if (existingTenant) {
-    throw conflict(`Tenant slug ${slug} already exists.`);
+  const tenantName = input.tenant.name.trim();
+  if (!tenantName) {
+    throw badRequest('Invalid tenant name.');
   }
+  const slug = await nextAvailableTenantSlug(db, normalizeTenantSlug(tenantName));
 
   const now = new Date().toISOString();
   const userId = createUserId(email);
@@ -343,13 +295,13 @@ export async function signup(env: Env, input: {
   const defaultSeatLimit = input.tenant.defaultSeatLimit ?? input.tenant.seatLimit ?? DEFAULT_SEAT_LIMIT;
   await db.batch([
     db.prepare(
-      'INSERT INTO users (id, email, display_name, password_hash, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)'
+      'INSERT INTO users (external_id, email, display_name, password_hash, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)'
     ).bind(userId, email, input.displayName?.trim() || null, await hashSecret(input.password), now, now),
     db.prepare(
-      'INSERT INTO tenants (id, slug, name, status, domain, created_by_user_id, default_seat_limit, seat_limit, settings_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-    ).bind(tenantId, slug, input.tenant.name.trim(), 'active', input.tenant.domain?.trim() || null, userId, defaultSeatLimit, seatLimit, null, now, now),
+      'INSERT INTO tenants (external_id, slug, name, status, domain, created_by_user_id, default_seat_limit, seat_limit, settings_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    ).bind(tenantId, slug, tenantName, 'active', input.tenant.domain?.trim() || null, userId, defaultSeatLimit, seatLimit, null, now, now),
     db.prepare(
-      'INSERT INTO tenant_memberships (id, tenant_id, user_id, role, seat_state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      'INSERT INTO tenant_memberships (external_id, tenant_id, user_id, role, seat_state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
     ).bind(createTenantMemberId(tenantId, userId), tenantId, userId, 'owner', 'active', now, now)
   ]);
   return login(env, { email, password: input.password, tenantId });
@@ -392,7 +344,7 @@ export async function login(env: Env, input: { email: string; password: string; 
     lastSeenAt: new Date(now).toISOString()
   };
   await db.prepare(
-    'INSERT INTO user_sessions (id, user_id, active_tenant_id, token_hash, expires_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?)'
+    'INSERT INTO user_sessions (external_id, user_id, active_tenant_id, token_hash, expires_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?)'
   ).bind(session.id, session.userId, session.activeTenantId, session.tokenHash, session.expiresAt, session.lastSeenAt).run();
 
   return {
@@ -415,7 +367,7 @@ export async function resolveSessionByToken(env: Env, token: string): Promise<{ 
     throw unauthorized('Invalid or expired auth session.');
   }
   const session = mapSession(sessionRow);
-  const userRow = await db.prepare('SELECT * FROM users WHERE id = ? LIMIT 1').bind(session.userId).first<Record<string, unknown>>();
+  const userRow = await db.prepare('SELECT * FROM users WHERE external_id = ? LIMIT 1').bind(session.userId).first<Record<string, unknown>>();
   if (!userRow) {
     throw unauthorized('Auth session user no longer exists.');
   }
@@ -424,7 +376,7 @@ export async function resolveSessionByToken(env: Env, token: string): Promise<{ 
     throw forbidden(`User ${session.userId} does not have an active seat in tenant ${session.activeTenantId}.`);
   }
   const touchedAt = new Date().toISOString();
-  await db.prepare('UPDATE user_sessions SET last_seen_at = ? WHERE id = ?').bind(touchedAt, session.id).run();
+  await db.prepare('UPDATE user_sessions SET last_seen_at = ? WHERE external_id = ?').bind(touchedAt, session.id).run();
   return {
     user: mapUser(userRow),
     session: { ...session, lastSeenAt: touchedAt },
@@ -435,7 +387,7 @@ export async function resolveSessionByToken(env: Env, token: string): Promise<{ 
 export async function setSessionActiveTenant(env: Env, sessionId: string, tenantId: string): Promise<UserSession> {
   const db = getDb(env);
   await ensureSchema(db);
-  const sessionRow = await db.prepare('SELECT * FROM user_sessions WHERE id = ? LIMIT 1').bind(sessionId).first<Record<string, unknown>>();
+  const sessionRow = await db.prepare('SELECT * FROM user_sessions WHERE external_id = ? LIMIT 1').bind(sessionId).first<Record<string, unknown>>();
   if (!sessionRow) {
     throw unauthorized('Invalid or expired auth session.');
   }
@@ -445,21 +397,21 @@ export async function setSessionActiveTenant(env: Env, sessionId: string, tenant
     throw forbidden(`User ${session.userId} does not have an active seat in tenant ${tenantId}.`);
   }
   const lastSeenAt = new Date().toISOString();
-  await db.prepare('UPDATE user_sessions SET active_tenant_id = ?, last_seen_at = ? WHERE id = ?').bind(tenantId, lastSeenAt, sessionId).run();
+  await db.prepare('UPDATE user_sessions SET active_tenant_id = ?, last_seen_at = ? WHERE external_id = ?').bind(tenantId, lastSeenAt, sessionId).run();
   return { ...session, tenantId, activeTenantId: tenantId, lastSeenAt };
 }
 
 export async function logout(env: Env, sessionId: string): Promise<{ ok: true }> {
   const db = getDb(env);
   await ensureSchema(db);
-  await db.prepare('DELETE FROM user_sessions WHERE id = ?').bind(sessionId).run();
+  await db.prepare('DELETE FROM user_sessions WHERE external_id = ?').bind(sessionId).run();
   return { ok: true };
 }
 
 export async function getUserById(env: Env, userId: string): Promise<User | undefined> {
   const db = getDb(env);
   await ensureSchema(db);
-  const row = await db.prepare('SELECT * FROM users WHERE id = ? LIMIT 1').bind(userId).first<Record<string, unknown>>();
+  const row = await db.prepare('SELECT * FROM users WHERE external_id = ? LIMIT 1').bind(userId).first<Record<string, unknown>>();
   return row ? mapUser(row) : undefined;
 }
 
@@ -475,7 +427,7 @@ export async function listTenantsForUser(env: Env, userId: string): Promise<Tena
   await ensureSchema(db);
   const result = await db.prepare(
     `SELECT t.* FROM tenants t
-     INNER JOIN tenant_memberships m ON m.tenant_id = t.id
+     INNER JOIN tenant_memberships m ON m.tenant_id = t.external_id
      WHERE m.user_id = ? AND m.seat_state = 'active'
      ORDER BY t.slug ASC`
   ).bind(userId).all<Record<string, unknown>>();
@@ -485,7 +437,7 @@ export async function listTenantsForUser(env: Env, userId: string): Promise<Tena
 export async function getTenant(env: Env, tenantId: string): Promise<Tenant> {
   const db = getDb(env);
   await ensureSchema(db);
-  const row = await db.prepare('SELECT * FROM tenants WHERE id = ? LIMIT 1').bind(tenantId.trim()).first<Record<string, unknown>>();
+  const row = await db.prepare('SELECT * FROM tenants WHERE external_id = ? LIMIT 1').bind(tenantId.trim()).first<Record<string, unknown>>();
   if (!row) {
     throw notFound(`Tenant ${tenantId} not found.`);
   }
@@ -547,7 +499,7 @@ export async function createTenant(env: Env, input: TenantRecordInput, actorUser
   const db = getDb(env);
   await ensureSchema(db);
   const slug = normalizeTenantSlug(input.slug);
-  const existing = await db.prepare('SELECT id FROM tenants WHERE slug = ? LIMIT 1').bind(slug).first<{ id: string }>();
+  const existing = await db.prepare('SELECT external_id FROM tenants WHERE slug = ? LIMIT 1').bind(slug).first<{ external_id: string }>();
   if (existing) {
     throw conflict(`Tenant slug ${slug} already exists.`);
   }
@@ -566,10 +518,10 @@ export async function createTenant(env: Env, input: TenantRecordInput, actorUser
   };
   await db.batch([
     db.prepare(
-      'INSERT INTO tenants (id, slug, name, status, domain, created_by_user_id, default_seat_limit, seat_limit, settings_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+      'INSERT INTO tenants (external_id, slug, name, status, domain, created_by_user_id, default_seat_limit, seat_limit, settings_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
     ).bind(tenantId, slug, input.name.trim(), 'active', input.domain?.trim() || null, actorUserId, defaultSeatLimit, seatLimit, null, now, now),
     db.prepare(
-      'INSERT INTO tenant_memberships (id, tenant_id, user_id, role, seat_state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      'INSERT INTO tenant_memberships (external_id, tenant_id, user_id, role, seat_state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
     ).bind(membership.id, membership.tenantId, membership.userId, membership.role, membership.seatState, membership.createdAt, membership.updatedAt)
   ]);
   return {
@@ -602,7 +554,7 @@ export async function createTenantMember(env: Env, tenantId: string, input: Tena
     updatedAt: now
   };
   await db.prepare(
-    'INSERT INTO tenant_memberships (id, tenant_id, user_id, role, seat_state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+    'INSERT INTO tenant_memberships (external_id, tenant_id, user_id, role, seat_state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
   ).bind(member.id, member.tenantId, member.userId, member.role, member.seatState, member.createdAt, member.updatedAt).run();
   return { member, seatSummary: await getTenantSeatSummary(env, tenantId) };
 }
@@ -617,7 +569,7 @@ export async function updateTenantMember(
   const db = getDb(env);
   await ensureSchema(db);
   await assertOwnerAccess(env, tenantId, actorUserId);
-  const row = await db.prepare('SELECT * FROM tenant_memberships WHERE tenant_id = ? AND id = ? LIMIT 1').bind(tenantId, memberId).first<Record<string, unknown>>();
+  const row = await db.prepare('SELECT * FROM tenant_memberships WHERE tenant_id = ? AND external_id = ? LIMIT 1').bind(tenantId, memberId).first<Record<string, unknown>>();
   if (!row) {
     throw notFound(`Member ${memberId} not found in tenant ${tenantId}.`);
   }
@@ -629,14 +581,14 @@ export async function updateTenantMember(
   const nextRole = patch.role ?? existing.role;
   if (existing.role === 'owner' && (nextRole !== 'owner' || nextSeatState !== 'active')) {
     const ownersRow = await db.prepare(
-      "SELECT COUNT(*) AS owners FROM tenant_memberships WHERE tenant_id = ? AND id <> ? AND role = 'owner' AND seat_state = 'active'"
+      "SELECT COUNT(*) AS owners FROM tenant_memberships WHERE tenant_id = ? AND external_id <> ? AND role = 'owner' AND seat_state = 'active'"
     ).bind(tenantId, memberId).first<{ owners: number }>();
     if (Number(ownersRow?.owners ?? 0) === 0) {
       throw forbidden(`Tenant ${tenantId} requires at least one active owner.`);
     }
   }
   const updatedAt = new Date().toISOString();
-  await db.prepare('UPDATE tenant_memberships SET role = ?, seat_state = ?, updated_at = ? WHERE id = ?').bind(nextRole, nextSeatState, updatedAt, memberId).run();
+  await db.prepare('UPDATE tenant_memberships SET role = ?, seat_state = ?, updated_at = ? WHERE external_id = ?').bind(nextRole, nextSeatState, updatedAt, memberId).run();
   return {
     member: {
       ...existing,
@@ -659,8 +611,8 @@ export async function createTenantInvite(
   await assertOwnerAccess(env, tenantId, actorUserId);
   const email = normalizeEmail(input.email);
   const pending = await db.prepare(
-    "SELECT id FROM tenant_invites WHERE tenant_id = ? AND email = ? AND status = 'pending' AND expires_at > ? LIMIT 1"
-  ).bind(tenantId, email, new Date().toISOString()).first<{ id: string }>();
+    "SELECT external_id FROM tenant_invites WHERE tenant_id = ? AND email = ? AND status = 'pending' AND expires_at > ? LIMIT 1"
+  ).bind(tenantId, email, new Date().toISOString()).first<{ external_id: string }>();
   if (pending) {
     throw conflict(`Pending invite for ${email} already exists in tenant ${tenantId}.`);
   }
@@ -683,7 +635,7 @@ export async function createTenantInvite(
   };
   await db.prepare(
     `INSERT INTO tenant_invites
-     (id, tenant_id, email, role, status, token_hash, created_by_user_id, accepted_by_user_id, accepted_at, revoked_at, expires_at, created_at, updated_at)
+     (external_id, tenant_id, email, role, status, token_hash, created_by_user_id, accepted_by_user_id, accepted_at, revoked_at, expires_at, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?)`
   ).bind(invite.id, invite.tenantId, invite.email, invite.role, invite.status, await hashSecret(token), invite.createdByUserId, invite.expiresAt, invite.createdAt, invite.updatedAt).run();
   await writeAuditLog(db, {
@@ -701,7 +653,7 @@ export async function listTenantInvites(env: Env, tenantId: string, actorUserId:
   await ensureSchema(db);
   await assertOwnerAccess(env, tenantId, actorUserId);
   const result = await db.prepare(
-    'SELECT id, tenant_id, email, role, status, created_by_user_id, accepted_by_user_id, accepted_at, revoked_at, expires_at, created_at, updated_at FROM tenant_invites WHERE tenant_id = ? ORDER BY created_at DESC'
+    'SELECT external_id as id, tenant_id, email, role, status, created_by_user_id, accepted_by_user_id, accepted_at, revoked_at, expires_at, created_at, updated_at FROM tenant_invites WHERE tenant_id = ? ORDER BY created_at DESC'
   ).bind(tenantId).all<Record<string, unknown>>();
   return (result.results ?? []).map((row) => ({
     id: String(row.id),
@@ -727,7 +679,7 @@ export async function resolvePendingTenantInviteByToken(
   await ensureSchema(db);
   const tokenHash = await hashSecret(token);
   const row = await db.prepare(
-    "SELECT id, tenant_id, email, role, status, created_by_user_id, accepted_by_user_id, accepted_at, revoked_at, expires_at, created_at, updated_at FROM tenant_invites WHERE token_hash = ? AND status = 'pending' AND expires_at > ? LIMIT 1"
+    "SELECT external_id as id, tenant_id, email, role, status, created_by_user_id, accepted_by_user_id, accepted_at, revoked_at, expires_at, created_at, updated_at FROM tenant_invites WHERE token_hash = ? AND status = 'pending' AND expires_at > ? LIMIT 1"
   ).bind(tokenHash, new Date().toISOString()).first<Record<string, unknown>>();
   if (!row) {
     throw unauthorized('Invalid or expired invite.');
@@ -761,7 +713,7 @@ export async function acceptTenantInvite(env: Env, token: string, actorUserId: s
     throw unauthorized('Invalid or expired invite.');
   }
   const invite: TenantInvite = {
-    id: String(row.id),
+    id: externalId(row),
     tenantId: String(row.tenant_id),
     email: String(row.email),
     role: row.role === 'owner' ? 'owner' : 'member',
@@ -792,15 +744,15 @@ export async function acceptTenantInvite(env: Env, token: string, actorUserId: s
   };
   if (existingMembership) {
     await db.prepare(
-      'UPDATE tenant_memberships SET role = ?, seat_state = ?, updated_at = ? WHERE id = ?'
+      'UPDATE tenant_memberships SET role = ?, seat_state = ?, updated_at = ? WHERE external_id = ?'
     ).bind(membership.role, membership.seatState, membership.updatedAt, existingMembership.id).run();
   } else {
     await db.prepare(
-      'INSERT INTO tenant_memberships (id, tenant_id, user_id, role, seat_state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      'INSERT INTO tenant_memberships (external_id, tenant_id, user_id, role, seat_state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
     ).bind(membership.id, membership.tenantId, membership.userId, membership.role, membership.seatState, membership.createdAt, membership.updatedAt).run();
   }
   await db.prepare(
-    "UPDATE tenant_invites SET status = 'accepted', accepted_by_user_id = ?, accepted_at = ?, updated_at = ? WHERE id = ?"
+    "UPDATE tenant_invites SET status = 'accepted', accepted_by_user_id = ?, accepted_at = ?, updated_at = ? WHERE external_id = ?"
   ).bind(actorUserId, now, now, invite.id).run();
   await writeAuditLog(db, {
     actorType: 'tenant_user',
@@ -818,7 +770,7 @@ function stripUserSecret(user: StoredUser): User {
 
 function mapPlatformSession(row: Record<string, unknown>): PlatformSupportSession {
   return {
-    id: String(row.id),
+    id: externalId(row),
     adminId: String(row.admin_id),
     tenantId: String(row.tenant_id),
     reason: String(row.reason),
@@ -830,7 +782,7 @@ function mapPlatformSession(row: Record<string, unknown>): PlatformSupportSessio
 
 function mapPlatformAdmin(row: Record<string, unknown>): PlatformAdmin {
   return {
-    id: String(row.id),
+    id: externalId(row),
     email: String(row.email),
     passwordHash: String(row.password_hash),
     createdAt: String(row.created_at),
@@ -854,7 +806,7 @@ export async function platformLogin(env: Env, input: { email: string; password: 
   const token = createAuthToken();
   const sessionId = `psess_${crypto.randomUUID()}`;
   await db.prepare(
-    'INSERT INTO platform_support_sessions (id, token_hash, admin_id, tenant_id, reason, created_at, expires_at, released_at) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)'
+    'INSERT INTO platform_support_sessions (external_id, token_hash, admin_id, tenant_id, reason, created_at, expires_at, released_at) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)'
   ).bind(
     sessionId,
     await hashSecret(token),
@@ -874,12 +826,12 @@ export async function resolvePlatformAdminByToken(env: Env, token: string): Prom
   await ensurePlatformAdmin(db, env);
   const tokenHash = await hashSecret(token);
   const row = await db.prepare(
-    "SELECT p.* FROM platform_support_sessions s INNER JOIN platform_admins p ON p.id = s.admin_id WHERE s.token_hash = ? AND s.reason = 'platform-auth' AND s.released_at IS NULL AND s.expires_at > ? LIMIT 1"
+    "SELECT p.* FROM platform_support_sessions s INNER JOIN platform_admins p ON p.external_id = s.admin_id WHERE s.token_hash = ? AND s.reason = 'platform-auth' AND s.released_at IS NULL AND s.expires_at > ? LIMIT 1"
   ).bind(tokenHash, new Date().toISOString()).first<Record<string, unknown>>();
   if (!row) {
     throw unauthorized('Invalid or expired platform session.');
   }
-  return { admin: { id: String(row.id), email: String(row.email) } };
+  return { admin: { id: externalId(row), email: String(row.email) } };
 }
 
 export async function createPlatformSupportSession(
@@ -900,7 +852,7 @@ export async function createPlatformSupportSession(
     expiresAt: new Date(Date.now() + ttlMinutes * 60 * 1000).toISOString()
   };
   await db.prepare(
-    'INSERT INTO platform_support_sessions (id, token_hash, admin_id, tenant_id, reason, created_at, expires_at, released_at) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)'
+    'INSERT INTO platform_support_sessions (external_id, token_hash, admin_id, tenant_id, reason, created_at, expires_at, released_at) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)'
   ).bind(session.id, await hashSecret(token), session.adminId, session.tenantId, session.reason, session.createdAt, session.expiresAt).run();
   await writeAuditLog(db, {
     actorType: 'platform_admin',
@@ -940,7 +892,7 @@ export async function releasePlatformSupportSession(env: Env, token: string, adm
     throw forbidden('Support session belongs to another platform admin.');
   }
   const releasedAt = new Date().toISOString();
-  await db.prepare('UPDATE platform_support_sessions SET released_at = ? WHERE id = ?').bind(releasedAt, session.id).run();
+  await db.prepare('UPDATE platform_support_sessions SET released_at = ? WHERE external_id = ?').bind(releasedAt, session.id).run();
   await writeAuditLog(db, {
     actorType: 'platform_admin',
     actorId: adminId,
@@ -963,13 +915,13 @@ export async function listPlatformSupportSessions(env: Env, adminId: string): Pr
 export async function listSecurityAuditLog(env: Env, adminId: string): Promise<SecurityAuditLogEntry[]> {
   const db = getDb(env);
   await ensureSchema(db);
-  const admin = await db.prepare('SELECT id FROM platform_admins WHERE id = ? LIMIT 1').bind(adminId).first<{ id: string }>();
+  const admin = await db.prepare('SELECT external_id FROM platform_admins WHERE external_id = ? LIMIT 1').bind(adminId).first<{ external_id: string }>();
   if (!admin) {
     throw forbidden('Only platform admins may view security audit log.');
   }
   const result = await db.prepare('SELECT * FROM security_audit_log ORDER BY at DESC LIMIT 500').all<Record<string, unknown>>();
   return (result.results ?? []).map((row) => ({
-    id: String(row.id),
+    id: externalId(row),
     at: String(row.at),
     actorType: row.actor_type === 'platform_admin' ? 'platform_admin' : 'tenant_user',
     actorId: String(row.actor_id),

@@ -101,7 +101,6 @@ export type AuthSignupInput = {
   password: string;
   displayName?: string;
   tenantName: string;
-  tenantSlug: string;
   tenantDomain?: string;
 };
 

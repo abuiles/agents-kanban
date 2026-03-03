@@ -542,7 +542,6 @@ export type AuthSignupInput = {
   password: string;
   displayName?: string;
   tenantName: string;
-  tenantSlug: string;
   tenantDomain?: string;
   seatLimit?: number;
   defaultSeatLimit?: number;
@@ -631,7 +630,6 @@ export function parseAuthSignupInput(body: unknown): AuthSignupInput {
 
   const tenantInput = isRecord(body.tenant) ? body.tenant : undefined;
   const tenantName = readTrimmedString(tenantInput?.name ?? body.tenantName, 'tenantName')!;
-  const tenantSlug = readTrimmedString(tenantInput?.slug ?? body.tenantSlug, 'tenantSlug')!;
   const tenantDomain = readTrimmedString(tenantInput?.domain ?? body.tenantDomain, 'tenantDomain', false);
   const seatLimit = readPositiveInteger(tenantInput?.seatLimit ?? body.seatLimit, 'seatLimit', false);
   const defaultSeatLimit = readPositiveInteger(tenantInput?.defaultSeatLimit ?? body.defaultSeatLimit, 'defaultSeatLimit', false);
@@ -646,7 +644,6 @@ export function parseAuthSignupInput(body: unknown): AuthSignupInput {
     password,
     displayName: readTrimmedString(body.displayName, 'displayName', false),
     tenantName,
-    tenantSlug,
     tenantDomain,
     seatLimit,
     defaultSeatLimit
