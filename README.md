@@ -9,6 +9,7 @@ AgentsKanban is a Cloudflare Workers application for multi-repo task orchestrati
 - Multi-repo board for planning and execution
 - Task lifecycle across kanban columns (`INBOX` to `DONE` / `FAILED`)
 - Run orchestration with status, logs, artifacts, and retry actions
+- SCM compatibility: works with both GitHub and GitLab repositories
 - Human-in-the-loop control: operators can attach to a live run, take over the sandbox, and steer agent behavior when needed
 - Cloudflare-native runtime components (Durable Objects, Workflows, R2, D1, KV, Containers)
 
@@ -257,3 +258,16 @@ Notes:
 ## License
 
 This project is licensed under the MIT License. See [LICENSE](LICENSE).
+
+## Managed Option
+
+If you want a managed option, we can set up and operate AgentsKanban for you.
+
+Commercial terms:
+- No markup on tokens.
+- You own the OpenAI account/instance and the Cloudflare account.
+- We charge a fixed fee based on the number of people using it.
+
+We also offer a one-time setup engagement for a fixed fee.
+
+For details, reach out at: builes.adolfo@gmail.com

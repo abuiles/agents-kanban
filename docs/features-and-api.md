@@ -8,7 +8,7 @@
 | --- | --- | --- | --- | --- | --- |
 | Board and live state | 2, 4 | ✅ Implemented | `GET /api/board?repoId=all|<repoId>`; `GET /api/board/ws` | _none_ | Core board snapshot and websocket state stream are live. |
 | Repositories | 2 | ✅ Implemented | `GET /api/repos`; `POST /api/repos`; `PATCH /api/repos/:repoId` | _none_ | Repo edit and listing are in place. |
-| SCM credentials | 2, 3.5 | ✅ Implemented | `GET /api/scm/credentials`; `POST /api/scm/credentials`; `GET /api/scm/credentials/:provider/:providerRepoName` | _none_ | Provider credential registry exists, including get/list/upsert. |
+| SCM credentials | 2, 3.5 | ✅ Implemented | `GET /api/scm/credentials`; `POST /api/scm/credentials`; `GET /api/scm/credentials/:provider/:providerRepoName` | _none_ | Provider credential registry exists, including get/list/upsert. Supports GitHub and GitLab SCM providers. |
 | Tasks | 2, 3 | ✅ Implemented | `GET /api/tasks?repoId=all|<repoId>`; `POST /api/tasks`; `GET /api/tasks/:taskId`; `PATCH /api/tasks/:taskId`; `DELETE /api/tasks/:taskId` | _none_ | Full task lifecycle and mutation APIs are in place. |
 | Run execution | 3, 3.1, 3.5 | ✅ Implemented | `POST /api/tasks/:taskId/run`; `GET /api/runs/:runId`; `POST /api/runs/:runId/retry`; `POST /api/runs/:runId/preview`; `POST /api/runs/:runId/evidence`; `POST /api/runs/:runId/request-changes` | `GET /api/runs/:runId/audit` *(Stage 5 target)* | Runtime, retry, preview/evidence orchestration and change-request flows are implemented. |
 | Logs and artifacts | 3, 4 | ✅ Implemented | `GET /api/runs/:runId/logs`; `GET /api/runs/:runId/artifacts` | _none_ | Includes tailing behavior for logs and artifact listing per run. |
