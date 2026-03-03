@@ -1,3 +1,5 @@
+> Historical doc: superseded by the active P1-P4 plans in [../current/README.md](../current/README.md).
+
 # AgentsKanban Stage 5 (Explain)
 
 **Status:** ⏳ Pending

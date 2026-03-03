@@ -1,51 +1,35 @@
-# AgentsKanban Roadmap
+# AgentsKanban Roadmap (Rebaseline)
 
-## Stage status (current)
+## Planning model
 
-| Stage | Status | Doc |
+The roadmap is now organized as `P1-P4` under `docs/plans/current/`.
+
+Historical `stage_*` documents are archived in `docs/plans/archive/`.
+
+## Current phases
+
+| Phase | Status | Doc |
 | --- | --- | --- |
-| 2 | ✅ Implemented | [docs/stage_2.md](stage_2.md) |
-| 3 | ✅ Implemented | [docs/stage_3.md](stage_3.md) |
-| 3.1 | ✅ Implemented | [docs/stage_3_1.md](stage_3_1.md) |
-| 3.5 | ✅ Implemented | [docs/stage_3_5.md](stage_3_5.md) |
-| 4 | ✅ Implemented (core) | [docs/stage_4.md](stage_4.md) |
-| 4.6 | ✅ Implemented | [docs/stage_4_6.md](stage_4_6.md) |
-| 6 | ⚠️ Partial | [docs/stage_6.md](stage_6.md) |
-| 4.5 | ✅ Implemented | [docs/stage_4_5.md](stage_4_5.md) |
-| 5 | ⏳ Pending | [docs/stage_5.md](stage_5.md) |
-| 7 | ⏳ Pending | [docs/stage_7.md](stage_7.md) |
-| 8 | ⏳ Pending | [docs/stage_8.md](stage_8.md) |
+| P1 | 🚧 In progress | [docs/plans/current/p1-single-tenant-foundation.md](plans/current/p1-single-tenant-foundation.md) |
+| P2 | ⏳ Planned | [docs/plans/current/p2-control-and-explainability.md](plans/current/p2-control-and-explainability.md) |
+| P3 | ⏳ Planned | [docs/plans/current/p3-scale-and-scheduling.md](plans/current/p3-scale-and-scheduling.md) |
+| P4 | ⏳ Planned | [docs/plans/current/p4-security-and-governance.md](plans/current/p4-security-and-governance.md) |
 
 ## Execution order
 
-1. Stage 2: Board/server foundation
-2. Stage 3: Run execution
-3. Stage 3.1: Dependency fanout
-4. Stage 3.5: Provider/adapter seams
-5. Stage 4: Observe + attach runs
-6. Stage 6: Operator control (partial)
-7. Stage 4.5: Tenancy and usage accounting
-8. Stage 4.6: Org onboarding + platform support access
-9. Stage 5: Audit/explainability
-10. Stage 7: Scale/queueing/concurrency
-11. Stage 8: Hardening/security/policy
+1. P1: Single-tenant foundation completion
+2. P2: Control + explainability
+3. P3: Scale + scheduling
+4. P4: Security + governance
 
-## Sync checklist
+## Historical alias map
 
-- [x] Stage 2 complete
-- [x] Stage 3 complete
-- [x] Stage 3.1 complete
-- [x] Stage 3.5 complete
-- [x] Stage 4 core complete
-- [x] Stage 4.5 complete
-- [x] Stage 4.6 complete
-- [ ] Stage 5 complete
-- [ ] Stage 6 full control complete
-- [ ] Stage 7 complete
-- [ ] Stage 8 complete
+- Stage 5 + Stage 6 (remaining scope) -> P2
+- Stage 7 -> P3
+- Stage 8 -> P4
 
-## Focus now
+## Source of truth
 
-- Stabilize Stage 6 to cover full control semantics.
-- Implement Stage 4.5 before Stage 7 (tenant quotas should be based on usage accounting primitives).
-- Keep Stage 5 and Stage 8 after Stage 4.5 and Stage 7 are in place.
+- Active plans: [docs/plans/current/README.md](plans/current/README.md)
+- Historical stages: [docs/plans/archive/README.md](plans/archive/README.md)
+- Migration tracker: [docs/plans/current/migration-status.md](plans/current/migration-status.md)

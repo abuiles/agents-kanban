@@ -214,9 +214,10 @@ You can continue to use `npx wrangler dev` for Worker-only execution on the lega
 
 Keep this guide aligned with:
 
-- [docs/stage_3.md](stage_3.md)
-- [docs/stage_3_5.md](stage_3_5.md)
-- [docs/stage_4.md](stage_4.md)
+- [docs/plans/current/README.md](plans/current/README.md)
+- [docs/plans/archive/stage_3.md](plans/archive/stage_3.md)
+- [docs/plans/archive/stage_3_5.md](plans/archive/stage_3_5.md)
+- [docs/plans/archive/stage_4.md](plans/archive/stage_4.md)
 - [docs/sandbox-capacity-and-scheduling.md](sandbox-capacity-and-scheduling.md)
 
 ## 11) Parallel run sanity check

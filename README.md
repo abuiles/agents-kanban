@@ -92,6 +92,8 @@ For operator/API flow and request sequence, use [docs/api_prompt.md](docs/api_pr
 
 ## Key Docs
 
+- [docs/plans/current/README.md](docs/plans/current/README.md)
+- [docs/plans/current/p1-single-tenant-foundation.md](docs/plans/current/p1-single-tenant-foundation.md)
 - [docs/design.md](docs/design.md)
 - [docs/features-and-api.md](docs/features-and-api.md)
 - [docs/local-testing.md](docs/local-testing.md)

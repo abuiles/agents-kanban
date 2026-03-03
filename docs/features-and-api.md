@@ -1,5 +1,7 @@
 # AgentsKanban Features & API Surface
 
+> Note: This matrix includes historical stage labels for traceability. The active planning model is `P1-P4` in `docs/plans/current/`.
+
 ## Machine-readable feature matrix
 
 | Feature area | Stage | Status | Implemented endpoints | Missing endpoints | Sync notes |
@@ -37,7 +39,8 @@
 ## Related guides
 
 - Tenant/auth API guide: `docs/tenant-auth-api.md`
-- Stage 4.6 org onboarding + admin support: `docs/stage_4_6.md`
+- Active plans index: `docs/plans/current/README.md`
+- Historical Stage 4.6 doc: `docs/plans/archive/stage_4_6.md`
 
 ## Sync template
 

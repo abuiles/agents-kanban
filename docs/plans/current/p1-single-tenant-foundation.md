@@ -183,7 +183,7 @@ Remove:
   - `docs/features-and-api.md`
   - `docs/local-testing.md`
   - `docs/roadmap.md`
-  - `docs/stage_4_6.md` (or mark superseded and reference this doc)
+  - `docs/plans/archive/stage_4_6.md` (or mark superseded and reference this doc)
 - Verify local flow end-to-end.
 
 **Deliverables**
