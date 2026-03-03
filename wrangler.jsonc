@@ -4,7 +4,7 @@
  */
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "my-sandbox",
+  "name": "agents-kanban",
   "main": "src/index.ts",
   "preview_urls": true,
   "compatibility_date": "2026-03-01",
@@ -70,8 +70,7 @@
   },
   "kv_namespaces": [
     {
-      "binding": "SECRETS_KV",
-      "id": "e3b9755b07044cb287960ba6ebba5ac6"
+      "binding": "SECRETS_KV"
     }
   ],
   "r2_buckets": [
@@ -83,8 +82,7 @@
   "d1_databases": [
     {
       "binding": "TENANT_DB",
-      "database_name": "my-sandbox-tenant-db",
-      "database_id": "local-my-sandbox-tenant-db"
+      "database_name": "my-sandbox-tenant-db"
     }
   ]
 }

@@ -23,7 +23,7 @@ AgentsKanban is a Cloudflare Workers application for multi-repo task orchestrati
   - R2 bucket (`RUN_ARTIFACTS`) for run artifacts and bundles
   - D1 database (`TENANT_DB`) for tenant/auth persistence
   - KV namespace (`SECRETS_KV`) for secrets/metadata support
-- Ephemeral execution: Cloudflare Containers-backed sandbox class (`Sandbox`)
+- Ephemeral execution: Cloudflare Containers-backed sandbox class (`Sandbox`) using Cloudflare's default Sandbox Docker image (`docker.io/cloudflare/sandbox:0.7.8`) for now
 
 ## Prerequisites
 
@@ -50,13 +50,15 @@ npx wrangler secret put GITLAB_TOKEN
 npx wrangler secret put OPENAI_API_KEY
 ```
 
-3. If bindings changed, regenerate Worker types:
+3. On deploy, Wrangler auto-provisions `TENANT_DB` if it does not already exist in your Cloudflare account.
+
+4. If bindings changed, regenerate Worker types:
 
 ```bash
 npx wrangler types
 ```
 
-4. Build and start local development:
+5. Build and start local development:
 
 ```bash
 npm run build
@@ -77,6 +79,40 @@ npm run test:workers
 npm run deploy
 ```
 
+## Bootstrap Single-Tenant Data
+
+Use the bootstrap script to seed `TENANT_DB` with tenant config and initial owner users.
+
+Example input file:
+
+```bash
+scripts/bootstrap-single-tenant.example.json
+```
+
+Run against local D1:
+
+```bash
+npm run bootstrap:single-tenant -- --input ./scripts/bootstrap-single-tenant.example.json --local
+```
+
+Run against remote D1:
+
+```bash
+npm run bootstrap:single-tenant -- --input ./scripts/bootstrap-single-tenant.example.json --remote
+```
+
+Supported options:
+
+```text
+--input <path> (required)
+--local | --remote
+--db TENANT_DB
+--config wrangler.jsonc
+--env <name>
+--persist-to <dir>
+--dry-run
+```
+
 ## Cloudflare Bindings and Secrets
 
 Bindings defined in `wrangler.jsonc` include:
@@ -93,6 +129,17 @@ Use Worker secrets for sensitive values (do not store secrets in `vars`). For lo
 ## API Workflow
 
 For operator/API flow and request sequence, use [docs/api_prompt.md](docs/api_prompt.md).
+
+## Roadmap
+
+Current roadmap is organized as P1-P4:
+
+- P1: Single-tenant foundation
+- P2: Control and explainability
+- P3: Scale and scheduling
+- P4: Security and governance
+
+See [docs/roadmap.md](docs/roadmap.md) for details and [docs/plans/current/README.md](docs/plans/current/README.md) for active plan docs.
 
 ## Codex Auth (ChatGPT Account)
 
@@ -136,7 +183,6 @@ Notes:
 
 - [docs/plans/current/README.md](docs/plans/current/README.md)
 - [docs/plans/current/p1-single-tenant-foundation.md](docs/plans/current/p1-single-tenant-foundation.md)
-- [docs/design.md](docs/design.md)
 - [docs/features-and-api.md](docs/features-and-api.md)
 - [docs/local-testing.md](docs/local-testing.md)
 - [docs/roadmap.md](docs/roadmap.md)

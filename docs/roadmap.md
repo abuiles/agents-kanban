@@ -1,5 +1,7 @@
 # AgentsKanban Roadmap (Rebaseline)
 
+This is the canonical long-form roadmap. `README.md` includes a short summary.
+
 ## Planning model
 
 The roadmap is now organized as `P1-P4` under `docs/plans/current/`.

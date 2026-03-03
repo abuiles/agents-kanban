@@ -1,3 +1,6 @@
+> Superseded historical phase doc.
+> Use `docs/plans/current/README.md` and P1-P4 docs for active planning.
+
 # AgentsKanban Phase 0
 
 ## What this build demonstrates

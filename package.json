@@ -1,9 +1,9 @@
 {
-  "name": "@cloudflare/sandbox-minimal-example",
+  "name": "agents-kanban",
   "version": "1.0.0",
   "type": "module",
   "private": true,
-  "description": "A minimal example of using the Sandbox SDK",
+  "description": "AgentsKanban: Cloudflare Workers app for multi-repo task orchestration and agent-run execution",
   "scripts": {
     "build": "vite build",
     "deploy": "vite build && wrangler deploy",

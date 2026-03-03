@@ -1,3 +1,6 @@
+> Superseded historical design doc.
+> Use `docs/plans/current/README.md` and P1-P4 docs for active planning.
+
 Spec: AgentsKanban — Multi-Repo Task Kanban + Background Agents (Crawl → Walk → Run)
 
 Purpose
