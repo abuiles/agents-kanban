@@ -7,7 +7,15 @@ AgentsKanban is a Cloudflare Workers application for multi-repo task orchestrati
 - Multi-repo board for planning and execution
 - Task lifecycle across kanban columns (`INBOX` to `DONE` / `FAILED`)
 - Run orchestration with status, logs, artifacts, and retry actions
+- Human-in-the-loop control: operators can attach to a live run, take over the sandbox, and steer agent behavior when needed
 - Cloudflare-native runtime components (Durable Objects, Workflows, R2, D1, KV, Containers)
+
+## Inspiration
+
+This project was inspired by Stripe's Minions work on one-shot, end-to-end coding agents:
+
+- [Minions: Stripe's One-Shot End-to-End Coding Agents](https://stripe.dev/blog/minions-stripes-one-shot-end-to-end-coding-agents)
+- [Minions: Stripe's One-Shot End-to-End Coding Agents (Part 2)](https://stripe.dev/blog/minions-stripes-one-shot-end-to-end-coding-agents-part-2)
 
 ## Screenshot
 
