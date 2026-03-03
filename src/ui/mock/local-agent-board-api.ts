@@ -1,8 +1,12 @@
 import type {
+  AcceptInviteInput,
   AgentBoardApi,
   AuthLoginInput,
   AuthSession,
   AuthSignupInput,
+  CreateApiTokenInput,
+  CreateApiTokenResult,
+  CreateInviteInput,
   CreateRepoInput,
   CreateTaskInput,
   RequestRunChangesInput,
@@ -10,7 +14,7 @@ import type {
   UpdateTaskInput,
   UpsertScmCredentialInput
 } from '../domain/api';
-import type { AgentRun, Repo, RunCommand, RunEvent, RunLogEntry, ScmCredential, Task, TaskDetail, Tenant, TenantMember, TerminalBootstrap, User } from '../domain/types';
+import type { AgentRun, Invite, Repo, RunCommand, RunEvent, RunLogEntry, ScmCredential, Task, TaskDetail, Tenant, TenantMember, TerminalBootstrap, User, UserApiToken } from '../domain/types';
 import { getTaskDetail, getTasksForRepo } from '../domain/selectors';
 import { LocalBoardStore } from '../store/local-board-store';
 import { parseImportedBoard } from '../store/import-export';
@@ -30,6 +34,8 @@ export class LocalAgentBoardApi implements AgentBoardApi {
   private readonly simulator: RunSimulator;
   private readonly scmCredentials = new Map<string, ScmCredential & { token: string }>();
   private authSession?: AuthSession;
+  private invites: Invite[] = [];
+  private apiTokens: UserApiToken[] = [];
 
   private createLocalAuthSession(): AuthSession {
     const now = nowIso();
@@ -54,7 +60,7 @@ export class LocalAgentBoardApi implements AgentBoardApi {
       createdAt: now,
       updatedAt: now
     };
-    return { user, tenants: [tenant], memberships: [membership], activeTenantId: tenant.id };
+    return { user, tenant, membership };
   }
 
   constructor(private readonly store: LocalBoardStore) {
@@ -93,12 +99,61 @@ export class LocalAgentBoardApi implements AgentBoardApi {
     this.authSession = undefined;
   }
 
-  async setActiveTenant(tenantId: string): Promise<AuthSession> {
+  async acceptInvite(_input: AcceptInviteInput): Promise<AuthSession> {
+    if (!this.authSession) {
+      this.authSession = this.createLocalAuthSession();
+    }
+    return this.authSession;
+  }
+
+  async listInvites(): Promise<Invite[]> {
+    return [...this.invites];
+  }
+
+  async createInvite(input: CreateInviteInput): Promise<{ invite: Invite; token: string }> {
+    if (!this.authSession || this.authSession.membership.role !== 'owner') {
+      throw new Error('Only owners may create invites.');
+    }
+    const now = nowIso();
+    const invite: Invite = {
+      id: randomId('invite'),
+      tenantId: this.authSession.tenant.id,
+      email: input.email.trim().toLowerCase(),
+      role: input.role === 'owner' ? 'owner' : 'member',
+      status: 'pending',
+      createdByUserId: this.authSession.user.id,
+      expiresAt: new Date(Date.now() + 1000 * 60 * 60 * 24 * 30).toISOString(),
+      createdAt: now,
+      updatedAt: now
+    };
+    this.invites = [invite, ...this.invites];
+    return { invite, token: `local_${randomId('token')}` };
+  }
+
+  async listApiTokens(): Promise<UserApiToken[]> {
+    return [...this.apiTokens];
+  }
+
+  async createApiToken(input: CreateApiTokenInput): Promise<CreateApiTokenResult> {
     if (!this.authSession) {
       throw new Error('No local auth session available.');
     }
-    this.authSession = { ...this.authSession, activeTenantId: tenantId };
-    return this.authSession;
+    const now = nowIso();
+    const tokenRecord: UserApiToken = {
+      id: randomId('pat'),
+      userId: this.authSession.user.id,
+      name: input.name.trim(),
+      scopes: (input.scopes ?? []).filter(Boolean),
+      createdAt: now,
+      updatedAt: now,
+      expiresAt: input.expiresAt
+    };
+    this.apiTokens = [tokenRecord, ...this.apiTokens];
+    return { tokenRecord, token: `local_${randomId('pat_secret')}` };
+  }
+
+  async revokeApiToken(tokenId: string): Promise<void> {
+    this.apiTokens = this.apiTokens.filter((candidate) => candidate.id !== tokenId);
   }
 
   async createRepo(input: CreateRepoInput): Promise<Repo> {

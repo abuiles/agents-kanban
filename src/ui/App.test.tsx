@@ -236,4 +236,36 @@ describe('App', () => {
     expect(screen.getAllByRole('button', { name: 'Take over' }).length).toBeGreaterThan(1);
     expect(screen.getByRole('button', { name: 'Disconnect' })).toBeInTheDocument();
   });
+
+  it('lets owners create and view invites', async () => {
+    const user = userEvent.setup();
+    render(<App api={getLocalAgentBoardApi()} />);
+
+    await user.click(await screen.findByRole('button', { name: 'Manage invites' }));
+    await user.type(screen.getByPlaceholderText('invitee@example.com'), 'new-user@example.com');
+    await user.click(screen.getByRole('button', { name: 'Create invite' }));
+
+    expect(await screen.findByText(/Created invite for new-user@example.com\./i)).toBeInTheDocument();
+    expect(screen.getByText(/New invite token:/i)).toBeInTheDocument();
+    expect(screen.getByText('new-user@example.com')).toBeInTheDocument();
+  });
+
+  it('creates and revokes personal API tokens', async () => {
+    const user = userEvent.setup();
+    render(<App api={getLocalAgentBoardApi()} />);
+
+    await user.click(await screen.findByRole('button', { name: 'API tokens' }));
+    await user.type(screen.getByPlaceholderText('Token name'), 'automation');
+    await user.type(screen.getByPlaceholderText('Scopes (comma-separated, optional)'), 'runs:read,runs:write');
+    await user.click(screen.getByRole('button', { name: 'Create token' }));
+
+    expect(await screen.findByText(/Created API token automation\./i)).toBeInTheDocument();
+    expect(screen.getByText(/Token value \(shown once\):/i)).toBeInTheDocument();
+    expect(screen.getByText('automation')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Revoke' }));
+    await waitFor(() => {
+      expect(screen.getByText('No API tokens yet.')).toBeInTheDocument();
+    });
+  });
 });

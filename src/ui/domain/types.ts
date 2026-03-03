@@ -103,6 +103,33 @@ export type UserSession = {
   lastSeenAt: string;
 };
 
+export type Invite = {
+  id: string;
+  tenantId: string;
+  email: string;
+  role: 'owner' | 'member';
+  status: 'pending' | 'accepted' | 'revoked';
+  createdByUserId: string;
+  acceptedByUserId?: string;
+  acceptedAt?: string;
+  revokedAt?: string;
+  expiresAt: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type UserApiToken = {
+  id: string;
+  userId: string;
+  name: string;
+  scopes: string[];
+  createdAt: string;
+  updatedAt: string;
+  expiresAt?: string;
+  lastUsedAt?: string;
+  revokedAt?: string;
+};
+
 export type Repo = {
   tenantId?: string;
   repoId: string;

@@ -1,8 +1,12 @@
 import type {
+  AcceptInviteInput,
   AgentBoardApi,
   AuthLoginInput,
   AuthSession,
   AuthSignupInput,
+  CreateApiTokenInput,
+  CreateApiTokenResult,
+  CreateInviteInput,
   CreateRepoInput,
   CreateTaskInput,
   RequestRunChangesInput,
@@ -10,7 +14,7 @@ import type {
   UpdateTaskInput,
   UpsertScmCredentialInput
 } from '../domain/api';
-import type { AgentRun, BoardSnapshotV1, OperatorSession, Repo, RunCommand, RunEvent, RunLogEntry, ScmCredential, Task, TaskDetail, TerminalBootstrap } from '../domain/types';
+import type { AgentRun, BoardSnapshotV1, Invite, OperatorSession, Repo, RunCommand, RunEvent, RunLogEntry, ScmCredential, Task, TaskDetail, Tenant, TenantMember, TerminalBootstrap, UserApiToken } from '../domain/types';
 import { getTaskDetail } from '../domain/selectors';
 import { parseBoardSnapshot } from '../store/board-snapshot';
 import { UiPreferencesStore } from '../store/ui-preferences-store';
@@ -43,6 +47,13 @@ type BoardEvent =
   | { type: 'run.operator_session_updated'; payload: { runId: string; session?: OperatorSession } }
   | { type: 'server.error'; payload: { message: string } };
 
+type RawAuthSession = {
+  user: AuthSession['user'];
+  memberships: TenantMember[];
+  tenants: Tenant[];
+  activeTenantId: string;
+};
+
 export class HttpAgentBoardApi implements AgentBoardApi {
   private snapshot: BoardSnapshotV1;
   private authSession?: AuthSession;
@@ -66,7 +77,7 @@ export class HttpAgentBoardApi implements AgentBoardApi {
       return this.authSession;
     }
     try {
-      this.authSession = await this.request<AuthSession>('/api/me');
+      this.authSession = normalizeAuthSession(await this.request<RawAuthSession>('/api/me'));
       return this.authSession;
     } catch {
       this.authSession = undefined;
@@ -76,7 +87,7 @@ export class HttpAgentBoardApi implements AgentBoardApi {
 
   async login(input: AuthLoginInput): Promise<AuthSession> {
     await this.request('/api/auth/login', { method: 'POST', body: JSON.stringify(input) });
-    const session = await this.request<AuthSession>('/api/me');
+    const session = normalizeAuthSession(await this.request<RawAuthSession>('/api/me'));
     this.authSession = session;
     await this.refresh();
     this.connectSocket();
@@ -85,8 +96,16 @@ export class HttpAgentBoardApi implements AgentBoardApi {
   }
 
   async signup(input: AuthSignupInput): Promise<AuthSession> {
-    await this.request('/api/auth/signup', { method: 'POST', body: JSON.stringify(input) });
-    const session = await this.request<AuthSession>('/api/me');
+    await this.request('/api/auth/signup', {
+      method: 'POST',
+      body: JSON.stringify({
+        email: input.email,
+        password: input.password,
+        displayName: input.displayName,
+        tenantName: 'Local deployment'
+      })
+    });
+    const session = normalizeAuthSession(await this.request<RawAuthSession>('/api/me'));
     this.authSession = session;
     await this.refresh();
     this.connectSocket();
@@ -103,13 +122,45 @@ export class HttpAgentBoardApi implements AgentBoardApi {
     this.emit();
   }
 
-  async setActiveTenant(tenantId: string): Promise<AuthSession> {
-    await this.request('/api/me/tenant-context', { method: 'POST', body: JSON.stringify({ tenantId }) });
-    const session = await this.request<AuthSession>('/api/me');
+  async acceptInvite(input: AcceptInviteInput): Promise<AuthSession> {
+    await this.request(`/api/invites/${encodeURIComponent(input.inviteId)}/accept`, {
+      method: 'POST',
+      body: JSON.stringify({
+        token: input.token,
+        password: input.password,
+        displayName: input.displayName
+      })
+    });
+    const session = normalizeAuthSession(await this.request<RawAuthSession>('/api/me'));
     this.authSession = session;
     await this.refresh();
+    this.connectSocket();
     this.emit();
     return session;
+  }
+
+  async listInvites() {
+    return this.request<Invite[]>('/api/invites');
+  }
+
+  async createInvite(input: CreateInviteInput) {
+    const result = await this.request<{ invite: Invite; token: string; seatSummary?: unknown }>('/api/invites', {
+      method: 'POST',
+      body: JSON.stringify(input)
+    });
+    return { invite: result.invite, token: result.token };
+  }
+
+  async listApiTokens() {
+    return this.request<UserApiToken[]>('/api/me/api-tokens');
+  }
+
+  async createApiToken(input: CreateApiTokenInput): Promise<CreateApiTokenResult> {
+    return this.request<CreateApiTokenResult>('/api/me/api-tokens', { method: 'POST', body: JSON.stringify(input) });
+  }
+
+  async revokeApiToken(tokenId: string): Promise<void> {
+    await this.request(`/api/me/api-tokens/${encodeURIComponent(tokenId)}`, { method: 'DELETE' });
   }
 
   subscribe(listener: () => void) {
@@ -458,6 +509,19 @@ export class HttpAgentBoardApi implements AgentBoardApi {
 
     return (await response.json()) as T;
   }
+}
+
+function normalizeAuthSession(raw: RawAuthSession): AuthSession {
+  const membership = raw.memberships.find((candidate) => candidate.tenantId === raw.activeTenantId) ?? raw.memberships[0];
+  const tenant = raw.tenants.find((candidate) => candidate.id === membership?.tenantId) ?? raw.tenants[0];
+  if (!membership || !tenant) {
+    throw new Error('Auth session is missing tenant membership context.');
+  }
+  return {
+    user: raw.user,
+    membership,
+    tenant
+  };
 }
 
 function upsertById<T extends Record<string, unknown>, K extends keyof T>(items: T[], item: T, key: K) {

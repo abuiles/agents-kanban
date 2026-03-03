@@ -3,6 +3,7 @@ import type {
   BoardSnapshotV1,
   CodexModel,
   CodexReasoningEffort,
+  Invite,
   LlmAdapter,
   LlmReasoningEffort,
   Repo,
@@ -17,6 +18,7 @@ import type {
   Tenant,
   TenantMember,
   TerminalBootstrap,
+  UserApiToken,
   User
 } from './types';
 
@@ -85,23 +87,42 @@ export type RequestRunChangesInput = {
 
 export type AuthSession = {
   user: User;
-  memberships: TenantMember[];
-  tenants: Tenant[];
-  activeTenantId: string;
+  tenant: Tenant;
+  membership: TenantMember;
 };
 
 export type AuthLoginInput = {
   email: string;
   password: string;
-  tenantId?: string;
 };
 
 export type AuthSignupInput = {
   email: string;
   password: string;
   displayName?: string;
-  tenantName: string;
-  tenantDomain?: string;
+};
+
+export type CreateInviteInput = {
+  email: string;
+  role?: 'owner' | 'member';
+};
+
+export type AcceptInviteInput = {
+  inviteId: string;
+  token: string;
+  password: string;
+  displayName?: string;
+};
+
+export type CreateApiTokenInput = {
+  name: string;
+  scopes?: string[];
+  expiresAt?: string;
+};
+
+export type CreateApiTokenResult = {
+  tokenRecord: UserApiToken;
+  token: string;
 };
 
 export interface AgentBoardApi {
@@ -110,8 +131,13 @@ export interface AgentBoardApi {
   getAuthSession(): Promise<AuthSession | undefined>;
   login(input: AuthLoginInput): Promise<AuthSession>;
   signup(input: AuthSignupInput): Promise<AuthSession>;
+  acceptInvite(input: AcceptInviteInput): Promise<AuthSession>;
   logout(): Promise<void>;
-  setActiveTenant(tenantId: string): Promise<AuthSession>;
+  listInvites(): Promise<Invite[]>;
+  createInvite(input: CreateInviteInput): Promise<{ invite: Invite; token: string }>;
+  listApiTokens(): Promise<UserApiToken[]>;
+  createApiToken(input: CreateApiTokenInput): Promise<CreateApiTokenResult>;
+  revokeApiToken(tokenId: string): Promise<void>;
   createRepo(input: CreateRepoInput): Promise<Repo>;
   listRepos(): Promise<Repo[]>;
   updateRepo(repoId: string, patch: UpdateRepoInput): Promise<Repo>;
