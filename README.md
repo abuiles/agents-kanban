@@ -1,70 +1,70 @@
 # AgentsKanban
 
-AgentsKanban is a Cloudflare Workers application for multi-repo task orchestration with a kanban UI and background agent runs. It combines a React/Vite frontend with a Worker API that manages tasks, runs, logs, and artifacts.
+AgentsKanban helps you run AI-assisted software work the same way you already manage projects: on a Kanban board. You create tasks, connect dependencies, run agents in parallel, and step in as a human anytime.
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/abuiles/agents-kanban)
 
 ## Overview
 
-- Plan and track work across multiple repositories in one Kanban board
-- Move tasks from `INBOX` to `DONE` and see exactly where each task stands
-- Link tasks together with dependencies so downstream work waits until upstream work is ready
-- Run tasks with background agents and review logs, artifacts, previews, and retries in one place
-- Use either GitHub or GitLab repositories
-- Let a human step in at any point: observe, open a terminal, and take over a live run
+- Plan and track work across multiple repositories from one board
+- See each task move clearly from queued work to completed work
+- Connect tasks so downstream work waits for upstream work to be ready
+- Run background agents and review results, logs, previews, and retries in one place
+- Work with either GitHub or GitLab repositories
+- Let a human step in at any time to inspect, guide, or take over a run
 
 ## Features
 
 ### Board & Task Management
 
-- A single board to manage work across multiple repos
-- Clear task stages: `INBOX`, `READY`, `ACTIVE`, `REVIEW`, `DONE`, `FAILED`
-- Create and edit tasks with goal, instructions, links, and acceptance criteria
-- Filter the board by repo when you want to focus on one codebase
+- Manage many repositories from one shared board
+- Use clear task stages (`INBOX`, `READY`, `ACTIVE`, `REVIEW`, `DONE`, `FAILED`)
+- Create and edit tasks with goals, instructions, links, and acceptance criteria
+- Filter by repository when you want a focused view
 
 ### Dependency-Aware Execution
 
-- Set upstream/downstream relationships between tasks in the same repo
-- Keep dependent work blocked until upstream work is truly review-ready
+- Define which tasks must be completed before others can start
+- Keep dependent work blocked until upstream work is review-ready
 - See why a task is blocked and when it becomes unblocked
-- Choose a primary upstream task when multiple dependencies exist
+- Select a primary dependency when a task depends on multiple tasks
 
 ### Run Lifecycle, Preview, and Evidence
 
-- Every run has a clear lifecycle and timeline, from queued to done/failed
-- Start runs, retry runs, retry preview discovery, and retry evidence capture
-- Automatically discover preview URLs and collect before/after evidence
-- Review logs and artifacts for each run
+- Track each run from queued to done or failed with a visible timeline
+- Start and retry runs, preview checks, and evidence capture
+- Automatically discover preview URLs and gather before/after evidence
+- Review logs and outputs for every run
 
 ### Operator Controls
 
 - Watch live run events and command history
-- Open a live console (terminal) session into an active run sandbox
-- Connect directly to the sandbox over websocket and inspect the live environment
+- Open a live terminal into an active run environment
+- Inspect what is happening while the run is in progress
 - Take control from the agent when manual intervention is needed
 
 ### Repository & SCM Support
 
 - Works with both GitHub and GitLab
-- Store and manage SCM credentials per provider/repo
-- Configure preview/evidence behavior at the repo level
+- Store and manage source control credentials per provider and repository
+- Configure preview and evidence behavior at the repository level
 
 ### Tenant and Access Foundations
 
-- Built-in tenant, login, and membership foundations
+- Built-in tenant, login, and membership support
 - Invite-based onboarding and support-session workflows
 - Usage reporting at tenant and run level
 
 ## Inspiration
 
-This project was inspired by Stripe's Minions work on one-shot, end-to-end coding agents:
+This project is inspired by Stripe's Minions work on one-shot, end-to-end coding agents:
 
 - [Minions: Stripe's One-Shot End-to-End Coding Agents](https://stripe.dev/blog/minions-stripes-one-shot-end-to-end-coding-agents)
 - [Minions: Stripe's One-Shot End-to-End Coding Agents (Part 2)](https://stripe.dev/blog/minions-stripes-one-shot-end-to-end-coding-agents-part-2)
 
 ## Screenshot
 
-![AgentsKanban board overview](docs/assets/screenshots/agentskanban-abuiles-minions-overview.png)
+![AgentsKanban board overview](docs/assets/screenshots/agentskanban-board-overview.png)
 
 ## Architecture Summary
 
