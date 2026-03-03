@@ -1,13 +1,19 @@
 import type {
+  AcceptInviteInput,
   AgentBoardApi,
   AuthLoginInput,
   AuthSession,
-  AuthSignupInput,
+  CreateInviteInput,
+  CreateInviteResult,
   CreateRepoInput,
   CreateTaskInput,
+  CreateUserApiTokenInput,
+  CreateUserApiTokenResult,
+  InviteRecord,
   RequestRunChangesInput,
   UpdateRepoInput,
   UpdateTaskInput,
+  UserApiTokenRecord,
   UpsertScmCredentialInput
 } from '../domain/api';
 import type { AgentRun, BoardSnapshotV1, OperatorSession, Repo, RunCommand, RunEvent, RunLogEntry, ScmCredential, Task, TaskDetail, TerminalBootstrap } from '../domain/types';
@@ -84,8 +90,15 @@ export class HttpAgentBoardApi implements AgentBoardApi {
     return session;
   }
 
-  async signup(input: AuthSignupInput): Promise<AuthSession> {
-    await this.request('/api/auth/signup', { method: 'POST', body: JSON.stringify(input) });
+  async acceptInvite(input: AcceptInviteInput): Promise<AuthSession> {
+    await this.request(`/api/invites/${encodeURIComponent(input.inviteId)}/accept`, {
+      method: 'POST',
+      body: JSON.stringify({
+        token: input.token,
+        password: input.password,
+        displayName: input.displayName
+      })
+    });
     const session = await this.request<AuthSession>('/api/me');
     this.authSession = session;
     await this.refresh();
@@ -103,13 +116,24 @@ export class HttpAgentBoardApi implements AgentBoardApi {
     this.emit();
   }
 
-  async setActiveTenant(tenantId: string): Promise<AuthSession> {
-    await this.request('/api/me/tenant-context', { method: 'POST', body: JSON.stringify({ tenantId }) });
-    const session = await this.request<AuthSession>('/api/me');
-    this.authSession = session;
-    await this.refresh();
-    this.emit();
-    return session;
+  async createInvite(input: CreateInviteInput): Promise<CreateInviteResult> {
+    return this.request<CreateInviteResult>('/api/invites', { method: 'POST', body: JSON.stringify(input) });
+  }
+
+  async listInvites(): Promise<InviteRecord[]> {
+    return this.request<InviteRecord[]>('/api/invites');
+  }
+
+  async createApiToken(input: CreateUserApiTokenInput): Promise<CreateUserApiTokenResult> {
+    return this.request<CreateUserApiTokenResult>('/api/me/api-tokens', { method: 'POST', body: JSON.stringify(input) });
+  }
+
+  async listApiTokens(): Promise<UserApiTokenRecord[]> {
+    return this.request<UserApiTokenRecord[]>('/api/me/api-tokens');
+  }
+
+  async revokeApiToken(tokenId: string): Promise<void> {
+    await this.request(`/api/me/api-tokens/${encodeURIComponent(tokenId)}`, { method: 'DELETE' });
   }
 
   subscribe(listener: () => void) {

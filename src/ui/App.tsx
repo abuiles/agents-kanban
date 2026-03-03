@@ -8,7 +8,7 @@ import { Modal } from './components/Modal';
 import { RunTerminal } from './components/RunTerminal';
 import { getTaskDetail, getTasksByColumn, getTasksForRepo } from './domain/selectors';
 import type { RunCommand, RunEvent, RunLogEntry, TaskStatus, TerminalBootstrap } from './domain/types';
-import type { AgentBoardApi, AuthSession } from './domain/api';
+import type { AgentBoardApi, AuthSession, InviteRecord, UserApiTokenRecord } from './domain/api';
 import { getAgentBoardApi } from './api';
 import { downloadJson } from './store/import-export';
 import { getSelectedTaskIdFromUrl, setSelectedTaskIdInUrl } from './url-state';
@@ -34,12 +34,25 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
   const [notice, setNotice] = useState<string | undefined>();
   const [authSession, setAuthSession] = useState<AuthSession | undefined>();
   const [authLoading, setAuthLoading] = useState(true);
-  const [authMode, setAuthMode] = useState<'login' | 'signup'>('login');
+  const [authMode, setAuthMode] = useState<'login' | 'accept_invite'>('login');
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
-  const [authDisplayName, setAuthDisplayName] = useState('');
-  const [authTenantName, setAuthTenantName] = useState('');
+  const [acceptInviteId, setAcceptInviteId] = useState('');
+  const [acceptInviteToken, setAcceptInviteToken] = useState('');
+  const [acceptDisplayName, setAcceptDisplayName] = useState('');
   const [authError, setAuthError] = useState<string | undefined>();
+  const [inviteEmail, setInviteEmail] = useState('');
+  const [inviteRole, setInviteRole] = useState<'owner' | 'member'>('member');
+  const [invites, setInvites] = useState<InviteRecord[]>([]);
+  const [inviteCreateError, setInviteCreateError] = useState<string | undefined>();
+  const [inviteListError, setInviteListError] = useState<string | undefined>();
+  const [createdInviteToken, setCreatedInviteToken] = useState<{ inviteId: string; token: string } | undefined>();
+  const [apiTokenName, setApiTokenName] = useState('');
+  const [apiTokenScopes, setApiTokenScopes] = useState('');
+  const [apiTokenExpiresAt, setApiTokenExpiresAt] = useState('');
+  const [apiTokens, setApiTokens] = useState<UserApiTokenRecord[]>([]);
+  const [createdApiToken, setCreatedApiToken] = useState<string | undefined>();
+  const [apiTokenError, setApiTokenError] = useState<string | undefined>();
   const [taskSelectionHydrated, setTaskSelectionHydrated] = useState(false);
 
   const selectedRepoId = snapshot.ui.selectedRepoId;
@@ -58,6 +71,7 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
   const terminalLogs = terminalModalRunId ? snapshot.logs.filter((entry) => entry.runId === terminalModalRunId) : [];
   const terminalExecutorLogs = terminalLogs.filter((entry) => entry.phase === 'codex');
   const terminalStreamLogs = terminalExecutorLogs.length ? terminalExecutorLogs : terminalLogs;
+  const isOwner = Boolean(authSession?.memberships.some((membership) => membership.role === 'owner' && membership.seatState === 'active'));
 
   useEffect(() => {
     let cancelled = false;
@@ -77,6 +91,37 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
       cancelled = true;
     };
   }, [api]);
+
+  useEffect(() => {
+    if (!authSession) {
+      setInvites([]);
+      setApiTokens([]);
+      return;
+    }
+
+    if (isOwner) {
+      void api.listInvites()
+        .then((nextInvites) => {
+          setInvites(nextInvites);
+          setInviteListError(undefined);
+        })
+        .catch((error) => {
+          setInviteListError(error instanceof Error ? error.message : 'Failed to load invites.');
+        });
+    } else {
+      setInvites([]);
+      setInviteListError(undefined);
+    }
+
+    void api.listApiTokens()
+      .then((tokens) => {
+        setApiTokens(tokens);
+        setApiTokenError(undefined);
+      })
+      .catch((error) => {
+        setApiTokenError(error instanceof Error ? error.message : 'Failed to load API tokens.');
+      });
+  }, [api, authSession, isOwner]);
 
   useEffect(() => {
     const runId = detail?.latestRun?.runId;
@@ -244,33 +289,85 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
     event.preventDefault();
     setAuthError(undefined);
     try {
-      const session = authMode === 'login'
-        ? await api.login({ email: authEmail.trim(), password: authPassword })
-        : await api.signup({
-            email: authEmail.trim(),
-            password: authPassword,
-            displayName: authDisplayName.trim() || undefined,
-            tenantName: authTenantName.trim()
-          });
+      const session = await api.login({ email: authEmail.trim(), password: authPassword });
       setAuthSession(session);
     } catch (error) {
       setAuthError(error instanceof Error ? error.message : 'Authentication failed.');
     }
   }
 
+  async function handleAcceptInviteSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setAuthError(undefined);
+    try {
+      const session = await api.acceptInvite({
+        inviteId: acceptInviteId.trim(),
+        token: acceptInviteToken.trim(),
+        password: authPassword,
+        displayName: acceptDisplayName.trim() || undefined
+      });
+      setAuthSession(session);
+      setAcceptInviteId('');
+      setAcceptInviteToken('');
+      setAcceptDisplayName('');
+      setNotice('Invite accepted and account created.');
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : 'Failed to accept invite.');
+    }
+  }
+
   async function handleLogout() {
     await api.logout();
     setAuthSession(undefined);
+    setCreatedApiToken(undefined);
+    setCreatedInviteToken(undefined);
     setNotice('Signed out.');
   }
 
-  async function handleTenantChange(tenantId: string) {
+  async function handleCreateInvite(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setInviteCreateError(undefined);
     try {
-      const session = await api.setActiveTenant(tenantId);
-      setAuthSession(session);
-      setNotice(`Switched to ${session.tenants.find((tenant) => tenant.id === tenantId)?.name ?? tenantId}.`);
+      const result = await api.createInvite({ email: inviteEmail.trim(), role: inviteRole });
+      setInvites((current) => [result.invite, ...current]);
+      setInviteEmail('');
+      setInviteRole('member');
+      setCreatedInviteToken({ inviteId: result.invite.id, token: result.token });
+      setNotice(`Invite created for ${result.invite.email}.`);
     } catch (error) {
-      setAuthError(error instanceof Error ? error.message : 'Failed to switch tenant.');
+      setInviteCreateError(error instanceof Error ? error.message : 'Failed to create invite.');
+    }
+  }
+
+  async function handleCreateApiToken(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setApiTokenError(undefined);
+    try {
+      const scopes = apiTokenScopes
+        .split(',')
+        .map((scope) => scope.trim())
+        .filter(Boolean);
+      const expiresAt = apiTokenExpiresAt ? new Date(apiTokenExpiresAt).toISOString() : undefined;
+      const created = await api.createApiToken({ name: apiTokenName.trim(), scopes, expiresAt });
+      setApiTokens((tokens) => [created.tokenRecord, ...tokens]);
+      setCreatedApiToken(created.token);
+      setApiTokenName('');
+      setApiTokenScopes('');
+      setApiTokenExpiresAt('');
+      setNotice('Created personal API token.');
+    } catch (error) {
+      setApiTokenError(error instanceof Error ? error.message : 'Failed to create API token.');
+    }
+  }
+
+  async function handleRevokeApiToken(tokenId: string) {
+    setApiTokenError(undefined);
+    try {
+      await api.revokeApiToken(tokenId);
+      setApiTokens((tokens) => tokens.filter((token) => token.id !== tokenId));
+      setNotice('Revoked API token.');
+    } catch (error) {
+      setApiTokenError(error instanceof Error ? error.message : 'Failed to revoke API token.');
     }
   }
 
@@ -282,24 +379,31 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
     return (
       <div className="min-h-screen px-4 py-8 text-slate-100 sm:px-6 xl:px-8">
         <div className="mx-auto w-full max-w-lg rounded-xl border border-slate-700 bg-slate-900/80 p-6 shadow-xl">
-          <h1 className="text-2xl font-semibold">{authMode === 'login' ? 'Sign in' : 'Sign up'}</h1>
-          <p className="mt-1 text-sm text-slate-400">Authenticate to access your organization board.</p>
-          <form className="mt-5 space-y-3" onSubmit={(event) => void handleAuthSubmit(event)}>
-            <input className="h-11 w-full rounded-xl border border-slate-700 bg-slate-900/90 px-3 text-sm" placeholder="Email" value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} required />
-            <input className="h-11 w-full rounded-xl border border-slate-700 bg-slate-900/90 px-3 text-sm" placeholder="Password" type="password" value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} required />
-            {authMode === 'signup' ? (
-              <>
-                <input className="h-11 w-full rounded-xl border border-slate-700 bg-slate-900/90 px-3 text-sm" placeholder="Display name (optional)" value={authDisplayName} onChange={(event) => setAuthDisplayName(event.target.value)} />
-                <input className="h-11 w-full rounded-xl border border-slate-700 bg-slate-900/90 px-3 text-sm" placeholder="Organization name" value={authTenantName} onChange={(event) => setAuthTenantName(event.target.value)} required />
-              </>
-            ) : null}
-            {authError ? <div className="text-sm text-rose-300">{authError}</div> : null}
-            <button type="submit" className="h-11 w-full rounded-xl border border-cyan-400/35 bg-cyan-500/15 text-sm font-medium text-cyan-50">
-              {authMode === 'login' ? 'Sign in' : 'Create account'}
-            </button>
-          </form>
-          <button className="mt-3 text-sm text-cyan-200" onClick={() => setAuthMode(authMode === 'login' ? 'signup' : 'login')}>
-            {authMode === 'login' ? 'Need an account? Sign up' : 'Have an account? Sign in'}
+          <h1 className="text-2xl font-semibold">{authMode === 'login' ? 'Sign in' : 'Accept invite'}</h1>
+          <p className="mt-1 text-sm text-slate-400">Authenticate to access this deployment.</p>
+          {authMode === 'login' ? (
+            <form className="mt-5 space-y-3" onSubmit={(event) => void handleAuthSubmit(event)}>
+              <input className="h-11 w-full rounded-xl border border-slate-700 bg-slate-900/90 px-3 text-sm" placeholder="Email" value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} required />
+              <input className="h-11 w-full rounded-xl border border-slate-700 bg-slate-900/90 px-3 text-sm" placeholder="Password" type="password" value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} required />
+              {authError ? <div className="text-sm text-rose-300">{authError}</div> : null}
+              <button type="submit" className="h-11 w-full rounded-xl border border-cyan-400/35 bg-cyan-500/15 text-sm font-medium text-cyan-50">
+                Sign in
+              </button>
+            </form>
+          ) : (
+            <form className="mt-5 space-y-3" onSubmit={(event) => void handleAcceptInviteSubmit(event)}>
+              <input className="h-11 w-full rounded-xl border border-slate-700 bg-slate-900/90 px-3 text-sm" placeholder="Invite ID" value={acceptInviteId} onChange={(event) => setAcceptInviteId(event.target.value)} required />
+              <input className="h-11 w-full rounded-xl border border-slate-700 bg-slate-900/90 px-3 text-sm" placeholder="Invite token" value={acceptInviteToken} onChange={(event) => setAcceptInviteToken(event.target.value)} required />
+              <input className="h-11 w-full rounded-xl border border-slate-700 bg-slate-900/90 px-3 text-sm" placeholder="Display name (optional)" value={acceptDisplayName} onChange={(event) => setAcceptDisplayName(event.target.value)} />
+              <input className="h-11 w-full rounded-xl border border-slate-700 bg-slate-900/90 px-3 text-sm" placeholder="Password" type="password" value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} required />
+              {authError ? <div className="text-sm text-rose-300">{authError}</div> : null}
+              <button type="submit" className="h-11 w-full rounded-xl border border-cyan-400/35 bg-cyan-500/15 text-sm font-medium text-cyan-50">
+                Accept invite
+              </button>
+            </form>
+          )}
+          <button className="mt-3 text-sm text-cyan-200" onClick={() => setAuthMode(authMode === 'login' ? 'accept_invite' : 'login')}>
+            {authMode === 'login' ? 'Have an invite? Accept it' : 'Already have an account? Sign in'}
           </button>
         </div>
       </div>
@@ -312,23 +416,84 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
         <div className="flex items-center justify-between rounded-xl border border-slate-700 bg-slate-900/70 px-3 py-2 text-sm">
           <div className="flex items-center gap-3">
             <span className="text-slate-300">Signed in as <span className="text-slate-100">{authSession.user.email}</span></span>
-            {authSession.tenants.length > 1 ? (
-              <select
-                className="h-9 rounded-lg border border-slate-700 bg-slate-900 px-2"
-                value={authSession.activeTenantId}
-                onChange={(event) => void handleTenantChange(event.target.value)}
-              >
-                {authSession.tenants.map((tenant) => (
-                  <option key={tenant.id} value={tenant.id}>{tenant.name}</option>
-                ))}
-              </select>
-            ) : (
-              <span className="text-slate-400">{authSession.tenants[0]?.name ?? authSession.activeTenantId}</span>
-            )}
+            <span className="rounded-lg border border-slate-700 px-2 py-1 text-xs uppercase tracking-[0.1em] text-slate-300">
+              {isOwner ? 'owner' : 'member'}
+            </span>
           </div>
           <button className="rounded-lg border border-slate-700 px-3 py-1.5 text-slate-200 hover:bg-slate-800" onClick={() => void handleLogout()}>
             Sign out
           </button>
+        </div>
+        <div className={`grid gap-3 ${isOwner ? 'xl:grid-cols-2' : ''}`}>
+          {isOwner ? (
+            <section className="rounded-xl border border-slate-700 bg-slate-900/70 p-4">
+              <h2 className="text-sm font-semibold text-slate-100">Invite Management</h2>
+              <form className="mt-3 grid gap-2 md:grid-cols-[1fr_auto_auto]" onSubmit={(event) => void handleCreateInvite(event)}>
+                <input
+                  className="h-10 rounded-lg border border-slate-700 bg-slate-900/90 px-3 text-sm"
+                  placeholder="Invite email"
+                  value={inviteEmail}
+                  onChange={(event) => setInviteEmail(event.target.value)}
+                  required
+                />
+                <select className="h-10 rounded-lg border border-slate-700 bg-slate-900 px-2 text-sm" value={inviteRole} onChange={(event) => setInviteRole(event.target.value as 'owner' | 'member')}>
+                  <option value="member">Member</option>
+                  <option value="owner">Owner</option>
+                </select>
+                <button type="submit" className="h-10 rounded-lg border border-cyan-400/35 bg-cyan-500/15 px-3 text-sm text-cyan-50">Create invite</button>
+              </form>
+              {inviteCreateError ? <div className="mt-2 text-sm text-rose-300">{inviteCreateError}</div> : null}
+              {inviteListError ? <div className="mt-2 text-sm text-rose-300">{inviteListError}</div> : null}
+              {createdInviteToken ? (
+                <div className="mt-3 rounded-lg border border-amber-400/35 bg-amber-500/10 p-3 text-xs text-amber-100">
+                  <div>Invite token (shown once):</div>
+                  <code className="mt-1 block break-all">{createdInviteToken.token}</code>
+                  <div className="mt-1 text-amber-200">Invite ID: {createdInviteToken.inviteId}</div>
+                </div>
+              ) : null}
+              <div className="mt-3 max-h-48 space-y-2 overflow-auto">
+                {invites.length ? invites.map((invite) => (
+                  <div key={invite.id} className="rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2 text-xs text-slate-300">
+                    <div>{invite.email} · {invite.role} · {invite.status}</div>
+                    <div className="text-slate-500">Created {new Date(invite.createdAt).toLocaleString()}</div>
+                  </div>
+                )) : (
+                  <div className="text-xs text-slate-500">No invites yet.</div>
+                )}
+              </div>
+            </section>
+          ) : null}
+          <section className="rounded-xl border border-slate-700 bg-slate-900/70 p-4">
+            <h2 className="text-sm font-semibold text-slate-100">Personal API Tokens</h2>
+            <form className="mt-3 grid gap-2 md:grid-cols-[1fr_1fr_1fr_auto]" onSubmit={(event) => void handleCreateApiToken(event)}>
+              <input className="h-10 rounded-lg border border-slate-700 bg-slate-900/90 px-3 text-sm" placeholder="Token name" value={apiTokenName} onChange={(event) => setApiTokenName(event.target.value)} required />
+              <input className="h-10 rounded-lg border border-slate-700 bg-slate-900/90 px-3 text-sm" placeholder="Scopes (comma-separated)" value={apiTokenScopes} onChange={(event) => setApiTokenScopes(event.target.value)} />
+              <input className="h-10 rounded-lg border border-slate-700 bg-slate-900/90 px-3 text-sm" type="datetime-local" value={apiTokenExpiresAt} onChange={(event) => setApiTokenExpiresAt(event.target.value)} />
+              <button type="submit" className="h-10 rounded-lg border border-cyan-400/35 bg-cyan-500/15 px-3 text-sm text-cyan-50">Create token</button>
+            </form>
+            {apiTokenError ? <div className="mt-2 text-sm text-rose-300">{apiTokenError}</div> : null}
+            {createdApiToken ? (
+              <div className="mt-3 rounded-lg border border-amber-400/35 bg-amber-500/10 p-3 text-xs text-amber-100">
+                <div>API token (shown once):</div>
+                <code className="mt-1 block break-all">{createdApiToken}</code>
+              </div>
+            ) : null}
+            <div className="mt-3 max-h-48 space-y-2 overflow-auto">
+              {apiTokens.length ? apiTokens.map((token) => (
+                <div key={token.id} className="flex items-center justify-between gap-3 rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2 text-xs text-slate-300">
+                  <div>
+                    <div>{token.name}</div>
+                    <div className="text-slate-500">{token.scopes.join(', ') || 'No scopes'} · Created {new Date(token.createdAt).toLocaleString()}</div>
+                  </div>
+                  <button className="rounded border border-rose-400/40 bg-rose-500/10 px-2 py-1 text-rose-200" onClick={() => void handleRevokeApiToken(token.id)}>
+                    Revoke
+                  </button>
+                </div>
+              )) : (
+                <div className="text-xs text-slate-500">No API tokens yet.</div>
+              )}
+            </div>
+          </section>
         </div>
         <ControlSurfaceHeader
           repos={repos}
