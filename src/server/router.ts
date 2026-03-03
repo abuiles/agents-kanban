@@ -202,10 +202,11 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
     if (inviteAcceptMatch && request.method === 'POST') {
       const body = parseAcceptTenantInviteInput(await readJson(request));
       const inviteId = decodeURIComponent(inviteAcceptMatch[1]);
-      const result = await tenantAuthDb.acceptTenantInvite(env, body.token, requestContext.userId);
-      if (result.invite.id !== inviteId) {
+      const resolvedInvite = await tenantAuthDb.resolvePendingTenantInviteByToken(env, body.token);
+      if (resolvedInvite.invite.id !== inviteId) {
         throw forbidden('Invite token does not match requested invite id.');
       }
+      const result = await tenantAuthDb.acceptTenantInvite(env, body.token, requestContext.userId);
       return json(result);
     }
 

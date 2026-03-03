@@ -61,5 +61,6 @@ If configured, a platform admin account is created automatically in `BoardIndexD
 ## Persistence
 
 - Tenant/auth/admin persistence is D1-backed via `TENANT_DB`.
+- Initial schema migration is checked in at `migrations/0000_tenant_auth_schema.sql` and should be applied with `wrangler d1 migrations apply`.
 - Durable Objects continue to own board/task/run live state and websocket fanout.
 - This stage is greenfield-only for D1 tenant/auth/admin data (no DO->D1 backfill path).

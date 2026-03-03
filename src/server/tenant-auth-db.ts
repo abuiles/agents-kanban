@@ -719,6 +719,37 @@ export async function listTenantInvites(env: Env, tenantId: string, actorUserId:
   }));
 }
 
+export async function resolvePendingTenantInviteByToken(
+  env: Env,
+  token: string
+): Promise<{ invite: Omit<TenantInvite, 'tokenHash'> }> {
+  const db = getDb(env);
+  await ensureSchema(db);
+  const tokenHash = await hashSecret(token);
+  const row = await db.prepare(
+    "SELECT id, tenant_id, email, role, status, created_by_user_id, accepted_by_user_id, accepted_at, revoked_at, expires_at, created_at, updated_at FROM tenant_invites WHERE token_hash = ? AND status = 'pending' AND expires_at > ? LIMIT 1"
+  ).bind(tokenHash, new Date().toISOString()).first<Record<string, unknown>>();
+  if (!row) {
+    throw unauthorized('Invalid or expired invite.');
+  }
+  return {
+    invite: {
+      id: String(row.id),
+      tenantId: String(row.tenant_id),
+      email: String(row.email),
+      role: row.role === 'owner' ? 'owner' : 'member',
+      status: 'pending',
+      createdByUserId: String(row.created_by_user_id),
+      acceptedByUserId: row.accepted_by_user_id ? String(row.accepted_by_user_id) : undefined,
+      acceptedAt: row.accepted_at ? String(row.accepted_at) : undefined,
+      revokedAt: row.revoked_at ? String(row.revoked_at) : undefined,
+      expiresAt: String(row.expires_at),
+      createdAt: String(row.created_at),
+      updatedAt: String(row.updated_at)
+    }
+  };
+}
+
 export async function acceptTenantInvite(env: Env, token: string, actorUserId: string): Promise<{ membership: TenantMember; invite: Omit<TenantInvite, 'tokenHash'> }> {
   const db = getDb(env);
   await ensureSchema(db);

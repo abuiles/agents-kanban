@@ -114,6 +114,34 @@ If bindings changed, run:
 npx wrangler types
 ```
 
+## 3.5) D1 migrations (required)
+
+Tenant/auth/admin tables are versioned in [`migrations/`](../migrations).
+
+Create a new migration:
+
+```bash
+npx wrangler d1 migrations create TENANT_DB <message>
+```
+
+List pending migrations:
+
+```bash
+npx wrangler d1 migrations list TENANT_DB --local
+```
+
+Apply locally (for local dev DB):
+
+```bash
+npx wrangler d1 migrations apply TENANT_DB --local
+```
+
+Apply remotely (for deployed DB):
+
+```bash
+npx wrangler d1 migrations apply TENANT_DB --remote
+```
+
 ## 4) `.codex` auth bundle (for Codex execution)
 
 From Stage 3 notes: upload only auth files, not the full home directory.

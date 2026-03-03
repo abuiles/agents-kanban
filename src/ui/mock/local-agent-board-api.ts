@@ -31,9 +31,7 @@ export class LocalAgentBoardApi implements AgentBoardApi {
   private readonly scmCredentials = new Map<string, ScmCredential & { token: string }>();
   private authSession?: AuthSession;
 
-  constructor(private readonly store: LocalBoardStore) {
-    this.simulator = new RunSimulator(store);
-    this.simulator.resumeAll();
+  private createLocalAuthSession(): AuthSession {
     const now = nowIso();
     const user: User = { id: 'user_local', email: 'local@example.com', displayName: 'Local User', createdAt: now, updatedAt: now };
     const tenant: Tenant = {
@@ -56,7 +54,13 @@ export class LocalAgentBoardApi implements AgentBoardApi {
       createdAt: now,
       updatedAt: now
     };
-    this.authSession = { user, tenants: [tenant], memberships: [membership], activeTenantId: tenant.id };
+    return { user, tenants: [tenant], memberships: [membership], activeTenantId: tenant.id };
+  }
+
+  constructor(private readonly store: LocalBoardStore) {
+    this.simulator = new RunSimulator(store);
+    this.simulator.resumeAll();
+    this.authSession = this.createLocalAuthSession();
   }
 
   subscribe(listener: () => void) {
@@ -73,14 +77,14 @@ export class LocalAgentBoardApi implements AgentBoardApi {
 
   async login(_input: AuthLoginInput): Promise<AuthSession> {
     if (!this.authSession) {
-      throw new Error('No local auth session available.');
+      this.authSession = this.createLocalAuthSession();
     }
     return this.authSession;
   }
 
   async signup(_input: AuthSignupInput): Promise<AuthSession> {
     if (!this.authSession) {
-      throw new Error('No local auth session available.');
+      this.authSession = this.createLocalAuthSession();
     }
     return this.authSession;
   }
