@@ -1,92 +1,71 @@
-# Local Testing Guide
+# Local Testing Guide (Single-Tenant)
 
-This playbook captures the local setup needed to run a real end-to-end Stage 3+ flow from your workstation.
+This playbook validates single-tenant auth plus board/task/run flow on local Workers runtime.
 
 ## 1) What this validates
 
-Use this flow to verify:
+- login/logout/session auth path
+- owner invite management + invite acceptance
+- personal API token auth path
+- board/task/run end-to-end execution
+- artifact and attach APIs
 
-- board/task/run APIs work end-to-end
-- run bootstraps into a sandbox
-- code changes are committed and pushed
-- review/preview/evidence lifecycle is tracked
-- attach paths are available (`/api/runs/:runId/terminal`, `/api/runs/:runId/ws`)
+## 2) Runtime secrets
 
-## 2) Required accounts and keys
-
-### SCM credentials
-
-The runtime resolves SCM and OpenAI credentials from Worker secrets only:
+Runtime credentials are sourced from Worker secrets only:
 
 - `GITHUB_TOKEN`
 - `GITLAB_TOKEN`
 - `OPENAI_API_KEY`
-- Optional platform support-admin bootstrap via worker env:
-  - `PLATFORM_ADMIN_EMAIL`
-  - `PLATFORM_ADMIN_PASSWORD`
+- optional `CODEX_AUTH_BUNDLE_R2_KEY`
 
-Set this for local examples:
-
-```bash
-BASE="http://localhost:5173/api"
-```
-
-### Configure runtime secrets
+Set production/preview secrets:
 
 ```bash
 npx wrangler secret put GITHUB_TOKEN
 npx wrangler secret put GITLAB_TOKEN
 npx wrangler secret put OPENAI_API_KEY
+npx wrangler secret put CODEX_AUTH_BUNDLE_R2_KEY
 ```
 
-Set only the providers you use (`GITHUB_TOKEN` for GitHub repos, `GITLAB_TOKEN` for GitLab repos).
+Local secret files are supported via `.dev.vars` or `.env` (choose one, not both).
 
-## 3) Required infrastructure bindings
+Recommended `.gitignore` entries:
 
-These are mandatory for non-mocked runs:
+```gitignore
+.dev.vars*
+.env*
+```
 
-- R2 bucket: `RUN_ARTIFACTS` (artifacts + optional Codex auth bundle)
-- D1: `TENANT_DB` (tenant/auth/admin persistence)
+## 3) Required bindings
+
+- R2 bucket: `RUN_ARTIFACTS`
+- D1: `TENANT_DB`
 - Workflow: `RUN_WORKFLOW`
 - Durable Objects: `BOARD_INDEX`, `REPO_BOARD`, `Sandbox`
 
-If bindings changed, run:
+If bindings changed, regenerate types:
 
 ```bash
 npx wrangler types
 ```
 
-## 3.5) D1 migrations (required)
+## 4) D1 migrations
 
-Tenant/auth/admin tables are versioned in [`migrations/`](../migrations).
-
-Create a new migration:
-
-```bash
-npx wrangler d1 migrations create TENANT_DB <message>
-```
-
-List pending migrations:
+Tenant/auth tables are in [`migrations/`](../migrations).
 
 ```bash
 npx wrangler d1 migrations list TENANT_DB --local
-```
-
-Apply locally (for local dev DB):
-
-```bash
 npx wrangler d1 migrations apply TENANT_DB --local
 ```
 
-Apply remotely (for deployed DB):
+Remote apply:
 
 ```bash
 npx wrangler d1 migrations apply TENANT_DB --remote
 ```
 
-## 4) `.codex` auth bundle (for Codex execution)
-
-From Stage 3 notes: upload only auth files, not the full home directory.
+## 5) `.codex` auth bundle (optional)
 
 ```bash
 tmp_dir="$(mktemp -d)"
@@ -98,26 +77,9 @@ npx wrangler r2 object put my-sandbox-run-artifacts/auth/codex-auth.tgz --file .
 rm -rf "$tmp_dir"
 ```
 
-Set the global Worker secret `CODEX_AUTH_BUNDLE_R2_KEY` to:
+Set `CODEX_AUTH_BUNDLE_R2_KEY=auth/codex-auth.tgz`.
 
-```text
-auth/codex-auth.tgz
-```
-
-```bash
-npx wrangler secret put CODEX_AUTH_BUNDLE_R2_KEY
-```
-
-## 4.5) Container capacity and concurrency checks
-
-- Confirm sandbox capacity in `wrangler.jsonc`:
-  - `containers[0].max_instances` should be `20`
-  - `containers[0].instance_type` should be `lite` unless changed intentionally
-- Confirm `RUN_WORKFLOW` exists; workflow mode is required for production-style concurrent execution.
-
-## 5) Local dev commands
-
-Run from the repo root:
+## 6) Local dev commands
 
 ```bash
 npm install
@@ -125,92 +87,51 @@ npm run build
 npm run dev
 ```
 
-Base URL example:
+Base API URL:
 
 ```text
 http://localhost:5173/api
 ```
 
-You can continue to use `npx wrangler dev` for Worker-only execution on the legacy port in this environment if needed, but this document defaults to the Vite/Workers bridge port `5173` for API and UI.
+## 7) Minimal auth + invite + PAT verification
 
-## 6) Minimal end-to-end local test
+1. Bootstrap first owner:
+- `POST /api/auth/signup`
 
-0. Seed a local org and operator context (Stage 4.5):
+2. Session login check:
+- `POST /api/auth/logout`
+- `POST /api/auth/login`
+- `GET /api/me`
 
-   - `POST /api/auth/signup` with email/password + tenant name/slug
-   - `POST /api/auth/login` and capture session token/cookie
-   - `GET /api/me` to confirm active user + tenant context
-   - `POST /api/me/tenant-context` to set active tenant if multiple memberships exist
-   - Confirm the response contains no `tenant_legacy` fallback tenant and requires an explicit tenant selection.
-   - `GET /api/tenants` to verify tenant visibility
+3. Owner invite flow:
+- `POST /api/invites`
+- `GET /api/invites`
+- `POST /api/invites/:inviteId/accept`
 
-0.5 Optional support-admin smoke test (Stage 4.6):
+4. PAT flow:
+- `POST /api/me/api-tokens`
+- `GET /api/me/api-tokens`
+- `GET /api/me` with `x-api-token` or `Authorization: Bearer <pat>`
+- `DELETE /api/me/api-tokens/:tokenId`
 
-   - `POST /api/platform/auth/login`
-   - `POST /api/platform/support/assume-tenant` with `tenantId` and a `reason`
-   - Re-run a tenant-scoped endpoint using `x-support-session-token`
-   - `POST /api/platform/support/release-tenant`
-   - `GET /api/platform/audit-log` to verify audit entries
+5. Removed-route check:
+- verify `/api/tenants*`, `POST /api/me/tenant-context`, and `/api/platform/*` return not found.
 
-1. Create/get board and repo
-   - `GET /api/board?repoId=all`
-   - `POST /api/repos`
-2. Create a task
-   - `POST /api/tasks`
-3. Start a run
-   - `POST /api/tasks/:taskId/run`
-4. Track run and events
-   - `GET /api/runs/:runId`
-   - `GET /api/runs/:runId/events`
-   - `GET /api/runs/:runId/logs?tail=120`
-5. Check artifacts/review links
-   - `GET /api/runs/:runId/artifacts`
-6. Test retry paths
-   - `POST /api/runs/:runId/retry`
-   - `POST /api/runs/:runId/preview`
-   - `POST /api/runs/:runId/evidence`
+## 8) Board/task/run smoke
 
-## 7) Operator attach smoke test
+1. `GET /api/board?repoId=all`
+2. `POST /api/repos`
+3. `POST /api/tasks`
+4. `POST /api/tasks/:taskId/run`
+5. `GET /api/runs/:runId`
+6. `GET /api/runs/:runId/events`
+7. `GET /api/runs/:runId/logs?tail=120`
+8. `GET /api/runs/:runId/artifacts`
+9. `GET /api/runs/:runId/terminal`
+10. `GET /api/runs/:runId/ws`
 
-1. `GET /api/runs/:runId/terminal`
-2. Open websocket to `/api/runs/:runId/ws` after upgrade handshake
-3. Confirm attach and takeover:
-   - `POST /api/runs/:runId/takeover`
+## 9) Troubleshooting
 
-## 8) Troubleshooting matrix
-
-- Missing run start
-  - Ensure Worker secrets are configured for `repo.scmProvider`:
-    - GitHub repos require `GITHUB_TOKEN`
-    - GitLab repos require `GITLAB_TOKEN`
-- Missing auth for Codex
-  - Ensure R2 contains `auth/codex-auth.tgz`
-  - Ensure Worker secret `CODEX_AUTH_BUNDLE_R2_KEY` points to that object key
-- No preview URL
-  - Confirm preview mode and preview check config are correct
-- Evidence never finishes
-  - Verify Playwright install can access the baseline and preview URL from sandbox
-
-## 9) Provider key reference (quick)
-
-| Provider | Runtime host key | Runtime credential path | Key format |
-| --- | --- | --- | --- |
-| GitHub | `host` from repo URL (e.g., `github.com`) | Worker secret | `GITHUB_TOKEN` |
-| GitLab | `host` from repo URL (e.g., `gitlab.com` or self-hosted host) | Worker secret | `GITLAB_TOKEN` |
-
-## 10) Sync with docs
-
-Keep this guide aligned with:
-
-- [docs/stage_3.md](stage_3.md)
-- [docs/stage_3_5.md](stage_3_5.md)
-- [docs/stage_4.md](stage_4.md)
-- [docs/sandbox-capacity-and-scheduling.md](sandbox-capacity-and-scheduling.md)
-
-## 11) Parallel run sanity check
-
-Use this check before enabling wide concurrency:
-
-- Start two or more runs against different tasks quickly.
-- Verify overlapping `runId` values and no accidental `evidenceSandboxId` reuse.
-- Confirm run logs show expected start/completion entries for each run.
+- `401` on protected routes: verify session/PAT token headers and token freshness.
+- Run startup failures: verify provider secret (`GITHUB_TOKEN` or `GITLAB_TOKEN`) for the repo provider.
+- Missing Codex auth in sandbox: verify R2 object exists and `CODEX_AUTH_BUNDLE_R2_KEY` matches.

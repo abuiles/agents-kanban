@@ -1,42 +1,35 @@
-# Tenant & Auth API Guide
+# Single-Tenant Auth & Access API Guide
 
-This guide explains how tenant management and auth work for API consumers.
+This guide documents the current single-tenant auth contract for API consumers.
 
 ## Overview
 
-- Every authenticated request executes in one active tenant context.
-- Access is membership-based: a user must have an active seat in the tenant.
-- Tenant ownership controls member management operations.
-- Repo/task/run access is tenant-scoped server-side.
-- Protected APIs require a valid session token (no legacy header fallback path).
-- Tenant/auth/admin records are persisted in D1 (`TENANT_DB` binding).
-
-## Core Concepts
-
-- `User`: authenticated operator identity.
-- `Tenant`: organization/account boundary.
-- `TenantMember`: user membership in a tenant with role and seat state.
-- `UserSession`: auth session with `activeTenantId`.
+- Each deployment has exactly one tenant (`tenant_local` by default).
+- Users authenticate with email/password sessions.
+- Owners manage invites.
+- Invite acceptance creates a user account and logs the user in.
+- Users can create personal API tokens (PATs) for automation.
+- Runtime provider credentials come from Worker secrets, not tenant/platform APIs.
 
 ## Authentication
 
 ### Endpoints
 
-- `POST /api/auth/signup`
+- `POST /api/auth/signup` (bootstrap/owner setup)
 - `POST /api/auth/login`
 - `POST /api/auth/logout`
 - `GET /api/me`
-- `POST /api/me/tenant-context`
 
-### Token sources (request precedence)
+### Session and token resolution
 
-The API resolves session token in this order:
+Protected APIs resolve auth in this order:
 
-1. `Authorization: Bearer <token>`
-2. `x-session-token` header
-3. `minions_session` cookie
-
-If no session token is present, protected endpoints fail once tenant membership checks run.
+1. Session token from `x-session-token` header
+2. Session token from `minions_session` cookie
+3. API token from `x-api-token` header
+4. `Authorization: Bearer <token>`
+   - resolved as session token first
+   - falls back to PAT if not a valid session token
 
 ### Session cookie
 
@@ -44,54 +37,53 @@ If no session token is present, protected endpoints fail once tenant membership 
 - Set on signup/login
 - Cleared on logout
 
-### Signup tenant slug behavior
+## Roles
 
-- Signup no longer accepts a caller-provided tenant slug.
-- The service derives slug from `tenantName`.
-- If the slug is already taken, the service appends a numeric suffix (for example `acme`, `acme-2`).
+- `owner`: can create/list invites.
+- `member`: standard authenticated access.
 
-## Tenant Management
+All authenticated users map to the singleton tenant membership with an active seat.
+
+## Invite Management
 
 ### Endpoints
 
-- `GET /api/tenants`
-- `POST /api/tenants`
-- `GET /api/tenants/:tenantId`
-- `GET /api/tenants/:tenantId/members`
-- `POST /api/tenants/:tenantId/members`
-- `PATCH /api/tenants/:tenantId/members/:memberId`
-- `POST /api/tenants/:tenantId/invites`
-- `GET /api/tenants/:tenantId/invites`
+- `POST /api/invites` (owner only)
+- `GET /api/invites` (owner only)
 - `POST /api/invites/:inviteId/accept`
 
-### Role and seat behavior
-
-- `owner` can manage tenant members.
-- `member` can access tenant-scoped resources if seat is active.
-- Seat states:
-  - `active`: can access tenant resources
-  - `invited` / `revoked`: no active access
-
-## Tenant Context Switching
-
-Use `POST /api/me/tenant-context` to switch active tenant for the current session.
-
-Request body:
+### Invite accept payload
 
 ```json
 {
-  "tenantId": "tenant_acme"
+  "token": "one-time-invite-token",
+  "password": "new-user-password",
+  "displayName": "Optional Name"
 }
 ```
 
-Rules:
+Notes:
 
-- Requires an auth session.
-- User must have an active seat in the selected tenant.
+- Invite token must match the `:inviteId` in the URL.
+- Invite acceptance creates the user account and returns an authenticated session token.
 
-## Tenant-Scoped Resource Access
+## Personal API Tokens (PAT)
 
-These endpoints require active-tenant authorization and enforce tenant scoping:
+### Endpoints
+
+- `POST /api/me/api-tokens`
+- `GET /api/me/api-tokens`
+- `DELETE /api/me/api-tokens/:tokenId`
+
+PAT lifecycle behavior:
+
+- token secret is only returned at creation time
+- list returns metadata only
+- revoked PATs immediately stop authenticating
+
+## Protected Board/Repo/Task/Run APIs
+
+These APIs require valid auth (session or PAT):
 
 - `GET /api/board`
 - `GET /api/board/ws`
@@ -118,66 +110,30 @@ These endpoints require active-tenant authorization and enforce tenant scoping:
 - `GET /api/runs/:runId/artifacts`
 - `POST /api/runs/:runId/takeover`
 
-### Cross-tenant guard behavior
+## Removed APIs (single-tenant cutover)
 
-- Access is denied if the resource tenant does not match the active tenant.
-- Access is denied if membership/seat is not active in the relevant tenant.
+- `/api/tenants*`
+- `POST /api/me/tenant-context`
+- `/api/platform/*`
 
-## Usage and Metering Endpoints
+## Runtime Secret Model
 
-- `GET /api/tenant-usage?tenantId=<id>&from=<iso>&to=<iso>`
-- `GET /api/tenant-usage/runs?tenantId=<id>&from=<iso>&to=<iso>`
-- `GET /api/runs/:runId/usage`
+Runtime provider and LLM credentials are configured only as Worker secrets:
 
-## Platform Support ("God/Admin") Mode
+- `GITHUB_TOKEN`
+- `GITLAB_TOKEN`
+- `OPENAI_API_KEY`
+- optional `CODEX_AUTH_BUNDLE_R2_KEY`
 
-Platform support mode is scoped and auditable.
-
-### Endpoints
-
-- `POST /api/platform/auth/login`
-- `POST /api/platform/support/assume-tenant`
-- `POST /api/platform/support/release-tenant`
-- `GET /api/platform/support/sessions`
-- `GET /api/platform/audit-log`
-
-### Behavior
-
-- Support actions require platform admin auth.
-- Tenant access in support mode requires an active support session token.
-- Support sessions are time-bound and tenant-scoped.
-- Enter/exit and related security events are recorded in audit log.
+No runtime DB/KV secret-management API is exposed for SCM/OpenAI credentials.
 
 ## Common Error Semantics
 
 - `401 Unauthorized`
-  - Invalid or expired session
-  - Missing required auth session for endpoint behavior (for example tenant-context switch)
+  - Missing/invalid/expired session or PAT
 - `403 Forbidden`
-  - No active seat in tenant
-  - Missing owner role for owner-only operations
-  - Cross-tenant resource access attempt
+  - Owner-only action requested by non-owner user
 - `404 Not Found`
-  - Tenant/resource does not exist (or cannot be resolved)
+  - Unknown route/resource
 - `409 Conflict`
-  - Seat limit/capacity or business-rule conflict
-
-## Example Flows
-
-### Signup and first tenant
-
-1. `POST /api/auth/signup`
-2. Read session + memberships from response
-3. Call `GET /api/board?repoId=all` under active tenant
-
-### Login and switch tenant
-
-1. `POST /api/auth/login`
-2. `POST /api/me/tenant-context` with a tenant where membership seat is `active`
-3. `GET /api/repos` and `GET /api/tasks` for the active tenant
-
-### Owner adds a member
-
-1. Owner calls `POST /api/tenants/:tenantId/members`
-2. Owner optionally updates role/seat via `PATCH /api/tenants/:tenantId/members/:memberId`
-3. Member can access tenant-scoped resources only when seat state is `active`
+  - Duplicate user/invite or business-rule conflict

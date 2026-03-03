@@ -191,6 +191,7 @@ Remove:
 - passing worker/unit tests for new auth model
 - docs aligned with new public API and secret model
 - concise verification checklist
+- captured verification record: `docs/single-tenant-rollout-verification.md`
 
 **Dependencies**
 
