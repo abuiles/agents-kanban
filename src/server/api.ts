@@ -1,10 +1,62 @@
 import { Hono, type Context } from 'hono';
 import {
+  handleAuthLogin,
+  handleAuthLogout,
+  handleAuthSignup,
+  handleCancelRun,
+  handleCreateRepo,
+  handleCreateTask,
+  handleCreateTenant,
+  handleCreateTenantInvite,
+  handleCreateTenantMember,
+  handleDebugExport,
+  handleDebugImport,
+  handleDebugSandboxFile,
+  handleDebugSandboxRun,
+  handleDeleteTask,
+  handleGetRun,
+  handleGetRunArtifacts,
+  handleGetRunCommands,
+  handleGetRunEvents,
+  handleGetRunLogs,
+  handleGetRunTerminal,
+  handleGetRunUsage,
+  handleGetRunWs,
+  handleGetScmCredential,
+  handleGetTask,
+  handleGetTenant,
+  handleListRepos,
+  handleListScmCredentials,
+  handleListTasks,
+  handleListTenantInvites,
+  handleListTenantMembers,
+  handleListTenants,
+  handleMe,
+  handlePlatformAuditLog,
+  handlePlatformAuthLogin,
+  handleRequestChanges,
+  handleRetryEvidence,
+  handleRetryPreview,
+  handleRetryRun,
+  handleRunTask,
+  handleSetTenantContext,
+  handleSupportAssumeTenant,
+  handleSupportReleaseTenant,
+  handleSupportSessions,
+  handleTakeoverRun,
+  handleTenantRunUsage,
+  handleTenantUsageSummary,
+  handleUpdateRepo,
+  handleUpdateTask,
+  handleUpdateTenantMember,
+  handleUpsertScmCredential,
+  handleAcceptInvite,
+  handleBoard,
+  handleBoardWs,
+  requireActiveTenantAccess,
   resolvePlatformAdminContext,
-  resolveRequestTenantContext,
-  requireActiveTenantAccess
+  resolveRequestTenantContext
 } from './router';
-import { handleApiRequest } from './router';
 import { json } from './http/response';
 
 const apiRouter = new Hono();
@@ -66,70 +118,127 @@ apiRouter.use('/api/*', async (c, next) => {
   return next();
 });
 
-async function handleApiRoute(c: Context) {
-  const request = c.req.raw;
-  return handleApiRequest(request, c.env as Env, c.executionCtx as unknown as ExecutionContext);
-}
+apiRouter.post('/api/auth/signup', (c: Context) => handleAuthSignup(c.req.raw, c.env as Env));
+apiRouter.post('/api/auth/login', (c: Context) => handleAuthLogin(c.req.raw, c.env as Env));
+apiRouter.post('/api/platform/auth/login', (c: Context) => handlePlatformAuthLogin(c.req.raw, c.env as Env));
+apiRouter.post('/api/platform/support/release-tenant', (c: Context) =>
+  handleSupportReleaseTenant(c.req.raw, c.env as Env)
+);
+apiRouter.get('/api/platform/support/sessions', (c: Context) => handleSupportSessions(c.req.raw, c.env as Env));
+apiRouter.post('/api/platform/support/assume-tenant', (c: Context) =>
+  handleSupportAssumeTenant(c.req.raw, c.env as Env)
+);
+apiRouter.get('/api/platform/audit-log', (c: Context) => handlePlatformAuditLog(c.req.raw, c.env as Env));
 
-apiRouter.post('/api/auth/signup', handleApiRoute);
-apiRouter.post('/api/auth/login', handleApiRoute);
-apiRouter.post('/api/platform/auth/login', handleApiRoute);
-apiRouter.post('/api/platform/support/release-tenant', handleApiRoute);
-apiRouter.get('/api/platform/support/sessions', handleApiRoute);
-apiRouter.post('/api/platform/support/assume-tenant', handleApiRoute);
-apiRouter.get('/api/platform/audit-log', handleApiRoute);
+apiRouter.post('/api/auth/logout', (c: Context) => handleAuthLogout(c.req.raw, c.env as Env));
+apiRouter.get('/api/me', (c: Context) => handleMe(c.req.raw, c.env as Env));
+apiRouter.post('/api/me/tenant-context', (c: Context) => handleSetTenantContext(c.req.raw, c.env as Env));
+apiRouter.get('/api/tenants', (c: Context) => handleListTenants(c.req.raw, c.env as Env));
+apiRouter.post('/api/tenants', (c: Context) => handleCreateTenant(c.req.raw, c.env as Env));
+apiRouter.get('/api/tenants/:tenantId', (c: Context) =>
+  handleGetTenant(c.req.raw, c.env as Env, { tenantId: c.req.param('tenantId') })
+);
+apiRouter.get('/api/tenants/:tenantId/members', (c: Context) =>
+  handleListTenantMembers(c.req.raw, c.env as Env, { tenantId: c.req.param('tenantId') })
+);
+apiRouter.post('/api/tenants/:tenantId/members', (c: Context) =>
+  handleCreateTenantMember(c.req.raw, c.env as Env, { tenantId: c.req.param('tenantId') })
+);
+apiRouter.get('/api/tenants/:tenantId/invites', (c: Context) =>
+  handleListTenantInvites(c.req.raw, c.env as Env, { tenantId: c.req.param('tenantId') })
+);
+apiRouter.post('/api/tenants/:tenantId/invites', (c: Context) =>
+  handleCreateTenantInvite(c.req.raw, c.env as Env, { tenantId: c.req.param('tenantId') })
+);
+apiRouter.post('/api/invites/:inviteId/accept', (c: Context) =>
+  handleAcceptInvite(c.req.raw, c.env as Env, { inviteId: c.req.param('inviteId') })
+);
+apiRouter.patch('/api/tenants/:tenantId/members/:memberId', (c: Context) =>
+  handleUpdateTenantMember(c.req.raw, c.env as Env, {
+    tenantId: c.req.param('tenantId'),
+    memberId: c.req.param('memberId')
+  })
+);
 
-apiRouter.post('/api/auth/logout', handleApiRoute);
-apiRouter.get('/api/me', handleApiRoute);
-apiRouter.post('/api/me/tenant-context', handleApiRoute);
-apiRouter.get('/api/tenants', handleApiRoute);
-apiRouter.post('/api/tenants', handleApiRoute);
-apiRouter.get('/api/tenants/:tenantId', handleApiRoute);
-apiRouter.get('/api/tenants/:tenantId/members', handleApiRoute);
-apiRouter.post('/api/tenants/:tenantId/members', handleApiRoute);
-apiRouter.get('/api/tenants/:tenantId/invites', handleApiRoute);
-apiRouter.post('/api/tenants/:tenantId/invites', handleApiRoute);
-apiRouter.post('/api/invites/:inviteId/accept', handleApiRoute);
-apiRouter.patch('/api/tenants/:tenantId/members/:memberId', handleApiRoute);
+apiRouter.get('/api/board', (c: Context) => handleBoard(c.req.raw, c.env as Env));
+apiRouter.get('/api/board/ws', (c: Context) => handleBoardWs(c.req.raw, c.env as Env));
+apiRouter.get('/api/repos', (c: Context) => handleListRepos(c.req.raw, c.env as Env));
+apiRouter.post('/api/repos', (c: Context) => handleCreateRepo(c.req.raw, c.env as Env));
+apiRouter.patch('/api/repos/:repoId', (c: Context) =>
+  handleUpdateRepo(c.req.raw, c.env as Env, { repoId: c.req.param('repoId') })
+);
 
-apiRouter.get('/api/board', handleApiRoute);
-apiRouter.get('/api/board/ws', handleApiRoute);
-apiRouter.get('/api/repos', handleApiRoute);
-apiRouter.post('/api/repos', handleApiRoute);
-apiRouter.patch('/api/repos/:repoId', handleApiRoute);
+apiRouter.get('/api/scm/credentials', (c: Context) => handleListScmCredentials(c.req.raw, c.env as Env));
+apiRouter.post('/api/scm/credentials', (c: Context) => handleUpsertScmCredential(c.req.raw, c.env as Env));
+apiRouter.get('/api/scm/credentials/:provider/:credentialId', (c: Context) =>
+  handleGetScmCredential(c.req.raw, c.env as Env, {
+    provider: c.req.param('provider') as 'github' | 'gitlab',
+    credentialId: c.req.param('credentialId')
+  })
+);
 
-apiRouter.get('/api/scm/credentials', handleApiRoute);
-apiRouter.post('/api/scm/credentials', handleApiRoute);
-apiRouter.get('/api/scm/credentials/:provider/:credentialId', handleApiRoute);
+apiRouter.get('/api/tasks', (c: Context) => handleListTasks(c.req.raw, c.env as Env));
+apiRouter.post('/api/tasks', (c: Context) => handleCreateTask(c.req.raw, c.env as Env));
+apiRouter.get('/api/tenant-usage', (c: Context) => handleTenantUsageSummary(c.req.raw, c.env as Env));
+apiRouter.get('/api/tenant-usage/runs', (c: Context) => handleTenantRunUsage(c.req.raw, c.env as Env));
+apiRouter.get('/api/tasks/:taskId', (c: Context) =>
+  handleGetTask(c.req.raw, c.env as Env, { taskId: c.req.param('taskId') })
+);
+apiRouter.patch('/api/tasks/:taskId', (c: Context) =>
+  handleUpdateTask(c.req.raw, c.env as Env, { taskId: c.req.param('taskId') })
+);
+apiRouter.delete('/api/tasks/:taskId', (c: Context) =>
+  handleDeleteTask(c.req.raw, c.env as Env, { taskId: c.req.param('taskId') })
+);
+apiRouter.post('/api/tasks/:taskId/run', (c: Context) =>
+  handleRunTask(c.req.raw, c.env as Env, { taskId: c.req.param('taskId') }, c.executionCtx as unknown as ExecutionContext<unknown>)
+);
 
-apiRouter.get('/api/tasks', handleApiRoute);
-apiRouter.post('/api/tasks', handleApiRoute);
-apiRouter.get('/api/tenant-usage', handleApiRoute);
-apiRouter.get('/api/tenant-usage/runs', handleApiRoute);
-apiRouter.get('/api/tasks/:taskId', handleApiRoute);
-apiRouter.patch('/api/tasks/:taskId', handleApiRoute);
-apiRouter.delete('/api/tasks/:taskId', handleApiRoute);
-apiRouter.post('/api/tasks/:taskId/run', handleApiRoute);
+apiRouter.get('/api/runs/:runId', (c: Context) =>
+  handleGetRun(c.req.raw, c.env as Env, { runId: c.req.param('runId') })
+);
+apiRouter.post('/api/runs/:runId/retry', (c: Context) =>
+  handleRetryRun(c.req.raw, c.env as Env, { runId: c.req.param('runId') }, c.executionCtx as unknown as ExecutionContext<unknown>)
+);
+apiRouter.post('/api/runs/:runId/cancel', (c: Context) =>
+  handleCancelRun(c.req.raw, c.env as Env, { runId: c.req.param('runId') })
+);
+apiRouter.post('/api/runs/:runId/request-changes', (c: Context) =>
+  handleRequestChanges(c.req.raw, c.env as Env, { runId: c.req.param('runId') }, c.executionCtx as unknown as ExecutionContext<unknown>)
+);
+apiRouter.post('/api/runs/:runId/evidence', (c: Context) =>
+  handleRetryEvidence(c.req.raw, c.env as Env, { runId: c.req.param('runId') }, c.executionCtx as unknown as ExecutionContext<unknown>)
+);
+apiRouter.post('/api/runs/:runId/preview', (c: Context) =>
+  handleRetryPreview(c.req.raw, c.env as Env, { runId: c.req.param('runId') }, c.executionCtx as unknown as ExecutionContext<unknown>)
+);
+apiRouter.get('/api/runs/:runId/logs', (c: Context) =>
+  handleGetRunLogs(c.req.raw, c.env as Env, { runId: c.req.param('runId') })
+);
+apiRouter.get('/api/runs/:runId/usage', (c: Context) =>
+  handleGetRunUsage(c.req.raw, c.env as Env, { runId: c.req.param('runId') })
+);
+apiRouter.get('/api/runs/:runId/events', (c: Context) =>
+  handleGetRunEvents(c.req.raw, c.env as Env, { runId: c.req.param('runId') })
+);
+apiRouter.get('/api/runs/:runId/commands', (c: Context) =>
+  handleGetRunCommands(c.req.raw, c.env as Env, { runId: c.req.param('runId') })
+);
+apiRouter.get('/api/runs/:runId/terminal', (c: Context) =>
+  handleGetRunTerminal(c.req.raw, c.env as Env, { runId: c.req.param('runId') })
+);
+apiRouter.get('/api/runs/:runId/ws', (c: Context) => handleGetRunWs(c.req.raw, c.env as Env, { runId: c.req.param('runId') }));
+apiRouter.get('/api/runs/:runId/artifacts', (c: Context) =>
+  handleGetRunArtifacts(c.req.raw, c.env as Env, { runId: c.req.param('runId') })
+);
+apiRouter.post('/api/runs/:runId/takeover', (c: Context) =>
+  handleTakeoverRun(c.req.raw, c.env as Env, { runId: c.req.param('runId') })
+);
 
-apiRouter.get('/api/runs/:runId', handleApiRoute);
-apiRouter.post('/api/runs/:runId/retry', handleApiRoute);
-apiRouter.post('/api/runs/:runId/cancel', handleApiRoute);
-apiRouter.post('/api/runs/:runId/request-changes', handleApiRoute);
-apiRouter.post('/api/runs/:runId/evidence', handleApiRoute);
-apiRouter.post('/api/runs/:runId/preview', handleApiRoute);
-apiRouter.get('/api/runs/:runId/logs', handleApiRoute);
-apiRouter.get('/api/runs/:runId/usage', handleApiRoute);
-apiRouter.get('/api/runs/:runId/events', handleApiRoute);
-apiRouter.get('/api/runs/:runId/commands', handleApiRoute);
-apiRouter.get('/api/runs/:runId/terminal', handleApiRoute);
-apiRouter.get('/api/runs/:runId/ws', handleApiRoute);
-apiRouter.get('/api/runs/:runId/artifacts', handleApiRoute);
-apiRouter.post('/api/runs/:runId/takeover', handleApiRoute);
-
-apiRouter.get('/api/debug/export', handleApiRoute);
-apiRouter.post('/api/debug/import', handleApiRoute);
-apiRouter.post('/api/debug/sandbox/run', handleApiRoute);
-apiRouter.post('/api/debug/sandbox/file', handleApiRoute);
+apiRouter.get('/api/debug/export', (c: Context) => handleDebugExport(c.req.raw, c.env as Env));
+apiRouter.post('/api/debug/import', (c: Context) => handleDebugImport(c.req.raw, c.env as Env));
+apiRouter.post('/api/debug/sandbox/run', (c: Context) => handleDebugSandboxRun(c.req.raw, c.env as Env));
+apiRouter.post('/api/debug/sandbox/file', (c: Context) => handleDebugSandboxFile(c.req.raw, c.env as Env));
 
 apiRouter.notFound((c) => {
   const method = c.req.method.toUpperCase();
