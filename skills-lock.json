@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "skills": {
+    "compound-docs": {
+      "source": "everyinc/compound-engineering-plugin",
+      "sourceType": "github",
+      "computedHash": "099c353c64387efffa00222b1b1a0ac518ab8b359b8eadaa151db149ab16f335"
+    }
+  }
+}
