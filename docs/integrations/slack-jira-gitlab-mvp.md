@@ -7,6 +7,7 @@ This document is the operator and agent handoff artifact for the P5 MVP vertical
 In scope (MVP):
 
 - Slack-triggered task start from Jira key (`/kanvy fix <JIRA_KEY>`)
+- Slack slash help response (`/kanvy help`) with concise usage examples
 - Jira issue load and repo resolution (mapping and disambiguation)
 - Task/run start from `main`
 - GitLab MR lifecycle and feedback mirrored to Slack thread
@@ -39,6 +40,7 @@ Out of scope (this phase):
 ## Operator day-to-day flow (no dashboard required)
 
 1. In Slack, run `/kanvy fix ABC-123`.
+   - For usage guidance, run `/kanvy help`.
 2. If multiple repo mappings are available, click a repo disambiguation button.
 3. Monitor status and MR feedback in the same Slack thread.
 4. When feedback arrives and run enters `DECISION_REQUIRED`, click `Approve rerun`.

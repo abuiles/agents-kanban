@@ -1,15 +1,23 @@
 import { badRequest } from '../../http/errors';
 
-export type SlackSlashCommandPayload = {
+type SlackSlashCommandPayloadBase = {
   command: string;
   text: string;
-  issueKey: string;
   teamId: string | undefined;
   channelId: string;
   threadTs: string | undefined;
   userId: string;
   responseUrl: string | undefined;
 };
+
+export type SlackSlashCommandPayload =
+  | (SlackSlashCommandPayloadBase & {
+    intent: 'help';
+  })
+  | (SlackSlashCommandPayloadBase & {
+    intent: 'fix';
+    issueKey: string;
+  });
 
 export type SlackInteractionAction = 'repo_disambiguation' | 'approve_rerun' | 'pause' | 'close';
 
@@ -51,6 +59,7 @@ type SlackEventPayload = {
 
 const ISSUE_KEY_PATTERN = /^[A-Z][A-Z0-9_]*-\d+$/i;
 const FIX_COMMAND_PATTERN = /^fix\s+([A-Z][A-Z0-9_]*-\d+)\s*$/i;
+const HELP_COMMAND_PATTERN = /^help\s*$/i;
 const SUPPORTED_SLACK_COMMAND = '/kanvy';
 const SUPPORTED_ACTION_IDS: Set<string> = new Set([
   'repo_disambiguation',
@@ -119,9 +128,26 @@ export function parseSlackSlashCommandBody(rawBody: string): SlackSlashCommandPa
     throw badRequest('Unknown Slack slash command.');
   }
   const text = readFormValue(params, 'text', false) ?? '';
+  const teamId = readFormValue(params, 'team_id', false);
+  const channelId = readFormValue(params, 'channel_id', true);
+  const threadTs = readFormValue(params, 'thread_ts', false);
+  const userId = readFormValue(params, 'user_id', false) ?? 'unknown';
+  const responseUrl = readFormValue(params, 'response_url', false);
+  if (HELP_COMMAND_PATTERN.test(text)) {
+    return {
+      intent: 'help',
+      command,
+      text,
+      teamId,
+      channelId,
+      threadTs,
+      userId,
+      responseUrl
+    };
+  }
   const match = FIX_COMMAND_PATTERN.exec(text);
   if (!match || !match[1]) {
-    throw badRequest('Invalid slash command format. Expected: /kanvy fix <JIRA_KEY>.');
+    throw badRequest('Invalid slash command format. Expected: /kanvy fix <JIRA_KEY> or /kanvy help.');
   }
   const issueKey = match[1].toUpperCase();
   if (!ISSUE_KEY_PATTERN.test(issueKey)) {
@@ -129,14 +155,15 @@ export function parseSlackSlashCommandBody(rawBody: string): SlackSlashCommandPa
   }
 
   return {
+    intent: 'fix',
     command,
     text,
     issueKey,
-    teamId: readFormValue(params, 'team_id', false),
-    channelId: readFormValue(params, 'channel_id', true),
-    threadTs: readFormValue(params, 'thread_ts', false),
-    userId: readFormValue(params, 'user_id', false) ?? 'unknown',
-    responseUrl: readFormValue(params, 'response_url', false)
+    teamId,
+    channelId,
+    threadTs,
+    userId,
+    responseUrl
   };
 }
 

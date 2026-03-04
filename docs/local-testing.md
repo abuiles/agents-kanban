@@ -280,10 +280,12 @@ Use this when validating day-to-day operator flow without dashboard actions.
 2. Configure Jira project -> repo mapping for the tenant.
 3. Trigger slash command:
    - `/kanvy fix ABC-123`
+   - `/kanvy help`
 4. Confirm slash command ack is immediate and async processing posts one of:
    - run start confirmation
    - repo disambiguation buttons
    - failure message (for example Jira read failure)
+   - usage instructions with examples for Jira fast-path and free-text flow (for `/kanvy help`)
 5. Confirm run thread binding stores:
    - `taskId`, `channelId`, `threadTs`, `currentRunId`, `latestReviewRound`
 6. Simulate or receive GitLab webhook events:

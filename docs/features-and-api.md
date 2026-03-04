@@ -79,7 +79,7 @@ Operational notes:
 
 - `POST /api/integrations/slack/commands`
   - Verified with Slack signing secret and replay window checks.
-  - Accepts `/kanvy fix <JIRA_KEY>`.
+  - Accepts `/kanvy fix <JIRA_KEY>` and `/kanvy help`.
   - Acknowledges immediately and continues Jira/repo/run processing asynchronously.
 - `POST /api/integrations/slack/interactions`
   - Supports actions: `repo_disambiguation`, `approve_rerun`, `pause`, `close`.
