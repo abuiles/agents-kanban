@@ -20,7 +20,7 @@ const fetchSpy = vi.spyOn(globalThis, 'fetch');
 
 vi.mock('../../tenant-auth-db', () => tenantAuthDbMocks);
 vi.mock('../jira/client', () => jiraClientMocks);
-vi.mock('../run-orchestrator', () => runOrchestratorMocks);
+vi.mock('../../run-orchestrator', () => runOrchestratorMocks);
 
 function createKv(secret: string) {
   const values = new Map<string, string>([['slack/signing-secret', secret]]);

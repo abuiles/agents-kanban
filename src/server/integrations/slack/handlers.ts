@@ -3,7 +3,7 @@ import { badRequest } from '../../http/errors';
 import { handleError, json } from '../../http/response';
 import * as tenantAuthDb from '../../tenant-auth-db';
 import { createJiraIssueSourceIntegrationFromEnv } from '../jira/client';
-import { scheduleRunJob } from '../run-orchestrator';
+import { scheduleRunJob } from '../../run-orchestrator';
 import {
   parseSlackEventBody,
   parseSlackInteractionBody,
