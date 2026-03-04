@@ -22,6 +22,10 @@ type GitHubPullRequestResponse = {
   };
 };
 
+type GitHubPullRequestFile = {
+  filename?: string;
+};
+
 type GitHubReviewComment = {
   id?: number;
   body?: string;
@@ -106,6 +110,10 @@ export class GitHubReviewPostingAdapter implements ReviewPostingAdapter {
       errors.push(error instanceof Error ? error.message : String(error));
       return undefined;
     });
+    const changedFiles = await this.fetchPullRequestChangedFiles(input.repo, reviewNumber, input.credential.token).catch((error) => {
+      errors.push(error instanceof Error ? error.message : String(error));
+      return undefined;
+    });
 
     for (const finding of input.findings) {
       const result: ReviewPostingFindingRecord = {
@@ -128,12 +136,21 @@ export class GitHubReviewPostingAdapter implements ReviewPostingAdapter {
         continue;
       }
 
-      if (!shouldInline || !finding.filePath || !finding.lineStart || !headSha) {
+      const normalizedFindingPath = typeof finding.filePath === 'string'
+        ? finding.filePath.replace(/^\/+/, '')
+        : undefined;
+      const canInlineForPath = normalizedFindingPath && changedFiles
+        ? changedFiles.has(normalizedFindingPath)
+        : true;
+
+      if (!shouldInline || !finding.filePath || !finding.lineStart || !headSha || !canInlineForPath) {
         needsSummary.push(finding);
         result.summary = true;
         result.reason = !shouldInline || !finding.filePath || !finding.lineStart
           ? 'Posting inline unavailable or disabled.'
-          : 'Missing pull request metadata required for inline posting.';
+          : !headSha
+            ? 'Missing pull request metadata required for inline posting.'
+            : 'Finding location is outside the pull request diff; posting as summary.';
         results.push(result);
         continue;
       }
@@ -335,6 +352,17 @@ export class GitHubReviewPostingAdapter implements ReviewPostingAdapter {
     return headSha;
   }
 
+  private async fetchPullRequestChangedFiles(repo: Repo, reviewNumber: number, token: string): Promise<Set<string>> {
+    const files = await this.requestJson<GitHubPullRequestFile[]>(repo, `/pulls/${reviewNumber}/files?per_page=100`, token);
+    const changed = new Set<string>();
+    for (const file of files) {
+      if (typeof file.filename === 'string' && file.filename.trim()) {
+        changed.add(file.filename.trim().replace(/^\/+/, ''));
+      }
+    }
+    return changed;
+  }
+
   private async postInlineFinding(input: {
     repo: Repo;
     reviewNumber: number;
@@ -509,7 +537,9 @@ export class GitHubReviewPostingAdapter implements ReviewPostingAdapter {
     });
 
     if (!response.ok) {
-      throw new Error(`GitHub review-posting request failed with status ${response.status}.`);
+      const responseText = await response.text().catch(() => '');
+      const suffix = responseText ? ` Response: ${responseText.slice(0, 500)}` : '';
+      throw new Error(`GitHub review-posting request failed with status ${response.status}.${suffix}`);
     }
 
     return response.json() as Promise<T>;
