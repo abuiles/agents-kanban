@@ -1,5 +1,6 @@
 import type { IntegrationIssueRef, IssueSourceIntegration } from '../interfaces';
 import { badRequest } from '../../http/errors';
+import { redactSensitiveText } from '../../security/redaction';
 
 type HttpFetcher = (input: string, init?: RequestInit) => Promise<Response>;
 
@@ -38,6 +39,28 @@ const ISSUE_KEY_PATTERN = /^[A-Z][A-Z0-9_]*-\d+$/i;
 const DEFAULT_TIMEOUT_MS = 5_000;
 const DEFAULT_MAX_ATTEMPTS = 3;
 const DEFAULT_RETRY_DELAY_MS = 250;
+
+function readHost(value: string) {
+  try {
+    return new URL(value).host;
+  } catch {
+    return 'unknown';
+  }
+}
+
+function readIssueKeyFromUrl(url: string) {
+  const match = /\/issue\/([A-Z][A-Z0-9_]*-\d+)/i.exec(url);
+  return match?.[1]?.toUpperCase() ?? 'unknown';
+}
+
+function logJiraFetchLifecycle(
+  level: 'warn' | 'error',
+  event: string,
+  details: Record<string, unknown>
+) {
+  const writer = level === 'warn' ? console.warn : console.error;
+  writer(`[jira:fetch] ${event} ${redactSensitiveText(JSON.stringify(details))}`);
+}
 
 function readString(value: unknown): string | undefined {
   if (typeof value === 'string' && value.trim()) {
@@ -209,7 +232,18 @@ export class JiraMcpIssueSourceIntegration implements IssueSourceIntegration {
       throw badRequest('Invalid Jira issue key.');
     }
 
-    const response = await this.fetchWithRetry(buildIssueEndpoint(this.options.baseUrl, issueKey));
+    let response: Response;
+    try {
+      response = await this.fetchWithRetry(buildIssueEndpoint(this.options.baseUrl, issueKey));
+    } catch (error) {
+      logJiraFetchLifecycle('error', 'request_failed', {
+        issueKey,
+        jiraHost: readHost(this.options.baseUrl),
+        maxAttempts: this.options.maxAttempts,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      throw error;
+    }
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
       const message = extractErrorMessage(payload);
@@ -236,6 +270,8 @@ export class JiraMcpIssueSourceIntegration implements IssueSourceIntegration {
   private async fetchWithRetry(url: string): Promise<Response> {
     let attempt = 0;
     let lastRetryableError: Error | undefined;
+    const jiraHost = readHost(this.options.baseUrl);
+    const issueKey = readIssueKeyFromUrl(url);
 
     while (attempt < this.options.maxAttempts) {
       attempt += 1;
@@ -250,6 +286,13 @@ export class JiraMcpIssueSourceIntegration implements IssueSourceIntegration {
         }
 
         if (attempt < this.options.maxAttempts) {
+          logJiraFetchLifecycle('warn', 'retryable_status', {
+            issueKey,
+            jiraHost,
+            status: response.status,
+            attempt,
+            maxAttempts: this.options.maxAttempts
+          });
           await sleep(this.options.retryDelayMs);
           continue;
         }
@@ -260,6 +303,13 @@ export class JiraMcpIssueSourceIntegration implements IssueSourceIntegration {
         if ((typedError instanceof RetryableRequestError) || (typedError instanceof DOMException) || typedError.retryable) {
           lastRetryableError = typedError;
           if (attempt < this.options.maxAttempts) {
+            logJiraFetchLifecycle('warn', 'retryable_error', {
+              issueKey,
+              jiraHost,
+              attempt,
+              maxAttempts: this.options.maxAttempts,
+              error: typedError.message
+            });
             await sleep(this.options.retryDelayMs);
             continue;
           }
@@ -303,6 +353,11 @@ export class JiraMcpIssueSourceIntegration implements IssueSourceIntegration {
       if (error instanceof Error && error.message.includes('timed out')) {
         throw error;
       }
+      logJiraFetchLifecycle('warn', 'network_unreachable', {
+        issueKey: readIssueKeyFromUrl(url),
+        jiraHost: readHost(this.options.baseUrl),
+        error: error instanceof Error ? error.message : String(error)
+      });
       throw new Error('Unable to reach Jira issue endpoint.');
     } finally {
       clearTimeout(timeout);

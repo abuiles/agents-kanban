@@ -78,4 +78,26 @@ describe('jira issue source integration', () => {
     await expect(integration.fetchIssue('bad-key', 'tenant_local')).rejects.toThrow('Invalid Jira issue key.');
     expect(fetcher).not.toHaveBeenCalled();
   });
+
+  it('logs sanitized lifecycle details when Jira endpoint is unreachable', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const fetcher = vi.fn(async () => {
+      throw new Error('network down; Authorization: Bearer super-secret-token');
+    });
+    const integration = new JiraMcpIssueSourceIntegration({
+      baseUrl: 'https://jira.example.com',
+      authToken: 'token',
+      maxAttempts: 1
+    }, fetcher);
+
+    await expect(integration.fetchIssue('AB-9', 'tenant_local')).rejects.toThrow('Unable to reach Jira issue endpoint.');
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('[jira:fetch] network_unreachable'));
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('[jira:fetch] request_failed'));
+    expect(warnSpy).toHaveBeenCalledWith(expect.not.stringContaining('super-secret-token'));
+    expect(errorSpy).toHaveBeenCalledWith(expect.not.stringContaining('super-secret-token'));
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('[REDACTED]'));
+    warnSpy.mockRestore();
+    errorSpy.mockRestore();
+  });
 });
