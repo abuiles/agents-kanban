@@ -16,6 +16,7 @@
     "typecheck": "tsc --noEmit",
     "test:workers": "vitest -c vitest.worker.config.ts",
     "bootstrap:single-tenant": "tsx scripts/bootstrap-single-tenant.ts",
+    "slack:manifest": "tsx scripts/slack-manifest.ts",
     "sentinel:p5": "bash scripts/p5-sentinel.sh"
   },
   "devDependencies": {

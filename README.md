@@ -212,6 +212,27 @@ AK_DEV_TUNNEL=external AK_DEV_PUBLIC_URL=https://my-host.example.com npm run dev
 
 Default local app URL is `http://localhost:5173` with API under `http://localhost:5173/api`.
 
+### Slack manifest automation (no manual endpoint entry)
+
+You can render or apply Slack app config from one command:
+
+```bash
+# render manifest JSON for a public URL
+npm run slack:manifest -- --render --base-url https://<your-public-host>
+
+# update an existing Slack app from manifest API
+SLACK_APP_CONFIG_TOKEN=<token-with-apps.manifest.write> \
+SLACK_APP_ID=<your-app-id> \
+npm run slack:manifest -- --update --base-url https://<your-public-host>
+```
+
+The manifest sets:
+
+- slash command: `/kanvy` -> `/api/integrations/slack/commands`
+- interactivity URL -> `/api/integrations/slack/interactions`
+- event subscriptions URL -> `/api/integrations/slack/events`
+- bot scopes: `commands`, `chat:write`
+
 ## Cloud Deploy Quick Start
 
 1. Install dependencies:
