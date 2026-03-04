@@ -13,7 +13,7 @@ This folder is the source of truth for active planning and execution.
 - [P7: Built-in Sentinel Orchestration](./p7-sentinel-orchestration.md)
 - [P8: Checkpoint Recovery + Ephemeral Context Notes](./p8-checkpoint-recovery-and-context-notes.md)
 - [P9: GitHub Auto-Review Provider](./p9-github-auto-review-provider.md)
-- [P10: Slack Free-Text Intent Intake + Model-Selectable Parser (One-Shot)](./p10-slack-intent-intake-one-shot.md)
+- [P10: Slack Free-Text Intent Intake + Model-Selectable Parser (One-Shot, S10 in progress)](./p10-slack-intent-intake-one-shot.md)
 - [P11: Review Sandbox Operator Control and Attachability](./p11-review-sandbox-operator-control.md)
 - [Migration Status](./migration-status.md)
 

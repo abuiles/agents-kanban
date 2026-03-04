@@ -34,7 +34,7 @@ async function resolveSlackBotToken(env: Env, config: IntegrationConfig | undefi
   return fallback?.trim() || undefined;
 }
 
-async function resolveSlackConfig(env: Env, target: { tenantId: string; repoId: string; channelId: string }) {
+async function resolveSlackConfig(env: Env, target: { tenantId: string; repoId?: string; channelId: string }) {
   const configs = await tenantAuthDb.listIntegrationConfigs(env, target.tenantId, {
     pluginKind: 'slack',
     enabledOnly: true
@@ -56,7 +56,7 @@ export async function postSlackThreadMessage(
   env: Env,
   target: {
     tenantId: string;
-    repoId: string;
+    repoId?: string;
     channelId: string;
     threadTs: string;
     text: string;

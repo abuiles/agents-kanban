@@ -8,6 +8,7 @@ In scope (MVP):
 
 - Slack-triggered task start from Jira key (`/kanvy fix <JIRA_KEY>`)
 - Slack slash help response (`/kanvy help`) with concise usage examples
+- Slack free-text intake (`/kanvy <request>`) with in-thread clarification loop
 - Jira issue load and repo resolution (mapping and disambiguation)
 - Task/run start from `main`
 - GitLab MR lifecycle and feedback mirrored to Slack thread
@@ -39,12 +40,13 @@ Out of scope (this phase):
 
 ## Operator day-to-day flow (no dashboard required)
 
-1. In Slack, run `/kanvy fix ABC-123`.
-   - For usage guidance, run `/kanvy help`.
-2. If multiple repo mappings are available, click a repo disambiguation button.
-3. Monitor status and MR feedback in the same Slack thread.
-4. When feedback arrives and run enters `DECISION_REQUIRED`, click `Approve rerun`.
-5. Continue the thread loop until `DONE`, `PAUSED`, or `FAILED`.
+1. In Slack, run `/kanvy fix ABC-123` for deterministic Jira flow, or `/kanvy <free-text request>` from a thread.
+2. For free-text flow, answer clarifying questions in the same thread (max 4 turns before structured handoff prompt).
+3. For usage guidance, run `/kanvy help`.
+4. If multiple repo mappings are available, click a repo disambiguation button (Jira flow) or reply with repo id (free-text flow).
+5. Monitor status and MR feedback in the same Slack thread.
+6. When feedback arrives and run enters `DECISION_REQUIRED`, click `Approve rerun`.
+7. Continue the thread loop until `DONE`, `PAUSED`, or `FAILED`.
 
 ## Reliability and hardening behavior
 
@@ -122,5 +124,5 @@ Execution sequencing for task pack remains strict:
 Model config standard for task creation:
 
 - `codex`
-- `gpt-5.3-codex-spark`
-- `high`
+- `gpt-5.1-codex-mini` (default; override via scoped Slack config `intentModel`)
+- `medium` (generic/default intake), deterministic Jira remains compatible

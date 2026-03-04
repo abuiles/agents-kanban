@@ -16,6 +16,7 @@ const tenantAuthDbMocks = vi.hoisted(() => {
       return { ok: true };
     }),
     getPrimaryTenantId: vi.fn(async () => 'tenant_local'),
+    getSlackIntakeSession: vi.fn(async () => undefined),
     listJiraProjectRepoMappingsByProject: vi.fn(async () => ([
       {
         id: 'mapping_1',
@@ -28,6 +29,19 @@ const tenantAuthDbMocks = vi.hoisted(() => {
         updatedAt: ''
       }
     ])),
+    listIntegrationConfigs: vi.fn(async () => []),
+    upsertSlackIntakeSession: vi.fn(async () => ({
+      id: 'intake_1',
+      tenantId: 'tenant_local',
+      channelId: 'C_ENG',
+      threadTs: '1710000000.100',
+      status: 'active',
+      turnCount: 1,
+      data: {},
+      lastActivityAt: '2026-01-01T00:00:00.000Z',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z'
+    })),
     upsertSlackThreadBinding: vi.fn(async (_env: Env, input: {
       tenantId: string;
       taskId: string;

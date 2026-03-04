@@ -5,7 +5,10 @@ import { handleSlackCommands, handleSlackEvents, handleSlackInteractions } from 
 const tenantAuthDbMocks = vi.hoisted(() => ({
   deleteSlackThreadBinding: vi.fn(),
   getPrimaryTenantId: vi.fn(),
+  getSlackIntakeSession: vi.fn(),
   listJiraProjectRepoMappingsByProject: vi.fn(),
+  listIntegrationConfigs: vi.fn(),
+  upsertSlackIntakeSession: vi.fn(),
   upsertSlackThreadBinding: vi.fn()
 }));
 
@@ -99,7 +102,8 @@ function makeEnv(secret = 'secret', repoBoard = makeRepoBoard({ taskId: 'task_1'
   return {
     SECRETS_KV: createKv(secret),
     REPO_BOARD: { getByName: vi.fn(() => repoBoard) },
-    BOARD_INDEX: boardIndex
+    BOARD_INDEX: boardIndex,
+    OPENAI_API_KEY: 'sk-test'
   } as unknown as Env;
 }
 
@@ -123,6 +127,20 @@ describe('slack handlers', () => {
       channelId: string;
       threadTs: string;
     }) => taskBinding(input.taskId, input.channelId, input.threadTs));
+    tenantAuthDbMocks.getSlackIntakeSession.mockResolvedValue(undefined);
+    tenantAuthDbMocks.listIntegrationConfigs.mockResolvedValue([]);
+    tenantAuthDbMocks.upsertSlackIntakeSession.mockResolvedValue({
+      id: 'intake_1',
+      tenantId: 'tenant_local',
+      channelId: 'C123',
+      threadTs: '1672531200.1234',
+      status: 'active',
+      turnCount: 1,
+      data: {},
+      lastActivityAt: '2026-01-01T00:00:00.000Z',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z'
+    });
     tenantAuthDbMocks.deleteSlackThreadBinding.mockResolvedValue({ ok: true });
     tenantAuthDbMocks.listJiraProjectRepoMappingsByProject.mockResolvedValue([]);
     jiraClientMocks.createJiraIssueSourceIntegrationFromEnv.mockReturnValue({
@@ -167,8 +185,8 @@ describe('slack handlers', () => {
       repoId: 'repo_alpha',
       sourceRef: 'main',
       llmAdapter: 'codex',
-      codexModel: 'gpt-5.3-codex-spark',
-      codexReasoningEffort: 'high'
+      codexModel: 'gpt-5.1-codex-mini',
+      codexReasoningEffort: 'medium'
     }));
     expect(repoBoard.startRun).toHaveBeenCalledWith('task_single', { tenantId: 'team_one' });
     expect(repoBoard.transitionRun).toHaveBeenCalledWith('run_single', {
@@ -232,7 +250,7 @@ describe('slack handlers', () => {
 
     expect(response.status).toBe(200);
     expect(body.ok).toBe(true);
-    expect(body.text).toContain('Accepted /kanvy help command');
+    expect(body.text).toContain('Accepted /kanvy command.');
     expect(waitUntil).toHaveBeenCalledTimes(1);
     await waitUntilTasks[0];
     const calledPayload = JSON.parse(((vi.mocked(global.fetch).mock.calls[0] as [string, RequestInit])[1].body as string));
@@ -242,6 +260,66 @@ describe('slack handlers', () => {
     expect(fetchIssue).not.toHaveBeenCalled();
     expect(repoBoard.createTask).not.toHaveBeenCalled();
     expect(repoBoard.startRun).not.toHaveBeenCalled();
+  });
+
+  it('supports free-text intake and auto-creates task when parser returns complete intent', async () => {
+    const repoBoard = makeRepoBoard({ taskId: 'task_intake', runId: 'run_intake' });
+    tenantAuthDbMocks.listJiraProjectRepoMappingsByProject.mockResolvedValue([]);
+    fetchSpy.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/v1/chat/completions')) {
+        return new Response(JSON.stringify({
+          choices: [{
+            message: {
+              content: JSON.stringify({
+                intent: 'create_task',
+                confidence: 0.92,
+                repoId: 'repo_alpha',
+                taskTitle: 'Improve README',
+                taskPrompt: 'Update README structure and examples.',
+                acceptanceCriteria: ['README has clearer setup', 'Examples compile'],
+                missingFields: []
+              })
+            }
+          }]
+        }), { status: 200 });
+      }
+      return new Response('{}', { status: 200 });
+    });
+
+    const rawBody = new URLSearchParams({
+      command: '/kanvy',
+      text: 'draft MR for README improvements in repo_alpha',
+      channel_id: 'C123',
+      thread_ts: '1672531200.1234',
+      team_id: 'team_one',
+      user_id: 'U1',
+      response_url: 'https://hooks.slack.com/commands/response'
+    }).toString();
+    const signature = await buildSlackSignature('secret', nowTs, rawBody);
+    const request = new Request('https://example.test/api/integrations/slack/commands', {
+      method: 'POST',
+      headers: slackHeaders(nowTs, signature),
+      body: rawBody
+    });
+    const waitUntilTasks: Array<Promise<unknown>> = [];
+    const waitUntil = vi.fn((task: Promise<unknown>) => waitUntilTasks.push(task));
+    const response = await handleSlackCommands(request, makeEnv('secret', repoBoard), { waitUntil } as unknown as ExecutionContext<unknown>);
+
+    expect(response.status).toBe(200);
+    await waitUntilTasks[0];
+    expect(repoBoard.createTask).toHaveBeenCalledWith(expect.objectContaining({
+      repoId: 'repo_alpha',
+      title: 'Improve README',
+      codexModel: 'gpt-5.1-codex-mini'
+    }));
+    expect(repoBoard.startRun).toHaveBeenCalledWith('task_intake', { tenantId: 'team_one' });
+    expect(tenantAuthDbMocks.upsertSlackIntakeSession).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      tenantId: 'team_one',
+      channelId: 'C123',
+      threadTs: '1672531200.1234',
+      status: 'completed'
+    }));
   });
 
   it('asks for repo disambiguation when multiple mappings exist', async () => {

@@ -1,48 +1,37 @@
 import { describe, expect, it } from 'vitest';
-import { parseSlackSlashCommandBody } from './payload';
+import { parseJiraFastPathIssueKey, parseSlackSlashCommandBody } from './payload';
 
-describe('parseSlackSlashCommandBody', () => {
-  it('parses fix jira-key command', () => {
+describe('slack payload parsing', () => {
+  it('accepts free-text slash command input', () => {
     const rawBody = new URLSearchParams({
       command: '/kanvy',
-      text: 'fix abc-123',
+      text: 'draft MR for docs improvements',
       channel_id: 'C123',
-      thread_ts: '1672531200.1234',
-      team_id: 'T123',
-      user_id: 'U123',
-      response_url: 'https://hooks.slack.test/fix'
+      team_id: 'T1',
+      user_id: 'U1',
+      response_url: 'https://hooks.slack.com/commands/response'
     }).toString();
-
-    const payload = parseSlackSlashCommandBody(rawBody);
-    expect(payload.intent).toBe('fix');
-    if (payload.intent === 'fix') {
-      expect(payload.issueKey).toBe('ABC-123');
-    }
+    const parsed = parseSlackSlashCommandBody(rawBody);
+    expect(parsed.text).toBe('draft MR for docs improvements');
+    expect(parsed.channelId).toBe('C123');
   });
 
-  it('parses help command', () => {
+  it('keeps deterministic Jira fast-path parsing for fix <JIRA_KEY>', () => {
+    expect(parseJiraFastPathIssueKey('fix ABC-123')).toBe('ABC-123');
+    expect(parseJiraFastPathIssueKey('fix abc-123')).toBe('ABC-123');
+    expect(parseJiraFastPathIssueKey('draft mr')).toBeUndefined();
+  });
+
+  it('accepts help text as regular slash payload text', () => {
     const rawBody = new URLSearchParams({
       command: '/kanvy',
       text: 'help',
       channel_id: 'C123',
-      team_id: 'T123',
-      user_id: 'U123',
-      response_url: 'https://hooks.slack.test/help'
+      team_id: 'T1',
+      user_id: 'U1',
+      response_url: 'https://hooks.slack.com/commands/response'
     }).toString();
-
-    const payload = parseSlackSlashCommandBody(rawBody);
-    expect(payload.intent).toBe('help');
-  });
-
-  it('rejects unsupported format', () => {
-    const rawBody = new URLSearchParams({
-      command: '/kanvy',
-      text: 'status ABC-123',
-      channel_id: 'C123'
-    }).toString();
-
-    expect(() => parseSlackSlashCommandBody(rawBody)).toThrow(
-      'Invalid slash command format. Expected: /kanvy fix <JIRA_KEY> or /kanvy help.'
-    );
+    const parsed = parseSlackSlashCommandBody(rawBody);
+    expect(parsed.text).toBe('help');
   });
 });

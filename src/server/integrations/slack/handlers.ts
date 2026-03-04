@@ -7,6 +7,7 @@ import { createJiraIssueSourceIntegrationFromEnv } from '../jira/client';
 import { scheduleRunJob } from '../../run-orchestrator';
 import { buildIdempotencyKey } from '../idempotency';
 import {
+  parseJiraFastPathIssueKey,
   parseSlackEventBody,
   parseSlackInteractionBody,
   parseSlackSlashCommandBody,
@@ -14,14 +15,21 @@ import {
 } from './payload';
 import { resolveThreadTenant, verifySlackRequest } from './verification';
 import { mirrorRunLifecycleMilestone } from './timeline';
+import { postSlackThreadMessage } from './client';
+import { resolveIntegrationConfig } from '../config-resolution';
+import {
+  parseSlackIntentWithLlm,
+  resolveSlackIntentSettings,
+  type SlackIntentParseResult
+} from './intent';
 
 const DEFAULT_TASK_ID_PREFIX = 'issue';
 const DEFAULT_REVIEW_ROUND = 0;
 const BOARD_OBJECT_NAME = 'agentboard';
 const SOURCE_REF = 'main';
 const JIRA_LLM_ADAPTER: CreateTaskInput['llmAdapter'] = 'codex';
-const JIRA_LLM_MODEL: CreateTaskInput['codexModel'] = 'gpt-5.3-codex-spark';
-const JIRA_LLM_REASONING_EFFORT: CreateTaskInput['codexReasoningEffort'] = 'high';
+const DEFAULT_TASK_LLM_MODEL: CreateTaskInput['codexModel'] = 'gpt-5.1-codex-mini';
+const JIRA_LLM_REASONING_EFFORT: CreateTaskInput['codexReasoningEffort'] = 'medium';
 const FALLBACK_DISAMBIGUATION_WARNING = 'No matching repository was auto-selected for this issue.';
 const DISAMBIGUATION_MULTIPLE_MAPPINGS_MESSAGE = 'Multiple repositories are mapped for Jira project';
 const DISAMBIGUATION_NO_MAPPING_MESSAGE = 'No active mapping exists for project';
@@ -32,6 +40,8 @@ const KANVY_HELP_TEXT = [
   '- Jira fast-path: `/kanvy fix ABC-123`',
   '- Free-text flow: `/kanvy Investigate flaky checkout tests and propose a fix plan`'
 ].join('\n');
+const SESSION_EXPIRY_MS = 24 * 60 * 60 * 1000;
+const AUTO_CREATE_CONFIDENCE_THRESHOLD = 0.8;
 
 type RepoDisambiguationChoice = {
   repoId: string;
@@ -70,7 +80,11 @@ function buildTaskPromptFromIssue(issue: IntegrationIssueRef) {
   return `Fix Jira issue ${issue.issueKey}: ${issue.title}\n\n${issue.body}`.trim();
 }
 
-function buildTaskPayloadFromIssue(issue: IntegrationIssueRef, repoId: string): CreateTaskInput {
+function buildTaskPayloadFromIssue(
+  issue: IntegrationIssueRef,
+  repoId: string,
+  model = DEFAULT_TASK_LLM_MODEL
+): CreateTaskInput {
   return {
     repoId,
     title: `[${issue.issueKey}] ${issue.title}`.trim(),
@@ -87,8 +101,32 @@ function buildTaskPayloadFromIssue(issue: IntegrationIssueRef, repoId: string): 
       notes: `Imported from Jira issue ${issue.issueKey}: ${issue.title}`
     },
     llmAdapter: JIRA_LLM_ADAPTER,
-    codexModel: JIRA_LLM_MODEL,
+    codexModel: model,
     codexReasoningEffort: JIRA_LLM_REASONING_EFFORT
+  };
+}
+
+function buildTaskPayloadFromIntent(input: {
+  repoId: string;
+  title: string;
+  prompt: string;
+  acceptanceCriteria: string[];
+  model: CreateTaskInput['codexModel'];
+}): CreateTaskInput {
+  return {
+    repoId: input.repoId,
+    title: input.title,
+    description: input.prompt,
+    sourceRef: SOURCE_REF,
+    taskPrompt: input.prompt,
+    acceptanceCriteria: input.acceptanceCriteria,
+    context: {
+      links: [],
+      notes: 'Created from Slack /kanvy intent intake.'
+    },
+    llmAdapter: JIRA_LLM_ADAPTER,
+    codexModel: input.model,
+    codexReasoningEffort: 'medium'
   };
 }
 
@@ -196,6 +234,13 @@ function normalizeLatestReviewRound(value: number | undefined) {
   return Number.isFinite(value) ? Number(value) : DEFAULT_REVIEW_ROUND;
 }
 
+function toSupportedCodexModel(value: string | undefined): CreateTaskInput['codexModel'] {
+  if (value === 'gpt-5.3-codex' || value === 'gpt-5.3-codex-spark' || value === 'gpt-5.1-codex-mini') {
+    return value;
+  }
+  return DEFAULT_TASK_LLM_MODEL;
+}
+
 function normalizeJiraIssueFromInteraction(values: {
   issueKey: string;
   issueTitle?: string;
@@ -240,6 +285,93 @@ async function resolveRepoCandidates(
   } catch {
     return [];
   }
+}
+
+async function resolveSlackIntentScopeConfig(
+  env: Env,
+  tenantId: string,
+  scope: { repoId?: string; channelId: string }
+) {
+  const configs = await tenantAuthDb.listIntegrationConfigs(env, tenantId, {
+    pluginKind: 'slack',
+    enabledOnly: true
+  });
+  return {
+    config: resolveIntegrationConfig(configs, {
+      tenantId,
+      pluginKind: 'slack',
+      repoId: scope.repoId,
+      channelId: scope.channelId
+    }),
+    settings: resolveSlackIntentSettings(configs, {
+      tenantId,
+      repoId: scope.repoId,
+      channelId: scope.channelId
+    })
+  };
+}
+
+function isSessionExpired(lastActivityAt: string) {
+  const parsed = Date.parse(lastActivityAt);
+  if (!Number.isFinite(parsed)) {
+    return false;
+  }
+  return Date.now() - parsed > SESSION_EXPIRY_MS;
+}
+
+function normalizeIntentMissingFields(fields: string[], repoResolved: boolean) {
+  if (!repoResolved && !fields.includes('repo')) {
+    return [...fields, 'repo'];
+  }
+  return fields;
+}
+
+async function resolveRepoIdForIntent(
+  env: Env,
+  tenantId: string,
+  channelId: string,
+  parsed: SlackIntentParseResult
+) {
+  if (parsed.repoId?.trim()) {
+    return { repoId: parsed.repoId.trim(), ambiguous: false, choices: [] as string[] };
+  }
+
+  const { settings } = await resolveSlackIntentScopeConfig(env, tenantId, {
+    channelId,
+    repoId: undefined
+  });
+  if (settings.defaultRepoId?.trim()) {
+    return { repoId: settings.defaultRepoId.trim(), ambiguous: false, choices: [] as string[] };
+  }
+
+  const boardIndex = env.BOARD_INDEX?.getByName(BOARD_OBJECT_NAME);
+  if (!boardIndex) {
+    return { repoId: undefined, ambiguous: false, choices: [] as string[] };
+  }
+  try {
+    const repos = await boardIndex.listRepos(tenantId);
+    if (repos.length === 1 && repos[0]?.repoId) {
+      return { repoId: repos[0].repoId, ambiguous: false, choices: [] as string[] };
+    }
+    if (repos.length > 1) {
+      const choices = repos.map((repo) => repo.repoId).filter((repoId): repoId is string => Boolean(repoId));
+      if (parsed.repoHint?.trim()) {
+        const hint = parsed.repoHint.trim().toLowerCase();
+        const exact = choices.find((repoId) => repoId.toLowerCase() === hint);
+        if (exact) {
+          return { repoId: exact, ambiguous: false, choices };
+        }
+        const partial = choices.find((repoId) => repoId.toLowerCase().includes(hint));
+        if (partial) {
+          return { repoId: partial, ambiguous: false, choices };
+        }
+      }
+      return { repoId: undefined, ambiguous: true, choices };
+    }
+  } catch {
+    // Best effort.
+  }
+  return { repoId: undefined, ambiguous: false, choices: [] as string[] };
 }
 
 async function resolveRepoIdForRun(env: Env, runId: string): Promise<string | undefined> {
@@ -408,7 +540,8 @@ async function processJiraIssueFlow(
     threadTs?: string;
     latestReviewRound?: number;
   },
-  responseUrl: string | undefined
+  responseUrl: string | undefined,
+  llmModel: CreateTaskInput['codexModel'] = DEFAULT_TASK_LLM_MODEL
 ) {
   const issueProjectKey = issueProjectKeyFromIssue(issue.issueKey);
   const mappings = await tenantAuthDb.listJiraProjectRepoMappingsByProject(env, tenantId, issueProjectKey, true);
@@ -452,7 +585,7 @@ async function processJiraIssueFlow(
   }
 
   const repoId = candidates[0]!.repoId;
-  const payload = buildTaskPayloadFromIssue(issue, repoId);
+  const payload = buildTaskPayloadFromIssue(issue, repoId, llmModel);
   try {
     const started = await startRunForTask(env, ctx, tenantId, repoId, payload);
     if (bindings.threadTs) {
@@ -514,12 +647,170 @@ async function updateBindingForAction(
   });
 }
 
+async function postThreadPrompt(
+  env: Env,
+  input: {
+    tenantId: string;
+    channelId: string;
+    threadTs: string;
+    text: string;
+  }
+) {
+  await postSlackThreadMessage(env, {
+    tenantId: input.tenantId,
+    channelId: input.channelId,
+    threadTs: input.threadTs,
+    text: input.text
+  }).catch(() => {});
+}
+
+async function runIntentIntake(
+  env: Env,
+  ctx: ExecutionContext<unknown> | undefined,
+  input: {
+    tenantId: string;
+    channelId: string;
+    threadTs: string;
+    text: string;
+    responseUrl?: string;
+  }
+) {
+  const existing = await tenantAuthDb.getSlackIntakeSession(env, input.tenantId, input.channelId, input.threadTs);
+  const expired = existing ? isSessionExpired(existing.lastActivityAt) : false;
+  if (existing && expired && existing.status === 'active') {
+    await tenantAuthDb.upsertSlackIntakeSession(env, {
+      tenantId: input.tenantId,
+      channelId: input.channelId,
+      threadTs: input.threadTs,
+      status: 'expired',
+      turnCount: existing.turnCount,
+      data: existing.data
+    });
+  }
+
+  const currentTurn = existing?.status === 'active' && !expired ? existing.turnCount : 0;
+  const { settings } = await resolveSlackIntentScopeConfig(env, input.tenantId, {
+    channelId: input.channelId
+  });
+  const parsed = await parseSlackIntentWithLlm(env, {
+    text: input.text,
+    settings,
+    priorTurns: currentTurn
+  });
+
+  const repoResolution = await resolveRepoIdForIntent(env, input.tenantId, input.channelId, parsed);
+  const missingFields = normalizeIntentMissingFields(parsed.missingFields, Boolean(repoResolution.repoId));
+  const isComplete = parsed.confidence >= AUTO_CREATE_CONFIDENCE_THRESHOLD
+    && parsed.intent === 'create_task'
+    && Boolean(parsed.taskPrompt?.trim())
+    && Boolean(parsed.taskTitle?.trim())
+    && missingFields.length === 0;
+
+  if (isComplete && settings.intentAutoCreate && repoResolution.repoId) {
+    const payload = buildTaskPayloadFromIntent({
+      repoId: repoResolution.repoId,
+      title: parsed.taskTitle!.trim(),
+      prompt: parsed.taskPrompt!.trim(),
+      acceptanceCriteria: parsed.acceptanceCriteria.length > 0
+        ? parsed.acceptanceCriteria
+        : ['Task is complete and validated in the target repository.'],
+      model: toSupportedCodexModel(settings.intentModel)
+    });
+    const started = await startRunForTask(env, ctx, input.tenantId, repoResolution.repoId, payload);
+    await tenantAuthDb.upsertSlackThreadBinding(env, {
+      tenantId: input.tenantId,
+      taskId: started.taskId,
+      channelId: input.channelId,
+      threadTs: input.threadTs,
+      currentRunId: started.runId,
+      latestReviewRound: DEFAULT_REVIEW_ROUND
+    });
+    await tenantAuthDb.upsertSlackIntakeSession(env, {
+      tenantId: input.tenantId,
+      channelId: input.channelId,
+      threadTs: input.threadTs,
+      status: 'completed',
+      turnCount: currentTurn,
+      lastConfidence: parsed.confidence,
+      data: {
+        ...parsed,
+        lastUserText: input.text
+      }
+    });
+    const completionText = `Created task ${started.taskId} and started run ${started.runId} in ${repoResolution.repoId}.`;
+    if (input.responseUrl) {
+      await postSlackResponse(input.responseUrl, { response_type: 'ephemeral', text: completionText });
+    } else {
+      await postThreadPrompt(env, {
+        tenantId: input.tenantId,
+        channelId: input.channelId,
+        threadTs: input.threadTs,
+        text: completionText
+      });
+    }
+    return;
+  }
+
+  const nextTurn = currentTurn + 1;
+  const maxTurns = settings.intentClarifyMaxTurns;
+  const needsRepoDisambiguation = !repoResolution.repoId && repoResolution.ambiguous && repoResolution.choices.length > 0;
+  const question = needsRepoDisambiguation
+    ? `I found multiple repos: ${repoResolution.choices.join(', ')}. Which repo should I use?`
+    : parsed.clarifyingQuestion
+      ?? 'Please clarify repo, exact goal, and acceptance criteria.';
+
+  await tenantAuthDb.upsertSlackIntakeSession(env, {
+    tenantId: input.tenantId,
+    channelId: input.channelId,
+    threadTs: input.threadTs,
+    status: nextTurn >= maxTurns ? 'active' : 'active',
+    turnCount: nextTurn,
+    lastConfidence: parsed.confidence,
+    data: {
+      ...parsed,
+      missingFields,
+      clarifyingQuestion: question,
+      lastUserText: input.text
+    }
+  });
+
+  if (nextTurn >= maxTurns) {
+    const handoff = [
+      `I still need more detail after ${maxTurns} clarification turns.`,
+      'Please hand off in a structured format:',
+      '`repo=<repo_id>; title=<short title>; prompt=<goal>; acceptance=<item1 | item2>`'
+    ].join('\n');
+    if (input.responseUrl) {
+      await postSlackResponse(input.responseUrl, { response_type: 'ephemeral', text: handoff });
+    } else {
+      await postThreadPrompt(env, {
+        tenantId: input.tenantId,
+        channelId: input.channelId,
+        threadTs: input.threadTs,
+        text: handoff
+      });
+    }
+    return;
+  }
+
+  if (input.responseUrl) {
+    await postSlackResponse(input.responseUrl, { response_type: 'ephemeral', text: question });
+    return;
+  }
+  await postThreadPrompt(env, {
+    tenantId: input.tenantId,
+    channelId: input.channelId,
+    threadTs: input.threadTs,
+    text: question
+  });
+}
+
 async function runSlackCommandAsync(
   env: Env,
   payload: ReturnType<typeof parseSlackSlashCommandBody>,
   ctx?: ExecutionContext<unknown>
 ) {
-  if (payload.intent === 'help') {
+  if (payload.text.trim().toLowerCase() === 'help') {
     await postSlackResponse(payload.responseUrl, {
       response_type: 'ephemeral',
       text: KANVY_HELP_TEXT
@@ -528,40 +819,81 @@ async function runSlackCommandAsync(
   }
 
   const tenantId = await resolveThreadTenantId(env, payload.teamId);
+  const issueKey = parseJiraFastPathIssueKey(payload.text);
+  const dedupeSubject = issueKey ?? payload.text.trim() || 'empty';
   const slashDedupeKey = buildIdempotencyKey({
     provider: 'slack',
     tenantId,
-    eventType: 'slash_command.fix',
-    providerEventId: payload.responseUrl ?? `${payload.teamId ?? 'team:default'}:${payload.channelId}:${payload.issueKey}`,
+    eventType: issueKey ? 'slash_command.fix' : 'slash_command.intent',
+    providerEventId: payload.responseUrl ?? `${payload.teamId ?? 'team:default'}:${payload.channelId}:${dedupeSubject}`,
     subjectId: `${payload.channelId}:${payload.threadTs ?? 'root'}`,
     metadata: {
-      issueKey: payload.issueKey,
+      issueKey: issueKey ?? null,
       userId: payload.userId
     }
   });
   if (!(await markIngressDeliveryIfNew(env, slashDedupeKey))) {
     await postSlackResponse(payload.responseUrl, {
       response_type: 'ephemeral',
-      text: `Duplicate /kanvy command ignored for ${payload.issueKey}.`
+      text: issueKey
+        ? `Duplicate /kanvy command ignored for ${issueKey}.`
+        : 'Duplicate /kanvy command ignored.'
     });
     return;
   }
+
+  if (!payload.text.trim()) {
+    await postSlackResponse(payload.responseUrl, {
+      response_type: 'ephemeral',
+      text: 'Usage: `/kanvy fix ABC-123` or `/kanvy <free-text request>`.'
+    });
+    return;
+  }
+
+  if (!issueKey) {
+    if (!payload.threadTs) {
+      await postSlackResponse(payload.responseUrl, {
+        response_type: 'ephemeral',
+        text: 'For free-text intake, run `/kanvy ...` from a thread so clarification can continue in-thread.'
+      });
+      return;
+    }
+    try {
+      await runIntentIntake(env, ctx, {
+        tenantId,
+        channelId: payload.channelId,
+        threadTs: payload.threadTs,
+        text: payload.text,
+        responseUrl: payload.responseUrl
+      });
+    } catch (error) {
+      await postSlackResponse(payload.responseUrl, {
+        response_type: 'ephemeral',
+        text: `Failed to process /kanvy command: ${toReadableErrorMessage(error)}`
+      });
+    }
+    return;
+  }
+
   const bindingTaskId = payload.threadTs
-    ? await createThreadBindingForSlashCommand(env, tenantId, payload.issueKey, payload.channelId, payload.threadTs)
-    : buildTaskIdFromIssue(payload.issueKey);
+    ? await createThreadBindingForSlashCommand(env, tenantId, issueKey, payload.channelId, payload.threadTs)
+    : buildTaskIdFromIssue(issueKey);
 
   try {
-    const issue = await resolveTenantAndJiraIssue(env, tenantId, payload.issueKey);
+    const issue = await resolveTenantAndJiraIssue(env, tenantId, issueKey);
+    const { settings } = await resolveSlackIntentScopeConfig(env, tenantId, {
+      channelId: payload.channelId
+    });
     await processJiraIssueFlow(env, ctx, tenantId, issue, {
       taskId: bindingTaskId,
       channelId: payload.channelId,
       threadTs: payload.threadTs,
       latestReviewRound: DEFAULT_REVIEW_ROUND
-    }, payload.responseUrl);
+    }, payload.responseUrl, toSupportedCodexModel(settings.intentModel));
   } catch (error) {
     await postSlackResponse(payload.responseUrl, {
       response_type: 'ephemeral',
-      text: `Failed to process /kanvy command for ${payload.issueKey}: ${toReadableErrorMessage(error)}`
+      text: `Failed to process /kanvy command for ${issueKey}: ${toReadableErrorMessage(error)}`
     });
   }
 }
@@ -627,9 +959,7 @@ export async function handleSlackCommands(
     }
     return json({
       ok: true,
-      text: payload.intent === 'help'
-        ? 'Accepted /kanvy help command.'
-        : `Accepted /kanvy command for ${payload.issueKey}.`
+      text: 'Accepted /kanvy command.'
     });
   } catch (error) {
     return handleError(error);
@@ -643,6 +973,31 @@ export async function handleSlackEvents(request: Request, env: Env): Promise<Res
     const payload = parseSlackEventBody(rawBody);
     if (payload.type === 'url_verification' && payload.challenge) {
       return json({ challenge: payload.challenge });
+    }
+    if (payload.event?.type === 'message' && payload.event.threadTs && payload.event.channelId && payload.event.text && !payload.event.botId) {
+      const tenantId = await resolveThreadTenantId(env, payload.teamId);
+      const eventDedupeKey = buildIdempotencyKey({
+        provider: 'slack',
+        tenantId,
+        eventType: 'event.thread_message',
+        providerEventId: payload.eventId ?? `${payload.event.channelId}:${payload.event.ts ?? payload.event.threadTs}`,
+        subjectId: `${payload.event.channelId}:${payload.event.threadTs}`,
+        metadata: {
+          userId: payload.event.userId ?? null
+        }
+      });
+      if (!(await markIngressDeliveryIfNew(env, eventDedupeKey))) {
+        return json({ ok: true, status: 'duplicate_event_ignored' });
+      }
+      const session = await tenantAuthDb.getSlackIntakeSession(env, tenantId, payload.event.channelId, payload.event.threadTs);
+      if (session?.status === 'active') {
+        await runIntentIntake(env, undefined, {
+          tenantId,
+          channelId: payload.event.channelId,
+          threadTs: payload.event.threadTs,
+          text: payload.event.text
+        });
+      }
     }
     return json({ ok: true, status: 'accepted' });
   } catch (error) {

@@ -5,6 +5,9 @@ import type {
   IntegrationScopeType,
   JiraProjectRepoMapping,
   RepoSentinelConfig,
+  SlackIntakeSession,
+  SlackIntakeSessionData,
+  SlackIntakeSessionStatus,
   SentinelEvent,
   SentinelRun,
   SlackThreadBinding,
@@ -106,6 +109,16 @@ type SlackThreadBindingInput = {
   currentRunId?: string;
   latestReviewRound?: number;
 };
+type SlackIntakeSessionInput = {
+  tenantId: string;
+  channelId: string;
+  threadTs: string;
+  status?: SlackIntakeSessionStatus;
+  turnCount?: number;
+  lastConfidence?: number;
+  data?: SlackIntakeSessionData;
+  lastActivityAt?: string;
+};
 type RepoSentinelConfigInput = {
   tenantId: string;
   repoId: string;
@@ -148,6 +161,7 @@ const INVITE_TTL_MS = 1000 * 60 * 60 * 24 * 30;
 const SINGLE_TENANT_FALLBACK_ID = 'tenant_local';
 const DEFAULT_INTEGRATION_PRIORITY = 0;
 const DEFAULT_INTEGRATION_LATEST_REVIEW_ROUND = 0;
+const DEFAULT_INTAKE_SESSION_STATUS: SlackIntakeSessionStatus = 'active';
 const PASSWORD_HASH_SCHEME = 'pbkdf2_sha256';
 const PASSWORD_HASH_ITERATIONS = 210_000;
 const PASSWORD_SALT_BYTES = 16;
@@ -199,6 +213,7 @@ async function ensureSchema(db: D1Database): Promise<void> {
         'integration_configs',
         'jira_project_repo_mappings',
         'slack_thread_bindings',
+        'slack_intake_sessions',
         'repo_sentinel_configs',
         'sentinel_runs',
         'sentinel_events'
@@ -404,6 +419,64 @@ function mapSlackThreadBinding(row: Record<string, unknown>): SlackThreadBinding
   };
 }
 
+function parseSlackIntakeStatus(value: unknown): SlackIntakeSessionStatus {
+  const candidate = String(value ?? '').trim();
+  if (candidate === 'active' || candidate === 'completed' || candidate === 'cancelled' || candidate === 'expired') {
+    return candidate;
+  }
+  return DEFAULT_INTAKE_SESSION_STATUS;
+}
+
+function parseSlackIntakeSessionData(value: unknown): SlackIntakeSessionData {
+  if (typeof value !== 'string' || !value.trim()) {
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(value);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return {};
+    }
+    const data = parsed as Record<string, unknown>;
+    const readString = (raw: unknown) => (typeof raw === 'string' && raw.trim() ? raw.trim() : undefined);
+    const readStringArray = (raw: unknown) => (
+      Array.isArray(raw)
+        ? raw.filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0).map((entry) => entry.trim())
+        : undefined
+    );
+    return {
+      intent: data.intent === 'fix_jira' || data.intent === 'create_task' || data.intent === 'unknown' ? data.intent : undefined,
+      confidence: typeof data.confidence === 'number' && Number.isFinite(data.confidence) ? data.confidence : undefined,
+      jiraKey: readString(data.jiraKey),
+      repoHint: readString(data.repoHint),
+      repoId: readString(data.repoId),
+      taskTitle: readString(data.taskTitle),
+      taskPrompt: readString(data.taskPrompt),
+      acceptanceCriteria: readStringArray(data.acceptanceCriteria),
+      missingFields: readStringArray(data.missingFields),
+      clarifyingQuestion: readString(data.clarifyingQuestion),
+      lastUserText: readString(data.lastUserText)
+    };
+  } catch {
+    return {};
+  }
+}
+
+function mapSlackIntakeSession(row: Record<string, unknown>): SlackIntakeSession {
+  return {
+    id: externalId(row),
+    tenantId: String(row.tenant_id),
+    channelId: String(row.channel_id),
+    threadTs: String(row.thread_ts),
+    status: parseSlackIntakeStatus(row.status),
+    turnCount: Number(row.turn_count ?? 0),
+    lastConfidence: typeof row.last_confidence === 'number' ? row.last_confidence : row.last_confidence ? Number(row.last_confidence) : undefined,
+    data: parseSlackIntakeSessionData(row.session_json),
+    lastActivityAt: String(row.last_activity_at ?? row.updated_at),
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at)
+  };
+}
+
 function normalizeIntegrationScope(scopeType: IntegrationScopeType, scopeId: string | undefined): string {
   if (scopeType === 'tenant') {
     return '';
@@ -468,6 +541,32 @@ function normalizeSlackBindingInput(input: SlackThreadBindingInput): SlackThread
     threadTs,
     currentRunId: input.currentRunId?.trim(),
     latestReviewRound: Number.isFinite(input.latestReviewRound) ? input.latestReviewRound : 0
+  };
+}
+
+function normalizeSlackIntakeSessionInput(input: SlackIntakeSessionInput): SlackIntakeSessionInput {
+  const channelId = input.channelId.trim();
+  const threadTs = input.threadTs.trim();
+  if (!channelId || !threadTs) {
+    throw badRequest('channelId and threadTs are required.');
+  }
+  const status = input.status ?? DEFAULT_INTAKE_SESSION_STATUS;
+  if (status !== 'active' && status !== 'completed' && status !== 'cancelled' && status !== 'expired') {
+    throw badRequest('Invalid slack intake session status.');
+  }
+  const turnCount = Number.isFinite(input.turnCount) && Number(input.turnCount) >= 0
+    ? Math.trunc(Number(input.turnCount))
+    : 0;
+  const lastConfidence = Number.isFinite(input.lastConfidence) ? Number(input.lastConfidence) : undefined;
+  return {
+    tenantId: input.tenantId,
+    channelId,
+    threadTs,
+    status,
+    turnCount,
+    lastConfidence,
+    data: input.data ?? {},
+    lastActivityAt: input.lastActivityAt
   };
 }
 
@@ -864,6 +963,10 @@ function buildSlackThreadBindingRowId() {
   return `thread_binding_${crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2, 10)}`;
 }
 
+function buildSlackIntakeSessionRowId() {
+  return `slack_intake_${crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2, 10)}`;
+}
+
 export async function upsertIntegrationConfig(env: Env, input: IntegrationConfigInput): Promise<IntegrationConfig> {
   const db = getDb(env);
   await ensureSchema(db);
@@ -1140,6 +1243,65 @@ export async function deleteSlackThreadBinding(
     'DELETE FROM slack_thread_bindings WHERE tenant_id = ? AND task_id = ? AND channel_id = ?'
   ).bind(tenantId, taskId.trim(), channelId.trim()).run();
   return { ok: true };
+}
+
+export async function upsertSlackIntakeSession(
+  env: Env,
+  input: SlackIntakeSessionInput
+): Promise<SlackIntakeSession> {
+  const db = getDb(env);
+  await ensureSchema(db);
+  const normalized = normalizeSlackIntakeSessionInput(input);
+  const now = new Date().toISOString();
+  const id = buildSlackIntakeSessionRowId();
+  const sessionJson = JSON.stringify(normalized.data ?? {});
+  const lastActivityAt = normalized.lastActivityAt ?? now;
+  await db.prepare(
+    `INSERT INTO slack_intake_sessions
+     (external_id, tenant_id, channel_id, thread_ts, status, turn_count, last_confidence, session_json, last_activity_at, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT (tenant_id, channel_id, thread_ts) DO UPDATE SET
+       status = excluded.status,
+       turn_count = excluded.turn_count,
+       last_confidence = excluded.last_confidence,
+       session_json = excluded.session_json,
+       last_activity_at = excluded.last_activity_at,
+       updated_at = excluded.updated_at`
+  ).bind(
+    id,
+    normalized.tenantId,
+    normalized.channelId,
+    normalized.threadTs,
+    normalized.status,
+    normalized.turnCount,
+    normalized.lastConfidence ?? null,
+    sessionJson,
+    lastActivityAt,
+    now,
+    now
+  ).run();
+  const stored = await getSlackIntakeSession(env, normalized.tenantId, normalized.channelId, normalized.threadTs);
+  if (!stored) {
+    throw badRequest('Failed to persist slack intake session.');
+  }
+  return stored;
+}
+
+export async function getSlackIntakeSession(
+  env: Env,
+  tenantId: string,
+  channelId: string,
+  threadTs: string
+): Promise<SlackIntakeSession | undefined> {
+  const db = getDb(env);
+  await ensureSchema(db);
+  const row = await db.prepare(
+    'SELECT * FROM slack_intake_sessions WHERE tenant_id = ? AND channel_id = ? AND thread_ts = ? LIMIT 1'
+  ).bind(tenantId, channelId.trim(), threadTs.trim()).first<Record<string, unknown>>();
+  if (!row) {
+    return undefined;
+  }
+  return mapSlackIntakeSession(row);
 }
 
 export async function upsertRepoSentinelConfig(env: Env, input: RepoSentinelConfigInput): Promise<RepoSentinelConfig> {
