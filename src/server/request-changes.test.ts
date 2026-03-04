@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ReviewFinding } from '../ui/domain/types';
-import { buildRequestChangesPrompt, resolveRequestRunChangesSelection } from './request-changes';
+import { buildRequestChangesPrompt, mergeReviewReplyContext, resolveRequestRunChangesSelection } from './request-changes';
 
 const findings: ReviewFinding[] = [
   {
@@ -131,5 +131,28 @@ describe('buildRequestChangesPrompt', () => {
     expect(prompt).toContain('Selected finding context:');
     expect(prompt).toContain('Provider replies for finding_1:');
     expect(prompt).toContain('Reviewer said this spacing change will break 4k layouts.');
+  });
+});
+
+describe('mergeReviewReplyContext', () => {
+  it('dedupes replies and keeps deterministic ordering by source + body', () => {
+    const merged = mergeReviewReplyContext({
+      findingIds: ['finding_1', 'finding_3'],
+      sources: [
+        {
+          finding_1: ['  Reply B  ', 'Reply A', 'Reply B'],
+          finding_3: ['Store only reply']
+        },
+        {
+          finding_1: ['Reply A', 'Reply C', 'Reply  C  '],
+          finding_3: ['Store only reply', 'On-demand only reply']
+        }
+      ]
+    });
+
+    expect(merged).toEqual({
+      finding_1: ['Reply A', 'Reply B', 'Reply  C', 'Reply C'],
+      finding_3: ['Store only reply', 'On-demand only reply']
+    });
   });
 });

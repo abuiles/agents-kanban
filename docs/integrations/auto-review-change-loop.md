@@ -5,7 +5,7 @@
 This guide captures the end-to-end flow for Stage 6 hardening and operation handoff:
 
 - automatic review execution after run lifecycle review entry
-- provider posting to GitLab/Jira with retry-safe, idempotent behavior
+- provider posting to GitHub/GitLab/Jira with retry-safe, idempotent behavior
 - selective follow-up request-changes
 - manual review-only reruns
 
@@ -14,8 +14,9 @@ This guide captures the end-to-end flow for Stage 6 hardening and operation hand
 1. Enable auto-review in repo config (and optional task override):
 
    - `repo.autoReview.enabled = true`
-   - `repo.autoReview.provider = 'gitlab' | 'jira'`
+   - `repo.autoReview.provider = 'github' | 'gitlab' | 'jira'`
    - `repo.autoReview.postInline = true` for GitLab inline notes
+   - for GitHub repos, provider defaults to `github` when omitted and `autoReview.enabled=true`
 
 2. Trigger a normal run:
 
@@ -53,6 +54,26 @@ This guide captures the end-to-end flow for Stage 6 hardening and operation hand
    - `POST /api/runs/:runId/review`
    - confirm timeline contains `Manual review started (round N).`
 
+## GitHub dogfood setup and QA
+
+1. Runtime secrets:
+   - set `GITHUB_TOKEN` in Worker secrets (write access to PR comments/reviews).
+2. Webhook verification secret:
+   - set `github/webhook-secret` in `SECRETS_KV`.
+3. GitHub webhook subscription:
+   - endpoint: `POST /api/integrations/github/webhook`
+   - events: `Pull request review comments`, `Pull request reviews`, `Issue comments`
+4. Dry run one PR flow in AgentsKanban repo:
+   - run task with `sourceRef=main`
+   - confirm findings post to PR with marker comments
+   - reply to at least one marker-bearing finding comment on GitHub
+5. Trigger selective request-changes with replies:
+   - send `POST /api/runs/:runId/request-changes` and set:
+   - `{ "reviewSelection": { "mode": "include", "findingIds": ["<id>"], "includeReplies": true } }`
+6. Verify merged context:
+   - prompt includes deduped reply lines from both webhook-ingested hints and on-demand fetch
+   - ordering is deterministic (source-priority + stable lexical sort)
+
 ## Execution handoff pack (for next phase)
 
 1. Repo/task state
@@ -73,14 +94,21 @@ This guide captures the end-to-end flow for Stage 6 hardening and operation hand
 - `reviewExecution.trigger` remains `auto_on_review` but `round` is still `0`
   - check repo auto-review setting and task override mode resolution
 - postings never happen
-  - confirm provider credential secret exists (`GITLAB_TOKEN` or `JIRA_TOKEN`)
+  - confirm provider credential secret exists (`GITHUB_TOKEN`, `GITLAB_TOKEN`, or `JIRA_TOKEN`)
 - duplicate findings comments appearing
   - verify stable marker IDs in provider comments and idempotent mapping behavior
 - request-changes prompt missing selection context
-  - confirm `reviewSelection` payload is valid JSON and provider replies are enabled only for gitlab/jira
+  - confirm `reviewSelection` payload is valid JSON and provider replies are enabled for github/gitlab/jira
+- GitHub replies missing from request-changes context
+  - verify webhook secret is configured in KV as `github/webhook-secret`
+  - verify webhook deliveries return `status: accepted` (not signature errors)
+  - verify review number/project path in webhook payload matches the run review metadata
 
 ## Known limitations / deferred work
 
+- GitHub webhook ingestion only stores marker-bearing comment/review content; non-marker conversational context is ignored.
+- Reply merge currently dedupes by normalized body text and source order; richer thread semantics (author/timestamp weighting) are deferred.
+- Webhook ingestion is tenant-primary; multi-tenant, per-repo GitHub app installation mapping is deferred.
 - Jira comment threading is treated as marker-based dedupe only; cross-page/reply threading is not deeply normalized.
 - GitLab inline posting recovery after transient network failures depends on re-fetching discussion state before retries.
 - Cross-provider review-provider migration for a run is not yet available; changing provider requires a new run cycle.

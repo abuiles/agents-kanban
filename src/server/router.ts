@@ -34,11 +34,11 @@ import { parseBoardSnapshot } from '../ui/store/board-snapshot';
 import { scheduleRunJob } from './run-orchestrator';
 import { getRunUsage, getTenantRunUsage, getTenantUsageSummary } from './usage-reporting';
 import { normalizeTenantId, normalizeTenantIdStrict } from '../shared/tenant';
-import { getRepoHost, getRunReviewProvider, hasRunReview } from '../shared/scm';
+import { getRepoHost, getRepoProjectPath, getRunReviewProvider, hasRunReview } from '../shared/scm';
 import * as tenantAuthDb from './tenant-auth-db';
 import { DEFAULT_REPO_SENTINEL_CONFIG } from '../shared/sentinel';
 import { SentinelController } from './sentinel';
-import { buildRequestChangesPrompt, resolveRequestRunChangesSelection } from './request-changes';
+import { buildRequestChangesPrompt, mergeReviewReplyContext, resolveRequestRunChangesSelection } from './request-changes';
 import {
   handleSlackCommands as handleSlackCommandsHandler,
   handleSlackEvents as handleSlackEventsHandler,
@@ -46,9 +46,11 @@ import {
 } from './integrations/slack/handlers';
 import { handleGitlabWebhook as handleGitlabWebhookHandler } from './integrations/gitlab/handlers';
 import { handleGithubWebhook as handleGithubWebhookHandler } from './integrations/github/handlers';
+import { listGithubReplyContextHints } from './integrations/github/reply-context-store';
 import type { AutoReviewProvider, Repo, SentinelRun } from '../ui/domain/types';
 import { getScmAdapter } from './scm/registry';
 import { getReviewPostingAdapter } from './review-posting/registry';
+import type { ReviewReplyContext } from './review-posting/adapter';
 
 const BOARD_OBJECT_NAME = 'agentboard';
 
@@ -1099,7 +1101,7 @@ export async function handleRequestChanges(request: Request, env: Env, params: R
     let replyContext;
     if (selection?.includeReplies && selectedFindings.length) {
       const reviewProvider = getRunReviewProvider(existingRun) as AutoReviewProvider | undefined;
-      if (reviewProvider !== 'gitlab' && reviewProvider !== 'jira') {
+      if (reviewProvider !== 'github' && reviewProvider !== 'gitlab' && reviewProvider !== 'jira') {
         throw badRequest('Cannot include replies for this review provider.');
       }
       if (!repo.scmProvider) {
@@ -1110,13 +1112,42 @@ export async function handleRequestChanges(request: Request, env: Env, params: R
         throw badRequest(`No SCM credential found for ${repo.scmProvider} host ${getRepoHost(repo)}.`);
       }
       const taskDetail = await repoBoard.getTask(existingRun.taskId, requestContext.activeTenantId);
-      replyContext = await getReviewPostingAdapter(reviewProvider).fetchReplyContext({
+      const fetchedReplyContext = await getReviewPostingAdapter(reviewProvider).fetchReplyContext({
         repo,
         task: taskDetail.task,
         run: existingRun,
         credential: { token },
         findingIds: selection.selectedFindingIds
       });
+
+      if (reviewProvider === 'github') {
+        const reviewNumber = existingRun.reviewNumber ?? existingRun.prNumber;
+        const storedHints = reviewNumber
+          ? await listGithubReplyContextHints({
+            env,
+            tenantId: requestContext.activeTenantId,
+            projectPath: getRepoProjectPath(repo),
+            reviewNumber,
+            findingIds: selection.selectedFindingIds
+          })
+          : {};
+        const persistedReplyContext = Object.entries(storedHints).reduce<ReviewReplyContext>((output, [findingId, hints]) => {
+          const bodies = hints.map((hint) => hint.body.trim()).filter(Boolean);
+          if (bodies.length) {
+            output[findingId] = bodies;
+          }
+          return output;
+        }, {});
+        replyContext = mergeReviewReplyContext({
+          findingIds: selection.selectedFindingIds,
+          sources: [persistedReplyContext, fetchedReplyContext]
+        });
+      } else {
+        replyContext = mergeReviewReplyContext({
+          findingIds: selection.selectedFindingIds,
+          sources: [fetchedReplyContext]
+        });
+      }
     }
 
     const prompt = buildRequestChangesPrompt({
