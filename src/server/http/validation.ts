@@ -1,6 +1,7 @@
 import type {
   CreateRepoInput,
   CreateTaskInput,
+  RepoSentinelConfigInput,
   RequestRunChangesInput,
   UpdateRepoInput,
   UpdateTaskInput,
@@ -746,6 +747,29 @@ export function parseRequestRunChangesInput(body: unknown): RequestRunChangesInp
   return {
     prompt,
     reviewSelection: readRequestRunChangesSelection(body.reviewSelection, 'reviewSelection')
+  };
+}
+
+export function parseUpdateRepoSentinelConfigInput(body: unknown): RepoSentinelConfigInput {
+  if (!isRecord(body)) {
+    throw badRequest('Invalid sentinel config patch payload.');
+  }
+  return readSentinelConfig(body, 'sentinelConfig', true) ?? {};
+}
+
+export function parseStartRepoSentinelInput(body: unknown): { scopeType?: 'group' | 'global'; scopeValue?: string } {
+  if (!isRecord(body)) {
+    throw badRequest('Invalid sentinel start payload.');
+  }
+  const scopeType = hasOwn(body, 'scopeType')
+    ? readEnumValue(body.scopeType, 'scopeType', new Set(['group', 'global'] as const), false)
+    : undefined;
+  const scopeValue = hasOwn(body, 'scopeValue')
+    ? readTrimmedString(body.scopeValue, 'scopeValue', false)
+    : undefined;
+  return {
+    ...(scopeType ? { scopeType } : {}),
+    ...(scopeValue ? { scopeValue } : {})
   };
 }
 

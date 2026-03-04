@@ -9,6 +9,7 @@ import { handleError, json } from './http/response';
 import {
   parseAcceptTenantInviteInput,
   parseAuthLoginInput,
+  parseStartRepoSentinelInput,
   parseCreateTenantInviteInput,
   parseCreateUserApiTokenInput,
   parseAuthSignupInput,
@@ -20,6 +21,7 @@ import {
   parsePlatformSupportAssumeTenantInput,
   parseSetActiveTenantInput,
   parseRequestRunChangesInput,
+  parseUpdateRepoSentinelConfigInput,
   parseUpdateRepoInput,
   parseUpdateTaskInput,
   parseUpdateTenantMemberInput,
@@ -33,6 +35,7 @@ import { getRunUsage, getTenantRunUsage, getTenantUsageSummary } from './usage-r
 import { normalizeTenantId, normalizeTenantIdStrict } from '../shared/tenant';
 import { hasRunReview } from '../shared/scm';
 import * as tenantAuthDb from './tenant-auth-db';
+import { DEFAULT_REPO_SENTINEL_CONFIG } from '../shared/sentinel';
 import {
   handleSlackCommands as handleSlackCommandsHandler,
   handleSlackEvents as handleSlackEventsHandler,
@@ -456,6 +459,273 @@ export async function handleUpdateRepo(request: Request, env: Env, params: Route
       throw forbidden('Repo tenantId cannot be changed.');
     }
     return json(await board.updateRepo(repoId, patch));
+  });
+}
+
+function mergeRepoSentinelConfig(
+  base: typeof DEFAULT_REPO_SENTINEL_CONFIG,
+  patch: {
+    enabled?: boolean;
+    globalMode?: boolean;
+    defaultGroupTag?: string;
+    reviewGate?: Partial<(typeof DEFAULT_REPO_SENTINEL_CONFIG)['reviewGate']>;
+    mergePolicy?: Partial<(typeof DEFAULT_REPO_SENTINEL_CONFIG)['mergePolicy']>;
+    conflictPolicy?: Partial<(typeof DEFAULT_REPO_SENTINEL_CONFIG)['conflictPolicy']>;
+  }
+) {
+  return {
+    ...base,
+    ...patch,
+    reviewGate: {
+      ...base.reviewGate,
+      ...(patch.reviewGate ?? {})
+    },
+    mergePolicy: {
+      ...base.mergePolicy,
+      ...(patch.mergePolicy ?? {})
+    },
+    conflictPolicy: {
+      ...base.conflictPolicy,
+      ...(patch.conflictPolicy ?? {})
+    }
+  };
+}
+
+async function getLatestRepoSentinelRun(env: Env, tenantId: string, repoId: string) {
+  const runs = await tenantAuthDb.listSentinelRuns(env, tenantId, { repoId });
+  return runs[0];
+}
+
+async function buildRepoSentinelState(env: Env, tenantId: string, repoId: string) {
+  const [run, events] = await Promise.all([
+    getLatestRepoSentinelRun(env, tenantId, repoId),
+    tenantAuthDb.listSentinelEvents(env, tenantId, { repoId, limit: 20 })
+  ]);
+  return {
+    run,
+    events
+  };
+}
+
+export async function handleGetRepoSentinel(request: Request, env: Env, params: RouteParams): Promise<Response> {
+  return withApiError(async () => {
+    const board = getBoard(env);
+    const requestContext = await resolveRequestTenantContext(env, board, request, { requireSession: true });
+    const repoId = parsePathParam(params.repoId);
+    const repo = await assertRepoAccess(env, board, requestContext, repoId);
+    const state = await buildRepoSentinelState(env, requestContext.activeTenantId, repoId);
+    return json({
+      repoId,
+      config: repo.sentinelConfig ?? DEFAULT_REPO_SENTINEL_CONFIG,
+      ...state
+    });
+  });
+}
+
+export async function handlePatchRepoSentinelConfig(request: Request, env: Env, params: RouteParams): Promise<Response> {
+  return withApiError(async () => {
+    const board = getBoard(env);
+    const requestContext = await resolveRequestTenantContext(env, board, request, { requireSession: true });
+    const repoId = parsePathParam(params.repoId);
+    const repo = await assertRepoAccess(env, board, requestContext, repoId);
+    const patch = parseUpdateRepoSentinelConfigInput(await readJson(request));
+    const merged = mergeRepoSentinelConfig(repo.sentinelConfig ?? DEFAULT_REPO_SENTINEL_CONFIG, patch);
+    const [savedConfig, updatedRepo] = await Promise.all([
+      tenantAuthDb.upsertRepoSentinelConfig(env, {
+        tenantId: requestContext.activeTenantId,
+        repoId,
+        config: merged
+      }),
+      board.updateRepo(repoId, { sentinelConfig: merged })
+    ]);
+    const state = await buildRepoSentinelState(env, requestContext.activeTenantId, repoId);
+    return json({
+      repoId,
+      config: savedConfig,
+      repo: updatedRepo,
+      ...state
+    });
+  });
+}
+
+async function transitionRepoSentinelRun(
+  env: Env,
+  tenantId: string,
+  repoId: string,
+  action: 'start' | 'pause' | 'resume' | 'stop',
+  options?: { scopeType?: 'group' | 'global'; scopeValue?: string }
+) {
+  const current = await getLatestRepoSentinelRun(env, tenantId, repoId);
+  const now = new Date().toISOString();
+  let changed = false;
+  let run = current;
+  let eventType: Parameters<typeof tenantAuthDb.appendSentinelEvent>[1]['type'] | undefined;
+  let eventMessage: string | undefined;
+
+  if (action === 'start') {
+    if (!current) {
+      run = await tenantAuthDb.createSentinelRun(env, {
+        tenantId,
+        repoId,
+        scopeType: options?.scopeType ?? 'global',
+        scopeValue: options?.scopeValue,
+        status: 'running',
+        startedAt: now,
+        updatedAt: now
+      });
+      changed = true;
+      eventType = 'sentinel.started';
+      eventMessage = `Sentinel started for ${repoId}.`;
+    } else if (current.status === 'paused') {
+      run = await tenantAuthDb.updateSentinelRun(env, tenantId, current.id, { status: 'running', updatedAt: now });
+      changed = true;
+      eventType = 'sentinel.resumed';
+      eventMessage = `Sentinel resumed for ${repoId}.`;
+    } else if (current.status !== 'running') {
+      run = await tenantAuthDb.createSentinelRun(env, {
+        tenantId,
+        repoId,
+        scopeType: options?.scopeType ?? current.scopeType,
+        scopeValue: options?.scopeValue ?? current.scopeValue,
+        status: 'running',
+        startedAt: now,
+        updatedAt: now
+      });
+      changed = true;
+      eventType = 'sentinel.started';
+      eventMessage = `Sentinel started for ${repoId}.`;
+    }
+  } else if (action === 'pause' && current && current.status === 'running') {
+    run = await tenantAuthDb.updateSentinelRun(env, tenantId, current.id, { status: 'paused', updatedAt: now });
+    changed = true;
+    eventType = 'sentinel.paused';
+    eventMessage = `Sentinel paused for ${repoId}.`;
+  } else if (action === 'resume' && current && current.status === 'paused') {
+    run = await tenantAuthDb.updateSentinelRun(env, tenantId, current.id, { status: 'running', updatedAt: now });
+    changed = true;
+    eventType = 'sentinel.resumed';
+    eventMessage = `Sentinel resumed for ${repoId}.`;
+  } else if (action === 'stop' && current && (current.status === 'running' || current.status === 'paused')) {
+    run = await tenantAuthDb.updateSentinelRun(env, tenantId, current.id, {
+      status: 'stopped',
+      currentTaskId: undefined,
+      currentRunId: undefined,
+      updatedAt: now
+    });
+    changed = true;
+    eventType = 'sentinel.stopped';
+    eventMessage = `Sentinel stopped for ${repoId}.`;
+  }
+
+  if (changed && run && eventType && eventMessage) {
+    await tenantAuthDb.appendSentinelEvent(env, {
+      tenantId,
+      repoId,
+      sentinelRunId: run.id,
+      type: eventType,
+      level: 'info',
+      message: eventMessage,
+      at: now
+    });
+  }
+
+  return {
+    run,
+    changed
+  };
+}
+
+export async function handleStartRepoSentinel(request: Request, env: Env, params: RouteParams): Promise<Response> {
+  return withApiError(async () => {
+    const board = getBoard(env);
+    const requestContext = await resolveRequestTenantContext(env, board, request, { requireSession: true });
+    const repoId = parsePathParam(params.repoId);
+    const repo = await assertRepoAccess(env, board, requestContext, repoId);
+    const body = await readJson(request).catch(() => ({}));
+    const input = parseStartRepoSentinelInput(body);
+    const scopeType = input.scopeType ?? (repo.sentinelConfig?.globalMode ? 'global' : 'group');
+    const scopeValue = scopeType === 'group'
+      ? (input.scopeValue ?? repo.sentinelConfig?.defaultGroupTag)
+      : undefined;
+    const transition = await transitionRepoSentinelRun(env, requestContext.activeTenantId, repoId, 'start', { scopeType, scopeValue });
+    const state = await buildRepoSentinelState(env, requestContext.activeTenantId, repoId);
+    return json({
+      repoId,
+      config: repo.sentinelConfig ?? DEFAULT_REPO_SENTINEL_CONFIG,
+      ...transition,
+      ...state
+    });
+  });
+}
+
+export async function handlePauseRepoSentinel(request: Request, env: Env, params: RouteParams): Promise<Response> {
+  return withApiError(async () => {
+    const board = getBoard(env);
+    const requestContext = await resolveRequestTenantContext(env, board, request, { requireSession: true });
+    const repoId = parsePathParam(params.repoId);
+    const repo = await assertRepoAccess(env, board, requestContext, repoId);
+    const transition = await transitionRepoSentinelRun(env, requestContext.activeTenantId, repoId, 'pause');
+    const state = await buildRepoSentinelState(env, requestContext.activeTenantId, repoId);
+    return json({
+      repoId,
+      config: repo.sentinelConfig ?? DEFAULT_REPO_SENTINEL_CONFIG,
+      ...transition,
+      ...state
+    });
+  });
+}
+
+export async function handleResumeRepoSentinel(request: Request, env: Env, params: RouteParams): Promise<Response> {
+  return withApiError(async () => {
+    const board = getBoard(env);
+    const requestContext = await resolveRequestTenantContext(env, board, request, { requireSession: true });
+    const repoId = parsePathParam(params.repoId);
+    const repo = await assertRepoAccess(env, board, requestContext, repoId);
+    const transition = await transitionRepoSentinelRun(env, requestContext.activeTenantId, repoId, 'resume');
+    const state = await buildRepoSentinelState(env, requestContext.activeTenantId, repoId);
+    return json({
+      repoId,
+      config: repo.sentinelConfig ?? DEFAULT_REPO_SENTINEL_CONFIG,
+      ...transition,
+      ...state
+    });
+  });
+}
+
+export async function handleStopRepoSentinel(request: Request, env: Env, params: RouteParams): Promise<Response> {
+  return withApiError(async () => {
+    const board = getBoard(env);
+    const requestContext = await resolveRequestTenantContext(env, board, request, { requireSession: true });
+    const repoId = parsePathParam(params.repoId);
+    const repo = await assertRepoAccess(env, board, requestContext, repoId);
+    const transition = await transitionRepoSentinelRun(env, requestContext.activeTenantId, repoId, 'stop');
+    const state = await buildRepoSentinelState(env, requestContext.activeTenantId, repoId);
+    return json({
+      repoId,
+      config: repo.sentinelConfig ?? DEFAULT_REPO_SENTINEL_CONFIG,
+      ...transition,
+      ...state
+    });
+  });
+}
+
+export async function handleListRepoSentinelEvents(request: Request, env: Env, params: RouteParams): Promise<Response> {
+  return withApiError(async () => {
+    const url = new URL(request.url);
+    const board = getBoard(env);
+    const requestContext = await resolveRequestTenantContext(env, board, request, { requireSession: true });
+    const repoId = parsePathParam(params.repoId);
+    await assertRepoAccess(env, board, requestContext, repoId);
+    const limitRaw = url.searchParams.get('limit');
+    const limit = limitRaw ? Number(limitRaw) : undefined;
+    if (typeof limit !== 'undefined' && (!Number.isInteger(limit) || limit <= 0)) {
+      throw badRequest('Invalid limit.');
+    }
+    const events = await tenantAuthDb.listSentinelEvents(env, requestContext.activeTenantId, {
+      repoId,
+      ...(typeof limit === 'number' ? { limit } : {})
+    });
+    return json(events);
   });
 }
 

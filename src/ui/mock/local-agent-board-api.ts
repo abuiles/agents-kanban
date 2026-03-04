@@ -6,6 +6,10 @@ import type {
   CreateInviteInput,
   CreateInviteResult,
   CreateRepoInput,
+  RepoSentinelActionResult,
+  RepoSentinelConfigInput,
+  RepoSentinelStartInput,
+  RepoSentinelStatus,
   CreateTaskInput,
   CreateUserApiTokenInput,
   CreateUserApiTokenResult,
@@ -38,6 +42,8 @@ export class LocalAgentBoardApi implements AgentBoardApi {
   private readonly scmCredentials = new Map<string, ScmCredential & { token: string }>();
   private readonly invites = new Map<string, InviteRecord & { token: string }>();
   private readonly userApiTokens = new Map<string, UserApiTokenRecord & { token: string }>();
+  private readonly repoSentinelRuns = new Map<string, NonNullable<RepoSentinelStatus['run']>>();
+  private readonly repoSentinelEvents = new Map<string, RepoSentinelStatus['events']>();
   private authSession?: AuthSession;
 
   private createLocalAuthSession(userOverride?: Partial<User> & Pick<User, 'id' | 'email'>, role: TenantMember['role'] = 'owner'): AuthSession {
@@ -335,6 +341,140 @@ export class LocalAgentBoardApi implements AgentBoardApi {
     }
 
     return updatedRepo;
+  }
+
+  async getRepoSentinel(repoId: string): Promise<RepoSentinelStatus> {
+    const repo = this.store.getSnapshot().repos.find((candidate) => candidate.repoId === repoId);
+    if (!repo) {
+      throw new Error(`Repo ${repoId} not found.`);
+    }
+    const events = this.repoSentinelEvents.get(repoId) ?? [];
+    return {
+      repoId,
+      config: repo.sentinelConfig ?? DEFAULT_REPO_SENTINEL_CONFIG,
+      run: this.repoSentinelRuns.get(repoId),
+      events: [...events].sort((left, right) => right.at.localeCompare(left.at))
+    };
+  }
+
+  async updateRepoSentinelConfig(repoId: string, patch: RepoSentinelConfigInput): Promise<RepoSentinelStatus> {
+    await this.updateRepo(repoId, { sentinelConfig: patch });
+    return this.getRepoSentinel(repoId);
+  }
+
+  async startRepoSentinel(repoId: string, input?: RepoSentinelStartInput): Promise<RepoSentinelActionResult> {
+    const repo = this.store.getSnapshot().repos.find((candidate) => candidate.repoId === repoId);
+    if (!repo) {
+      throw new Error(`Repo ${repoId} not found.`);
+    }
+    const current = this.repoSentinelRuns.get(repoId);
+    if (current?.status === 'running') {
+      return { ...(await this.getRepoSentinel(repoId)), changed: false };
+    }
+    const now = nowIso();
+    const next = current
+      ? { ...current, status: 'running' as const, updatedAt: now }
+      : {
+          id: randomId('sentinel_run'),
+          tenantId: repo.tenantId ?? 'tenant_local',
+          repoId,
+          scopeType: input?.scopeType ?? (repo.sentinelConfig?.globalMode ? 'global' : 'group'),
+          scopeValue: input?.scopeValue ?? repo.sentinelConfig?.defaultGroupTag,
+          status: 'running' as const,
+          attemptCount: 0,
+          startedAt: now,
+          updatedAt: now
+        };
+    this.repoSentinelRuns.set(repoId, next);
+    this.pushSentinelEvent(repoId, {
+      id: randomId('sentinel_event'),
+      sentinelRunId: next.id,
+      tenantId: next.tenantId,
+      repoId,
+      at: now,
+      level: 'info',
+      type: current ? 'sentinel.resumed' : 'sentinel.started',
+      message: current ? `Sentinel resumed for ${repo.slug}.` : `Sentinel started for ${repo.slug}.`
+    });
+    return { ...(await this.getRepoSentinel(repoId)), changed: true };
+  }
+
+  async pauseRepoSentinel(repoId: string): Promise<RepoSentinelActionResult> {
+    const current = this.repoSentinelRuns.get(repoId);
+    if (!current || current.status !== 'running') {
+      return { ...(await this.getRepoSentinel(repoId)), changed: false };
+    }
+    const now = nowIso();
+    const next = { ...current, status: 'paused' as const, updatedAt: now };
+    this.repoSentinelRuns.set(repoId, next);
+    this.pushSentinelEvent(repoId, {
+      id: randomId('sentinel_event'),
+      sentinelRunId: next.id,
+      tenantId: next.tenantId,
+      repoId,
+      at: now,
+      level: 'info',
+      type: 'sentinel.paused',
+      message: `Sentinel paused for ${repoId}.`
+    });
+    return { ...(await this.getRepoSentinel(repoId)), changed: true };
+  }
+
+  async resumeRepoSentinel(repoId: string): Promise<RepoSentinelActionResult> {
+    const current = this.repoSentinelRuns.get(repoId);
+    if (!current || current.status !== 'paused') {
+      return { ...(await this.getRepoSentinel(repoId)), changed: false };
+    }
+    const now = nowIso();
+    const next = { ...current, status: 'running' as const, updatedAt: now };
+    this.repoSentinelRuns.set(repoId, next);
+    this.pushSentinelEvent(repoId, {
+      id: randomId('sentinel_event'),
+      sentinelRunId: next.id,
+      tenantId: next.tenantId,
+      repoId,
+      at: now,
+      level: 'info',
+      type: 'sentinel.resumed',
+      message: `Sentinel resumed for ${repoId}.`
+    });
+    return { ...(await this.getRepoSentinel(repoId)), changed: true };
+  }
+
+  async stopRepoSentinel(repoId: string): Promise<RepoSentinelActionResult> {
+    const current = this.repoSentinelRuns.get(repoId);
+    if (!current || (current.status !== 'running' && current.status !== 'paused')) {
+      return { ...(await this.getRepoSentinel(repoId)), changed: false };
+    }
+    const now = nowIso();
+    const next = {
+      ...current,
+      status: 'stopped' as const,
+      currentTaskId: undefined,
+      currentRunId: undefined,
+      updatedAt: now
+    };
+    this.repoSentinelRuns.set(repoId, next);
+    this.pushSentinelEvent(repoId, {
+      id: randomId('sentinel_event'),
+      sentinelRunId: next.id,
+      tenantId: next.tenantId,
+      repoId,
+      at: now,
+      level: 'info',
+      type: 'sentinel.stopped',
+      message: `Sentinel stopped for ${repoId}.`
+    });
+    return { ...(await this.getRepoSentinel(repoId)), changed: true };
+  }
+
+  async listRepoSentinelEvents(repoId: string, options?: { limit?: number }) {
+    const events = this.repoSentinelEvents.get(repoId) ?? [];
+    const sorted = [...events].sort((left, right) => right.at.localeCompare(left.at));
+    if (!options?.limit || options.limit < 1) {
+      return sorted;
+    }
+    return sorted.slice(0, options.limit);
   }
 
   async listScmCredentials(): Promise<ScmCredential[]> {
@@ -714,6 +854,11 @@ export class LocalAgentBoardApi implements AgentBoardApi {
   private async updateTaskStatusAndStartRun(task: Task) {
     await this.startRun(task.taskId);
     return this.store.getSnapshot().tasks.find((candidate) => candidate.taskId === task.taskId)!;
+  }
+
+  private pushSentinelEvent(repoId: string, event: RepoSentinelStatus['events'][number]) {
+    const existing = this.repoSentinelEvents.get(repoId) ?? [];
+    this.repoSentinelEvents.set(repoId, [event, ...existing].slice(0, 500));
   }
 }
 

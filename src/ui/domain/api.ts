@@ -9,6 +9,8 @@ import type {
   LlmReasoningEffort,
   Repo,
   RepoSentinelConfig,
+  SentinelEvent,
+  SentinelRun,
   RunCommand,
   RunEvent,
   RunLogEntry,
@@ -36,6 +38,22 @@ export type RepoSentinelConfigInput = {
   reviewGate?: Partial<RepoSentinelConfig['reviewGate']>;
   mergePolicy?: Partial<RepoSentinelConfig['mergePolicy']>;
   conflictPolicy?: Partial<RepoSentinelConfig['conflictPolicy']>;
+};
+
+export type RepoSentinelStartInput = {
+  scopeType?: 'group' | 'global';
+  scopeValue?: string;
+};
+
+export type RepoSentinelStatus = {
+  repoId: string;
+  config: RepoSentinelConfig;
+  run?: SentinelRun;
+  events: SentinelEvent[];
+};
+
+export type RepoSentinelActionResult = RepoSentinelStatus & {
+  changed: boolean;
 };
 
 export type RequestRunChangesSelection = {
@@ -196,6 +214,13 @@ export interface AgentBoardApi {
   createRepo(input: CreateRepoInput): Promise<Repo>;
   listRepos(): Promise<Repo[]>;
   updateRepo(repoId: string, patch: UpdateRepoInput): Promise<Repo>;
+  getRepoSentinel(repoId: string): Promise<RepoSentinelStatus>;
+  updateRepoSentinelConfig(repoId: string, patch: RepoSentinelConfigInput): Promise<RepoSentinelStatus>;
+  startRepoSentinel(repoId: string, input?: RepoSentinelStartInput): Promise<RepoSentinelActionResult>;
+  pauseRepoSentinel(repoId: string): Promise<RepoSentinelActionResult>;
+  resumeRepoSentinel(repoId: string): Promise<RepoSentinelActionResult>;
+  stopRepoSentinel(repoId: string): Promise<RepoSentinelActionResult>;
+  listRepoSentinelEvents(repoId: string, options?: { limit?: number }): Promise<SentinelEvent[]>;
   listScmCredentials(): Promise<ScmCredential[]>;
   getScmCredential(scmProvider: UpsertScmCredentialInput['scmProvider'], host: string): Promise<ScmCredential | undefined>;
   upsertScmCredential(input: UpsertScmCredentialInput): Promise<ScmCredential>;
