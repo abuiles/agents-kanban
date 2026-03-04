@@ -94,10 +94,16 @@ export async function handleGitlabWebhook(request: Request, env: Env): Promise<R
     }
 
     if (normalized.type === 'review_pending') {
+      await repoBoard.transitionRun(run.runId, {
+        loopState: 'REVIEW_PENDING'
+      });
       await mirrorRunLifecycleMilestone(env, run, 'review_pending', `${deliveryId}:review_pending`);
       return json({ ok: true, status: 'mirrored_review_pending', runId: run.runId });
     }
 
+    await repoBoard.transitionRun(run.runId, {
+      loopState: 'DECISION_REQUIRED'
+    });
     await mirrorRunLifecycleMilestone(env, run, 'review_pending', `${deliveryId}:review_pending`);
     const bindings = await listSlackThreadBindingsForTask(env, tenantId, run.taskId);
     const message = buildGitlabFeedbackSlackMessage({

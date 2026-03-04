@@ -225,6 +225,16 @@ async function resolveRepoCandidates(
   }
 }
 
+async function resolveRepoIdForRun(env: Env, runId: string): Promise<string | undefined> {
+  const boardIndex = env.BOARD_INDEX?.getByName(BOARD_OBJECT_NAME);
+  if (!boardIndex) {
+    return undefined;
+  }
+  return boardIndex.findRunRepoId
+    ? boardIndex.findRunRepoId(runId)
+    : undefined;
+}
+
 async function startRunForTask(
   env: Env,
   ctx: ExecutionContext<unknown> | undefined,
@@ -273,6 +283,78 @@ async function syncSlackBindingAfterRunStart(
     currentRunId: binding.runId,
     latestReviewRound: binding.latestReviewRound
   });
+}
+
+async function startSlackApprovedRerun(
+  env: Env,
+  ctx: ExecutionContext<unknown>,
+  tenantId: string,
+  interaction: ParsedSlackInteraction
+) {
+  const currentRunId = interaction.currentRunId?.trim();
+  if (!currentRunId) {
+    throw badRequest('Missing current run context for rerun approval.');
+  }
+
+  const repoId = await resolveRepoIdForRun(env, currentRunId);
+  if (!repoId) {
+    throw badRequest('Unable to resolve repository for the current run.');
+  }
+
+  const repoBoard = env.REPO_BOARD.getByName(repoId);
+  const nextReviewRound = normalizeLatestReviewRound(interaction.latestReviewRound) + 1;
+  const transition = await repoBoard.transitionRunFromLoopState(currentRunId, 'DECISION_REQUIRED', {
+    loopState: 'RERUN_QUEUED'
+  }, tenantId);
+  if (!transition.transitioned) {
+    return;
+  }
+
+  const run = await repoBoard.requestRunChanges(
+    currentRunId,
+    {
+      prompt: `Slack approved rerun for review round ${nextReviewRound}.`
+    },
+    tenantId
+  );
+
+  const workflow = await scheduleRunJob(env, executionContextOrNoop(ctx), {
+    tenantId,
+    repoId,
+    taskId: run.taskId,
+    runId: run.runId,
+    mode: 'full_run'
+  });
+
+  await repoBoard.transitionRun(run.runId, {
+    loopState: 'RERUN_QUEUED',
+    workflowInstanceId: workflow.id,
+    orchestrationMode: workflow.id.startsWith('local-alarm-') ? 'local_alarm' : 'workflow'
+  });
+
+  await tenantAuthDb.upsertSlackThreadBinding(env, {
+    tenantId,
+    taskId: interaction.taskId,
+    channelId: interaction.channelId,
+    threadTs: interaction.threadTs,
+    currentRunId: run.runId,
+    latestReviewRound: nextReviewRound
+  });
+}
+
+async function pauseSlackRun(
+  env: Env,
+  tenantId: string,
+  interaction: ParsedSlackInteraction,
+  repoId: string | undefined
+) {
+  if (!interaction.currentRunId?.trim() || !repoId) {
+    return;
+  }
+  const repoBoard = env.REPO_BOARD.getByName(repoId);
+  await repoBoard.transitionRun(interaction.currentRunId, {
+    loopState: 'PAUSED'
+  }, tenantId);
 }
 
 async function createThreadBindingForSlashCommand(
@@ -402,14 +484,7 @@ async function updateBindingForAction(
   }
 
   if (interaction.actionId === 'approve_rerun') {
-    return tenantAuthDb.upsertSlackThreadBinding(env, {
-      tenantId,
-      taskId: interaction.taskId,
-      channelId: interaction.channelId,
-      threadTs: interaction.threadTs,
-      currentRunId,
-      latestReviewRound: latestReviewRound + 1
-    });
+    return;
   }
 
   return tenantAuthDb.upsertSlackThreadBinding(env, {
@@ -542,6 +617,21 @@ export async function handleSlackInteractions(
     const tenantId = await resolveThreadTenantId(env, interaction.tenantId || interaction.teamId);
     if (interaction.actionId === 'repo_disambiguation') {
       return handleRepoDisambiguationAction(env, ctx, tenantId, interaction);
+    }
+    if (interaction.actionId === 'approve_rerun') {
+      await startSlackApprovedRerun(env, ctx, tenantId, interaction);
+      return json({
+        ok: true,
+        action: interaction.actionId,
+        taskId: interaction.taskId,
+        ...(interaction.repoId ? { repoId: interaction.repoId } : {})
+      });
+    }
+    if (interaction.actionId === 'pause') {
+      const repoId = interaction.currentRunId
+        ? await resolveRepoIdForRun(env, interaction.currentRunId)
+        : undefined;
+      await pauseSlackRun(env, tenantId, interaction, repoId);
     }
     await updateBindingForAction(env, tenantId, interaction);
     return json({

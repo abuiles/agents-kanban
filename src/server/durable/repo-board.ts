@@ -1,6 +1,7 @@
 import type { CreateTaskInput, UpdateTaskInput } from '../../ui/domain/api';
 import type {
   AgentRun,
+  IntegrationLoopState,
   OperatorSession,
   Repo,
   RunCommand,
@@ -345,6 +346,7 @@ export class RepoBoardDO extends DurableObject<Env> {
 
     const now = new Date();
     const nextRun = createRealRun(task, createRunId(task.repoId), now, {
+      loopState: 'RERUN_QUEUED',
       branchName: existingRun.branchName,
       reviewUrl: existingRun.reviewUrl,
       reviewNumber: existingRun.reviewNumber,
@@ -512,6 +514,18 @@ export class RepoBoardDO extends DurableObject<Env> {
     if (isTerminalRunStatus(run.status) && patch.status && patch.status !== run.status) {
       return run;
     }
+    const nextStatus = patch.status ?? run.status;
+    const currentLoopState = run.loopState;
+    const nextLoopState = resolveLoopStateTransition(run.loopState, patch.loopState, nextStatus);
+    if (patch.loopState !== undefined && nextLoopState !== patch.loopState) {
+      patch = { ...patch, loopState: nextLoopState };
+    } else if (patch.loopState === undefined && nextLoopState !== currentLoopState) {
+      patch = { ...patch, loopState: nextLoopState };
+    }
+    const loopTransitionNote = buildLoopTransitionNote(currentLoopState, nextLoopState);
+    if (loopTransitionNote && patch.appendTimelineNote === undefined) {
+      patch = { ...patch, appendTimelineNote: loopTransitionNote };
+    }
     const nowIso = new Date().toISOString();
     const updated = applyRunTransition(run, patch, nowIso);
     const task = this.state.tasks.find((candidate) => candidate.taskId === updated.taskId);
@@ -525,7 +539,7 @@ export class RepoBoardDO extends DurableObject<Env> {
       runId: updated.runId,
       updatedAt: nowIso
     };
-    const events = nextStatusChanged(run, updated, patch.appendTimelineNote)
+    const events = nextStatusChanged(run, updated)
       ? [
           buildRunEvent(
             updated,
@@ -560,6 +574,26 @@ export class RepoBoardDO extends DurableObject<Env> {
       });
     }
     return updated;
+  }
+
+  async transitionRunFromLoopState(
+    runId: string,
+    expectedLoopState: IntegrationLoopState,
+    patch: RunTransitionPatch,
+    tenantId?: string
+  ): Promise<{ run: AgentRun; transitioned: boolean }> {
+    await this.ready;
+    const run = await this.getRun(runId, tenantId);
+    const current = normalizeLoopState(run.loopState);
+    if (current !== expectedLoopState) {
+      return { run, transitioned: false };
+    }
+
+    const next = await this.transitionRun(runId, patch, tenantId);
+    return {
+      run: next,
+      transitioned: normalizeLoopState(next.loopState) !== current
+    };
   }
 
   async markRunFailed(runId: string, error: RunError, tenantId?: string): Promise<AgentRun> {
@@ -1103,8 +1137,95 @@ function deriveTaskStatus(run: AgentRun, current: TaskStatus): TaskStatus {
   return current;
 }
 
-function nextStatusChanged(previous: AgentRun, next: AgentRun, note?: string) {
-  return previous.status !== next.status || Boolean(note);
+function buildLoopTransitionNote(previousLoopState: IntegrationLoopState | undefined, nextLoopState: IntegrationLoopState) {
+  if (previousLoopState === nextLoopState) {
+    return undefined;
+  }
+  if (previousLoopState === undefined) {
+    return `Loop state initialized as ${nextLoopState}.`;
+  }
+  return `Loop state changed from ${previousLoopState} to ${nextLoopState}.`;
+}
+
+function normalizeLoopState(value: IntegrationLoopState | undefined): IntegrationLoopState {
+  return value ?? 'QUEUED';
+}
+
+function isTerminalLoopState(state: IntegrationLoopState) {
+  return state === 'DONE' || state === 'FAILED' || state === 'PAUSED';
+}
+
+function canPersistLoopTransition(current: IntegrationLoopState, next: IntegrationLoopState) {
+  if (current === next) {
+    return true;
+  }
+  const transitions: Record<IntegrationLoopState, IntegrationLoopState[]> = {
+    QUEUED: ['RUNNING', 'PAUSED', 'FAILED'],
+    RUNNING: ['MR_OPEN', 'REVIEW_PENDING', 'FAILED', 'PAUSED'],
+    MR_OPEN: ['REVIEW_PENDING', 'FAILED', 'PAUSED'],
+    REVIEW_PENDING: ['DECISION_REQUIRED', 'FAILED', 'PAUSED'],
+    DECISION_REQUIRED: ['RERUN_QUEUED', 'FAILED', 'PAUSED'],
+    RERUN_QUEUED: ['RUNNING', 'FAILED', 'PAUSED'],
+    PAUSED: ['RERUN_QUEUED', 'RUNNING', 'DONE', 'FAILED'],
+    DONE: ['DONE'],
+    FAILED: ['FAILED']
+  };
+  return transitions[current]?.includes(next) ?? false;
+}
+
+function inferLoopStateFromStatus(nextStatus: AgentRun['status'], currentLoopState: IntegrationLoopState): IntegrationLoopState {
+  if (nextStatus === 'QUEUED') {
+    return currentLoopState === 'RERUN_QUEUED' ? 'RERUN_QUEUED' : 'QUEUED';
+  }
+  if (nextStatus === 'DONE') {
+    return 'DONE';
+  }
+  if (nextStatus === 'FAILED') {
+    return currentLoopState === 'PAUSED' ? 'PAUSED' : 'FAILED';
+  }
+  if (currentLoopState === 'REVIEW_PENDING' || currentLoopState === 'DECISION_REQUIRED') {
+    if (nextStatus === 'FAILED' || nextStatus === 'DONE') {
+      return nextStatus === 'DONE' ? 'DONE' : currentLoopState === 'PAUSED' ? 'PAUSED' : 'FAILED';
+    }
+    return currentLoopState;
+  }
+  if (['BOOTSTRAPPING', 'RUNNING_CODEX', 'OPERATOR_CONTROLLED', 'RUNNING_TESTS', 'PUSHING_BRANCH'].includes(nextStatus)) {
+    return 'RUNNING';
+  }
+  if (nextStatus === 'PR_OPEN' || nextStatus === 'WAITING_PREVIEW' || nextStatus === 'EVIDENCE_RUNNING') {
+    if (currentLoopState === 'REVIEW_PENDING' || currentLoopState === 'DECISION_REQUIRED') {
+      return currentLoopState;
+    }
+    if (currentLoopState === 'RERUN_QUEUED') {
+      return 'RUNNING';
+    }
+    return 'MR_OPEN';
+  }
+  return currentLoopState;
+}
+
+function resolveLoopStateTransition(
+  current: IntegrationLoopState | undefined,
+  requested: IntegrationLoopState | undefined,
+  nextStatus: AgentRun['status']
+): IntegrationLoopState {
+  const currentState = normalizeLoopState(current);
+  if (isTerminalLoopState(currentState) && requested !== currentState && requested !== undefined) {
+    return currentState;
+  }
+  const inferred = inferLoopStateFromStatus(nextStatus, currentState);
+  const target = requested ?? inferred;
+  if (requested && !canPersistLoopTransition(currentState, requested)) {
+    return currentState;
+  }
+  if (!requested && target === currentState) {
+    return currentState;
+  }
+  return target;
+}
+
+function nextStatusChanged(previous: AgentRun, next: AgentRun) {
+  return previous.status !== next.status;
 }
 
 function isTerminalRunStatus(status: AgentRun['status']) {
