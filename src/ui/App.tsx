@@ -26,6 +26,10 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
   const [taskToEditId, setTaskToEditId] = useState<string | undefined>();
   const [changeRequestRunId, setChangeRequestRunId] = useState<string | undefined>();
   const [changeRequestPrompt, setChangeRequestPrompt] = useState('');
+  const [changeRequestMode, setChangeRequestMode] = useState<'all' | 'include' | 'exclude' | 'freeform'>('all');
+  const [changeRequestFindingIds, setChangeRequestFindingIds] = useState('');
+  const [changeRequestInstruction, setChangeRequestInstruction] = useState('');
+  const [changeRequestIncludeReplies, setChangeRequestIncludeReplies] = useState(false);
   const [selectedRunEvents, setSelectedRunEvents] = useState<RunEvent[]>([]);
   const [selectedRunCommands, setSelectedRunCommands] = useState<RunCommand[]>([]);
   const [terminalBootstrap, setTerminalBootstrap] = useState<TerminalBootstrap | undefined>();
@@ -271,12 +275,44 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
       return;
     }
 
-    const run = await api.requestRunChanges(runId, { prompt });
+    const requestedFindingIds = changeRequestFindingIds
+      .split(/[\n,]+/)
+      .map((value) => value.trim())
+      .filter(Boolean);
+
+    const reviewSelection = {
+      mode: changeRequestMode,
+      ...(requestedFindingIds.length ? { findingIds: requestedFindingIds } : {}),
+      ...(changeRequestInstruction.trim() ? { instruction: changeRequestInstruction.trim() } : {}),
+      ...(changeRequestIncludeReplies ? { includeReplies: true } : {})
+    };
+
+    const run = await api.requestRunChanges(runId, {
+      prompt,
+      ...(Object.keys(reviewSelection).length ? { reviewSelection } : {})
+    });
+
+    setChangeRequestPrompt('');
+    setChangeRequestMode('all');
+    setChangeRequestFindingIds('');
+    setChangeRequestInstruction('');
+    setChangeRequestIncludeReplies(false);
     await api.setSelectedTaskId(run.taskId);
     setChangeRequestRunId(undefined);
-    setChangeRequestPrompt('');
     setNotice('Started a review rerun on the existing PR branch.');
   }
+
+  useEffect(() => {
+    if (!changeRequestRunId) {
+      return;
+    }
+
+    setChangeRequestPrompt('');
+    setChangeRequestMode('all');
+    setChangeRequestFindingIds('');
+    setChangeRequestInstruction('');
+    setChangeRequestIncludeReplies(false);
+  }, [changeRequestRunId]);
 
   async function toggleTaskSelection(taskId: string) {
     await api.setSelectedTaskId(selectedTaskId === taskId ? undefined : taskId);
@@ -777,6 +813,53 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
                 required
               />
               <span className="text-xs text-slate-500">This creates a fresh run on the existing review branch and updates the same PR.</span>
+            </label>
+            <label className="grid gap-2 text-sm">
+              <span className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">Review scope</span>
+              <select
+                className="rounded-xl border border-slate-700 bg-slate-900/90 px-3 py-2.5 text-sm text-slate-100 outline-none transition focus:border-cyan-400 focus:ring-2 focus:ring-cyan-400/20"
+                value={changeRequestMode}
+                onChange={(event) => {
+                  setChangeRequestMode(event.target.value as 'all' | 'include' | 'exclude' | 'freeform');
+                  setChangeRequestFindingIds('');
+                }}
+              >
+                <option value="all">All findings</option>
+                <option value="include">Include finding IDs</option>
+                <option value="exclude">Exclude finding IDs</option>
+                <option value="freeform">Freeform instruction</option>
+              </select>
+            </label>
+            <label className="grid gap-2 text-sm">
+              <span className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">
+                Finding IDs (comma or newline separated)
+              </span>
+              <textarea
+                className="rounded-xl border border-slate-700 bg-slate-900/90 px-3 py-2.5 text-sm text-slate-100 outline-none transition focus:border-cyan-400 focus:ring-2 focus:ring-cyan-400/20"
+                value={changeRequestFindingIds}
+                onChange={(event) => setChangeRequestFindingIds(event.target.value)}
+                rows={2}
+                placeholder="f1, f2, f3"
+              />
+            </label>
+            <label className="grid gap-2 text-sm">
+              <span className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">Rerun intent</span>
+              <textarea
+                className="rounded-xl border border-slate-700 bg-slate-900/90 px-3 py-2.5 text-sm text-slate-100 outline-none transition focus:border-cyan-400 focus:ring-2 focus:ring-cyan-400/20"
+                value={changeRequestInstruction}
+                onChange={(event) => setChangeRequestInstruction(event.target.value)}
+                rows={2}
+                placeholder="Optional instruction to prioritize or scope your rerun."
+              />
+            </label>
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                checked={changeRequestIncludeReplies}
+                onChange={(event) => setChangeRequestIncludeReplies(event.target.checked)}
+                type="checkbox"
+                className="h-4 w-4 rounded border-slate-600 bg-slate-900 text-cyan-400 focus:ring-2 focus:ring-cyan-400/35 focus:ring-offset-0"
+              />
+              <span>Include provider replies in request context</span>
             </label>
             <button
               type="submit"

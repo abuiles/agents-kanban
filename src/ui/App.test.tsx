@@ -202,6 +202,10 @@ describe('App', () => {
 
     await screen.findByRole('heading', { name: 'Fix settings navigation overflow' });
     await user.click(await screen.findByRole('button', { name: 'Request changes' }));
+    await user.selectOptions(screen.getByLabelText(/Review scope/i), 'include');
+    await user.type(screen.getByLabelText(/Finding IDs/i), 'finding_1, finding_2');
+    await user.type(screen.getByLabelText(/Rerun intent/i), 'Prioritize spacing and alignment issues.');
+    await user.click(screen.getByRole('checkbox', { name: /include provider replies/i }));
     await user.type(
       await screen.findByPlaceholderText('Describe the changes you want on the current PR.'),
       'Tighten the spacing and update the review copy.'
@@ -217,7 +221,10 @@ describe('App', () => {
       expect(latestRun.baseRunId).toBe('run_nav_1');
       expect(latestRun.branchName).toBe('agent/task_nav/run_nav_1');
       expect(latestRun.changeRequest?.prompt).toContain('Tighten the spacing');
+      expect(latestRun.changeRequest?.selection?.mode).toBe('include');
+      expect(latestRun.changeRequest?.selection?.selectedFindingIds).toEqual(['finding_1', 'finding_2']);
       expect(latestRun.prUrl).toBe(previousRun?.prUrl);
+      expect(latestRun.changeRequest?.selection?.includeReplies).toBe(true);
     });
 
     expect(await screen.findByText('Started a review rerun on the existing PR branch.')).toBeInTheDocument();

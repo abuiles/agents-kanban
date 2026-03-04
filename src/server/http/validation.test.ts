@@ -542,6 +542,34 @@ describe('request run validation', () => {
       includeReplies: true
     });
   });
+
+  it('accepts freeform and exclude selection payloads', () => {
+    const exclude = parseRequestRunChangesInput({
+      prompt: 'Adjust only the highest priority finding.',
+      reviewSelection: {
+        mode: 'exclude',
+        findingIds: ['f2'],
+        includeReplies: false
+      }
+    });
+    expect(exclude.reviewSelection).toMatchObject({
+      mode: 'exclude',
+      findingIds: ['f2'],
+      includeReplies: false
+    });
+
+    const freeform = parseRequestRunChangesInput({
+      prompt: 'Please ignore non-blockers and focus on accessibility.',
+      reviewSelection: {
+        mode: 'freeform',
+        instruction: 'Address accessibility blockers first.'
+      }
+    });
+    expect(freeform.reviewSelection).toEqual({
+      mode: 'freeform',
+      instruction: 'Address accessibility blockers first.'
+    });
+  });
 });
 
 describe('SCM credential validation', () => {
