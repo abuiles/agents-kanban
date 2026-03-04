@@ -692,12 +692,63 @@ async function executeRunReview(
     const reviewSandbox = getSandbox(env.Sandbox, buildSandboxId(runId, 'review'));
     const llmContext = { env, sandbox: reviewSandbox, repoBoard, runId };
 
-    await emitCommandLifecycle(repoBoard, runId, 'pr', 'mkdir -p /workspace/repo', () => reviewSandbox.exec('mkdir -p /workspace/repo'));
     await configureSandboxRuntimeSecrets(reviewSandbox, env);
-    await reviewSandbox.gitCheckout(scmAdapter.buildCloneUrl(repo, scmCredential), {
-      branch: repo.defaultBranch,
-      targetDir: '/workspace/repo'
-    });
+    const repoState = await emitCommandLifecycle(
+      repoBoard,
+      runId,
+      'pr',
+      `bash -lc ${shellQuote(`if [ -d /workspace/repo/.git ]; then
+  echo existing_git
+elif [ -d /workspace/repo ]; then
+  echo existing_non_git
+else
+  echo missing
+fi`)}`,
+      () => reviewSandbox.exec(
+        `bash -lc ${shellQuote(`if [ -d /workspace/repo/.git ]; then
+  echo existing_git
+elif [ -d /workspace/repo ]; then
+  echo existing_non_git
+else
+  echo missing
+fi`)}`
+      )
+    );
+    if (!repoState.success) {
+      throw new Error(repoState.stderr || 'Failed to inspect review workspace before checkout.');
+    }
+    const workspaceState = (repoState.stdout ?? '').trim();
+
+    if (workspaceState === 'existing_git') {
+      const resetWorkspace = await emitCommandLifecycle(
+        repoBoard,
+        runId,
+        'pr',
+        'cd /workspace/repo && git reset --hard && git clean -fdx',
+        () => reviewSandbox.exec('cd /workspace/repo && git reset --hard && git clean -fdx')
+      );
+      if (!resetWorkspace.success) {
+        throw new Error(resetWorkspace.stderr || 'Failed to reset existing review workspace.');
+      }
+    } else {
+      if (workspaceState === 'existing_non_git') {
+        const cleanupWorkspace = await emitCommandLifecycle(
+          repoBoard,
+          runId,
+          'pr',
+          'rm -rf /workspace/repo',
+          () => reviewSandbox.exec('rm -rf /workspace/repo')
+        );
+        if (!cleanupWorkspace.success) {
+          throw new Error(cleanupWorkspace.stderr || 'Failed to clean stale review workspace.');
+        }
+      }
+
+      await reviewSandbox.gitCheckout(scmAdapter.buildCloneUrl(repo, scmCredential), {
+        branch: repo.defaultBranch,
+        targetDir: '/workspace/repo'
+      });
+    }
     const checkout = await emitCommandLifecycle(
       repoBoard,
       runId,
