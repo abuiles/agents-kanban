@@ -9,12 +9,12 @@ import type {
   UpsertScmCredentialInput
 } from '../../ui/domain/api';
 import { badRequest } from './errors';
-import { SCM_PROVIDERS } from '../../shared/scm';
+import { SCM_PROVIDERS, getAutoReviewProviderDefaultForScm } from '../../shared/scm';
 
 const CODEX_MODELS = new Set(['gpt-5.1-codex-mini', 'gpt-5.3-codex', 'gpt-5.3-codex-spark'] as const);
 const CODEX_REASONING_EFFORTS = new Set(['low', 'medium', 'high'] as const);
 const LLM_ADAPTERS = new Set(['codex', 'cursor_cli'] as const);
-const AUTO_REVIEW_PROVIDERS = new Set(['gitlab', 'jira'] as const);
+const AUTO_REVIEW_PROVIDERS = new Set(['github', 'gitlab', 'jira'] as const);
 const AUTO_REVIEW_MODES = new Set(['inherit', 'on', 'off'] as const);
 const AUTO_REVIEW_SELECTION_MODES = new Set(['all', 'include', 'exclude', 'freeform'] as const);
 const RETRY_RECOVERY_MODES = new Set(['latest_checkpoint', 'fresh'] as const);
@@ -625,10 +625,18 @@ export function parseCreateRepoInput(body: unknown): CreateRepoInput {
     throw badRequest('Invalid repo payload: slug and projectPath must match when both are provided.');
   }
 
+  const scmProvider = readEnumValue(body.scmProvider, 'scmProvider', SCM_PROVIDERS, false);
+  const autoReviewConfig = hasOwn(body, 'autoReview')
+    ? readAutoReviewConfig(body.autoReview, 'autoReview')
+    : undefined;
+  const autoReviewEnabled = autoReviewConfig?.enabled ?? false;
+  const autoReviewProvider = autoReviewConfig?.provider
+    ?? (autoReviewEnabled ? getAutoReviewProviderDefaultForScm(scmProvider) : 'gitlab');
+
   return normalizeRepoPreviewFields({
     tenantId: readTrimmedString(body.tenantId, 'tenantId', false),
     slug: slug ?? projectPath,
-    scmProvider: readEnumValue(body.scmProvider, 'scmProvider', SCM_PROVIDERS, false),
+    scmProvider,
     scmBaseUrl: readTrimmedString(body.scmBaseUrl, 'scmBaseUrl', false),
     projectPath: projectPath ?? slug,
     llmAdapter: readEnumValue(body.llmAdapter, 'llmAdapter', LLM_ADAPTERS, false),
@@ -637,14 +645,12 @@ export function parseCreateRepoInput(body: unknown): CreateRepoInput {
       ?? readTrimmedString(body.codexAuthBundleR2Key, 'codexAuthBundleR2Key', false),
     defaultBranch: readTrimmedString(body.defaultBranch, 'defaultBranch', false),
     baselineUrl: readTrimmedString(body.baselineUrl, 'baselineUrl')!,
-    autoReview: hasOwn(body, 'autoReview')
-      ? {
-          enabled: false,
-          provider: 'gitlab',
-          postInline: false,
-          ...readAutoReviewConfig(body.autoReview, 'autoReview')
-        }
-      : { enabled: false, provider: 'gitlab', postInline: false },
+    autoReview: {
+      enabled: autoReviewEnabled,
+      provider: autoReviewProvider,
+      postInline: autoReviewConfig?.postInline ?? false,
+      ...(autoReviewConfig?.prompt ? { prompt: autoReviewConfig.prompt } : {})
+    },
     sentinelConfig: hasOwn(body, 'sentinelConfig')
       ? readSentinelConfig(body.sentinelConfig, 'sentinelConfig')
       : {},
@@ -715,6 +721,9 @@ export function parseUpdateRepoInput(body: unknown): UpdateRepoInput {
   }
   if (hasOwn(body, 'llmAuthBundleR2Key') && !hasOwn(body, 'codexAuthBundleR2Key')) patch.codexAuthBundleR2Key = patch.llmAuthBundleR2Key;
   if (hasOwn(body, 'codexAuthBundleR2Key') && !hasOwn(body, 'llmAuthBundleR2Key')) patch.llmAuthBundleR2Key = patch.codexAuthBundleR2Key;
+  if (patch.autoReview?.enabled && !patch.autoReview.provider && patch.scmProvider) {
+    patch.autoReview.provider = getAutoReviewProviderDefaultForScm(patch.scmProvider);
+  }
   return patch;
 }
 

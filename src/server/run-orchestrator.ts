@@ -747,9 +747,14 @@ async function executeRunReview(
     let summaryThreadId: string | undefined;
     let summaryThreadUrl: string | undefined;
     const reviewCredential = getReviewPostingCredential(env, autoReview.provider);
+    const reviewTokenNameByProvider: Record<AutoReviewProvider, string> = {
+      github: 'GITHUB_TOKEN',
+      gitlab: 'GITLAB_TOKEN',
+      jira: 'JIRA_TOKEN'
+    };
 
     if (!reviewCredential) {
-      postErrors = [`Missing ${autoReview.provider === 'gitlab' ? 'GITLAB_TOKEN' : 'JIRA_TOKEN'} for review posting provider ${autoReview.provider}.`];
+      postErrors = [`Missing ${reviewTokenNameByProvider[autoReview.provider]} for review posting provider ${autoReview.provider}.`];
     } else {
       try {
         const postingAdapter = getReviewPostingAdapter(autoReview.provider);
@@ -1494,6 +1499,9 @@ async function getScmCredential(
 }
 
 function getReviewPostingCredential(env: Stage3Env, provider: AutoReviewProvider) {
+  if (provider === 'github') {
+    return env.GITHUB_TOKEN?.trim() ? { token: env.GITHUB_TOKEN.trim() } : undefined;
+  }
   if (provider === 'gitlab') {
     return env.GITLAB_TOKEN?.trim() ? { token: env.GITLAB_TOKEN.trim() } : undefined;
   }
