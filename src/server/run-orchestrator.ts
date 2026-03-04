@@ -747,14 +747,9 @@ async function executeRunReview(
     let summaryThreadId: string | undefined;
     let summaryThreadUrl: string | undefined;
     const reviewCredential = getReviewPostingCredential(env, autoReview.provider);
-    const reviewTokenNameByProvider: Record<AutoReviewProvider, string> = {
-      github: 'GITHUB_TOKEN',
-      gitlab: 'GITLAB_TOKEN',
-      jira: 'JIRA_TOKEN'
-    };
 
     if (!reviewCredential) {
-      postErrors = [`Missing ${reviewTokenNameByProvider[autoReview.provider]} for review posting provider ${autoReview.provider}.`];
+      postErrors = [buildMissingReviewPostingCredentialError(autoReview.provider)];
     } else {
       try {
         const postingAdapter = getReviewPostingAdapter(autoReview.provider);
@@ -776,6 +771,30 @@ async function executeRunReview(
         postErrors = [error instanceof Error ? error.message : String(error)];
       }
     }
+    const sanitizedPostErrors = postErrors.map((error) => redactSensitiveText(error));
+    const reviewPostStatus = sanitizedPostErrors.length ? 'failed' : 'completed';
+    const postingOutcomeNote = sanitizedPostErrors.length
+      ? `Review completed (round ${round}; ${findings.length} findings, ${postedCount} posted). Posting via ${autoReview.provider} failed: ${sanitizedPostErrors[0]}`
+      : `Review completed (round ${round}; ${findings.length} findings, ${postedCount} posted). Posting via ${autoReview.provider} succeeded.`;
+
+    await repoBoard.appendRunLogs(runId, [
+      buildRunLog(
+        runId,
+        sanitizedPostErrors.length
+          ? `Review posting via ${autoReview.provider} failed with ${sanitizedPostErrors.length} error(s): ${sanitizedPostErrors[0]}`
+          : `Review posting via ${autoReview.provider} completed (${postedCount}/${findings.length} findings posted).`,
+        'pr',
+        sanitizedPostErrors.length ? 'error' : 'info',
+        {
+          reviewProvider: autoReview.provider,
+          reviewPostingStatus: reviewPostStatus,
+          postedCount,
+          findingsCount: findings.length,
+          errorCount: sanitizedPostErrors.length,
+          summaryPosted: Boolean(summaryPosted)
+        }
+      )
+    ]);
 
     const pointers = buildReviewArtifactPointers({ tenantId: run.tenantId, runId });
     const findingsJson = buildReviewFindingsJsonArtifact(findings);
@@ -807,12 +826,12 @@ async function executeRunReview(
       reviewPostState: {
         provider: autoReview.provider,
         round,
-        status: postErrors.length ? 'failed' : 'completed',
+        status: reviewPostStatus,
         startedAt: postingStartedAt,
         endedAt,
         postedCount,
         findingsCount: findings.length,
-        errors: postErrors,
+        errors: sanitizedPostErrors,
         summaryPosted,
         summaryThreadId,
         summaryThreadUrl
@@ -821,11 +840,9 @@ async function executeRunReview(
         ? attachReviewArtifactsToManifest(latestRun.artifactManifest, { tenantId: run.tenantId, runId })
         : undefined,
       artifacts: [...new Set([...(latestRun.artifacts ?? []), reviewArtifacts.findingsJsonKey, reviewArtifacts.reviewMarkdownKey])],
-      appendTimelineNote: `Review completed (round ${round}; ${findings.length} findings, ${postedCount} posted).`
+      appendTimelineNote: postingOutcomeNote
     });
-    await repoBoard.appendRunLogs(runId, [
-      buildRunLog(runId, `Review round ${round} completed with ${findings.length} findings (${postedCount} posted).`, 'pr')
-    ]);
+    await repoBoard.appendRunLogs(runId, [buildRunLog(runId, `Review round ${round} completed with ${findings.length} findings (${postedCount} posted).`, 'pr')]);
   } catch (error) {
     const endedAt = new Date().toISOString();
     const message = redactSensitiveText(error instanceof Error ? error.message : String(error));
@@ -1506,6 +1523,16 @@ function getReviewPostingCredential(env: Stage3Env, provider: AutoReviewProvider
     return env.GITLAB_TOKEN?.trim() ? { token: env.GITLAB_TOKEN.trim() } : undefined;
   }
   return env.JIRA_TOKEN?.trim() ? { token: env.JIRA_TOKEN.trim() } : undefined;
+}
+
+function buildMissingReviewPostingCredentialError(provider: AutoReviewProvider) {
+  const tokenNameByProvider: Record<AutoReviewProvider, string> = {
+    github: 'GITHUB_TOKEN',
+    gitlab: 'GITLAB_TOKEN',
+    jira: 'JIRA_TOKEN'
+  };
+  const tokenName = tokenNameByProvider[provider];
+  return `Missing ${tokenName}: set this secret to enable ${provider} auto-review posting.`;
 }
 
 async function configureSandboxRuntimeSecrets(
