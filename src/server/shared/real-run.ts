@@ -33,6 +33,7 @@ export type RunTransitionPatch = {
   workflowInstanceId?: string;
   orchestrationMode?: AgentRun['orchestrationMode'];
   sandboxId?: string;
+  reviewSandboxId?: AgentRun['reviewSandboxId'];
   evidenceSandboxId?: string;
   commitSha?: string;
   commitMessage?: string;

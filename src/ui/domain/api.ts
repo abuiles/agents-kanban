@@ -25,6 +25,7 @@ import type {
   TenantMember,
   TenantSeatSummary,
   TerminalBootstrap,
+  SandboxRole,
   User
 } from './types';
 
@@ -154,6 +155,10 @@ export type RetryRunInput = {
   checkpointId?: string;
 };
 
+export type TakeOverRunInput = {
+  sandboxRole?: SandboxRole;
+};
+
 export type AuthSession = {
   user: User;
   memberships: TenantMember[];
@@ -258,11 +263,11 @@ export interface AgentBoardApi {
   requestRunChanges(runId: string, input: RequestRunChangesInput): Promise<AgentRun>;
   retryPreview(runId: string): Promise<AgentRun>;
   retryEvidence(runId: string): Promise<AgentRun>;
-  takeOverRun(runId: string): Promise<AgentRun>;
+  takeOverRun(runId: string, input?: TakeOverRunInput): Promise<AgentRun>;
   getRunLogs(runId: string, options?: { tail?: number }): Promise<RunLogEntry[]>;
   getRunEvents(runId: string): Promise<RunEvent[]>;
   getRunCommands(runId: string): Promise<RunCommand[]>;
-  getTerminalBootstrap(runId: string): Promise<TerminalBootstrap>;
+  getTerminalBootstrap(runId: string, sandboxRole?: SandboxRole): Promise<TerminalBootstrap>;
   exportState(): string;
   importState(serialized: string): Promise<void>;
   getSelectedRepoId(): string | 'all';

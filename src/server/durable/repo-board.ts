@@ -4,6 +4,7 @@ import type {
   IntegrationLoopState,
   OperatorSession,
   Repo,
+  SandboxRole,
   RunCheckpoint,
   RunCommand,
   RunError,
@@ -727,13 +728,16 @@ export class RepoBoardDO extends DurableObject<Env> {
   async updateOperatorSession(runId: string, session?: OperatorSession, tenantId?: string) {
     await this.ready;
     const run = await this.getRun(runId, tenantId);
+    const sessionRole: SandboxRole = session?.sandboxRole ?? 'main';
+    const resolvedSandboxId = resolveRunSandboxByRole(run, sessionRole).sandboxId;
     const normalizedSession = normalizeOperatorSession(
       session
         ? {
             ...session,
             tenantId: run.tenantId,
             runId,
-            sandboxId: session.sandboxId || run.sandboxId || ''
+            sandboxRole: sessionRole,
+            sandboxId: session.sandboxId || resolvedSandboxId || run.sandboxId || ''
           }
         : undefined
     );
@@ -756,21 +760,25 @@ export class RepoBoardDO extends DurableObject<Env> {
     return updated;
   }
 
-  async getTerminalBootstrap(runId: string, tenantId?: string): Promise<TerminalBootstrap> {
+  async getTerminalBootstrap(runId: string, tenantId?: string, sandboxRole: SandboxRole = 'main'): Promise<TerminalBootstrap> {
     await this.ready;
     const run = await this.getRun(runId, tenantId);
-    const sessionName = getOperatorSessionName(run);
-    if (!run.sandboxId) {
+    const sessionName = getOperatorSessionName(run, sandboxRole);
+    const resolved = resolveRunSandboxByRole(run, sandboxRole);
+    if (!resolved.sandboxId) {
       return {
         tenantId: run.tenantId,
         runId,
         repoId: run.repoId,
         taskId: run.taskId,
+        sandboxRole,
+        requestedSandboxId: resolved.requestedSandboxId,
+        resolvedSandboxId: resolved.sandboxId,
         sandboxId: '',
         sessionName,
         status: run.status,
         attachable: false,
-        reason: 'sandbox_missing',
+        reason: resolved.reason,
         cols: 120,
         rows: 32,
         llmSupportsResume: run.llmSupportsResume,
@@ -785,7 +793,10 @@ export class RepoBoardDO extends DurableObject<Env> {
         runId,
         repoId: run.repoId,
         taskId: run.taskId,
-        sandboxId: run.sandboxId,
+        sandboxRole,
+        requestedSandboxId: resolved.requestedSandboxId,
+        resolvedSandboxId: resolved.sandboxId,
+        sandboxId: resolved.sandboxId,
         sessionName,
         status: run.status,
         attachable: false,
@@ -804,11 +815,16 @@ export class RepoBoardDO extends DurableObject<Env> {
       runId,
       repoId: run.repoId,
       taskId: run.taskId,
-      sandboxId: run.sandboxId,
+      sandboxRole,
+      requestedSandboxId: resolved.requestedSandboxId,
+      resolvedSandboxId: resolved.sandboxId,
+      sandboxId: resolved.sandboxId,
       sessionName,
       status: run.status,
       attachable: true,
-      wsPath: `/api/runs/${encodeURIComponent(runId)}/ws`,
+      wsPath: sandboxRole === 'main'
+        ? `/api/runs/${encodeURIComponent(runId)}/ws`
+        : `/api/runs/${encodeURIComponent(runId)}/ws?sandboxRole=${encodeURIComponent(sandboxRole)}`,
       cols: 120,
       rows: 32,
       session: run.operatorSession,
@@ -818,20 +834,29 @@ export class RepoBoardDO extends DurableObject<Env> {
     };
   }
 
-  async takeOverRun(runId: string, actor = { actorId: 'same-session', actorLabel: 'Operator' }, tenantId?: string) {
+  async takeOverRun(
+    runId: string,
+    actor = { actorId: 'same-session', actorLabel: 'Operator' },
+    tenantId?: string,
+    sandboxRole: SandboxRole = 'main'
+  ) {
     await this.ready;
     const run = await this.getRun(runId, tenantId);
-    if (!run.sandboxId) {
+    const resolved = resolveRunSandboxByRole(run, sandboxRole);
+    if (!resolved.sandboxId) {
       throw notFound(`Sandbox for run ${runId} not found.`, { runId });
     }
 
     const now = new Date().toISOString();
-    const sessionName = getOperatorSessionName(run);
-    const session = run.operatorSession ?? {
+    const sessionName = getOperatorSessionName(run, sandboxRole);
+    const session = (run.operatorSession && (run.operatorSession.sandboxRole ?? 'main') === sandboxRole)
+      ? run.operatorSession
+      : {
       tenantId: run.tenantId,
       id: `${runId}:${sessionName}`,
       runId,
-      sandboxId: run.sandboxId,
+      sandboxRole,
+      sandboxId: resolved.sandboxId,
       sessionName,
       startedAt: now,
       actorId: actor.actorId,
@@ -844,11 +869,13 @@ export class RepoBoardDO extends DurableObject<Env> {
       llmResumeCommand: run.llmResumeCommand ?? run.latestCodexResumeCommand,
       codexThreadId: undefined,
       codexResumeCommand: run.latestCodexResumeCommand
-    };
+      };
     const nextSession: OperatorSession = normalizeOperatorSession({
       ...session,
       actorId: actor.actorId,
       actorLabel: actor.actorLabel,
+      sandboxRole,
+      sandboxId: resolved.sandboxId,
       takeoverState: run.llmSupportsResume && run.llmResumeCommand ? 'resumable' : 'operator_control',
       connectionState: session.connectionState === 'failed' ? 'failed' : 'open'
     })!;
@@ -1280,12 +1307,41 @@ function isTerminalRunStatus(status: AgentRun['status']) {
   return status === 'DONE' || status === 'FAILED';
 }
 
-function getOperatorSessionName(run: AgentRun) {
-  if (!run.operatorSession?.sessionName || run.operatorSession.sessionName === 'operator') {
-    return `operator-${run.runId}`;
+function getOperatorSessionName(run: AgentRun, sandboxRole: SandboxRole = 'main') {
+  const existingRole: SandboxRole = run.operatorSession?.sandboxRole ?? 'main';
+  if (run.operatorSession?.sessionName && run.operatorSession.sessionName !== 'operator' && existingRole === sandboxRole) {
+    return run.operatorSession.sessionName;
+  }
+  return sandboxRole === 'review' ? `operator-${run.runId}-review` : `operator-${run.runId}`;
+}
+
+function resolveRunSandboxByRole(
+  run: AgentRun,
+  sandboxRole: SandboxRole
+): { sandboxId?: string; requestedSandboxId?: string; reason?: 'sandbox_missing' | 'review_sandbox_not_initialized' } {
+  if (sandboxRole === 'review') {
+    if (!run.reviewSandboxId) {
+      return {
+        requestedSandboxId: run.reviewSandboxId,
+        reason: run.sandboxId ? 'review_sandbox_not_initialized' : 'sandbox_missing'
+      };
+    }
+    return {
+      sandboxId: run.reviewSandboxId,
+      requestedSandboxId: run.reviewSandboxId
+    };
   }
 
-  return run.operatorSession.sessionName;
+  if (!run.sandboxId) {
+    return {
+      requestedSandboxId: run.sandboxId,
+      reason: 'sandbox_missing'
+    };
+  }
+  return {
+    sandboxId: run.sandboxId,
+    requestedSandboxId: run.sandboxId
+  };
 }
 
 function assertTenantMatch(entityTenantId: string | undefined, expectedTenantId: string | undefined, entityLabel: 'Task' | 'Run', entityId: string) {
@@ -1386,7 +1442,8 @@ function normalizeRepoBoardState(state?: Partial<RepoBoardState> | null): RepoBo
           ...run.operatorSession,
           tenantId,
           runId: run.runId,
-          sandboxId: run.operatorSession.sandboxId || run.sandboxId || ''
+          sandboxRole: run.operatorSession.sandboxRole ?? 'main',
+          sandboxId: run.operatorSession.sandboxId || resolveRunSandboxByRole(run, run.operatorSession.sandboxRole ?? 'main').sandboxId || ''
         })
       : undefined;
     return {

@@ -4,6 +4,7 @@ import type {
   RepoSentinelConfigInput,
   RequestRunChangesInput,
   RetryRunInput,
+  TakeOverRunInput,
   UpdateRepoInput,
   UpdateTaskInput,
   UpsertScmCredentialInput
@@ -19,6 +20,7 @@ const AUTO_REVIEW_POSTING_MODES = new Set(['platform', 'agent'] as const);
 const AUTO_REVIEW_MODES = new Set(['inherit', 'on', 'off'] as const);
 const AUTO_REVIEW_SELECTION_MODES = new Set(['all', 'include', 'exclude', 'freeform'] as const);
 const RETRY_RECOVERY_MODES = new Set(['latest_checkpoint', 'fresh'] as const);
+const SANDBOX_ROLES = new Set(['main', 'review'] as const);
 const PREVIEW_ADAPTERS = new Set(['cloudflare_checks', 'prompt_recipe'] as const);
 const SENTINEL_MERGE_METHODS = new Set(['merge', 'squash', 'rebase'] as const);
 const CHECKPOINT_TRIGGER_MODES = new Set(['phase_boundary'] as const);
@@ -845,6 +847,17 @@ export function parseRetryRunInput(body: unknown): RetryRunInput {
     throw badRequest('checkpointId cannot be provided when recoveryMode is fresh.');
   }
   return retryInput;
+}
+
+export function parseTakeOverRunInput(body: unknown): TakeOverRunInput {
+  if (!isRecord(body)) {
+    throw badRequest('Invalid takeover payload.');
+  }
+
+  const sandboxRole = hasOwn(body, 'sandboxRole')
+    ? readEnumValue(body.sandboxRole, 'sandboxRole', SANDBOX_ROLES, false)
+    : undefined;
+  return sandboxRole ? { sandboxRole } : {};
 }
 
 export function parseUpdateRepoSentinelConfigInput(body: unknown): RepoSentinelConfigInput {

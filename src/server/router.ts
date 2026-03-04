@@ -20,6 +20,7 @@ import {
   parsePlatformAuthLoginInput,
   parsePlatformSupportAssumeTenantInput,
   parseRetryRunInput,
+  parseTakeOverRunInput,
   parseSetActiveTenantInput,
   parseRequestRunChangesInput,
   parseUpdateRepoSentinelConfigInput,
@@ -47,7 +48,7 @@ import {
 import { handleGitlabWebhook as handleGitlabWebhookHandler } from './integrations/gitlab/handlers';
 import { handleGithubWebhook as handleGithubWebhookHandler } from './integrations/github/handlers';
 import { listGithubReplyContextHints } from './integrations/github/reply-context-store';
-import type { AutoReviewProvider, Repo, SentinelRun } from '../ui/domain/types';
+import type { AutoReviewProvider, Repo, SandboxRole, SentinelRun } from '../ui/domain/types';
 import { getScmAdapter } from './scm/registry';
 import { getReviewPostingAdapter } from './review-posting/registry';
 import type { ReviewReplyContext } from './review-posting/adapter';
@@ -1273,12 +1274,14 @@ export async function handleGetRunCommands(request: Request, env: Env, params: R
 
 export async function handleGetRunTerminal(request: Request, env: Env, params: RouteParams): Promise<Response> {
   return withApiError(async () => {
+    const url = new URL(request.url);
+    const sandboxRole = parseSandboxRoleQuery(url.searchParams.get('sandboxRole'));
     const board = getBoard(env);
     const requestContext = await resolveRequestTenantContext(env, board, request, { requireSession: true });
     const runId = parsePathParam(params.runId);
     const repoId = await resolveRepoIdForRun(board, runId);
     await assertRepoAccess(env, board, requestContext, repoId);
-    const bootstrap = await env.REPO_BOARD.getByName(repoId).getTerminalBootstrap(runId, requestContext.activeTenantId);
+    const bootstrap = await env.REPO_BOARD.getByName(repoId).getTerminalBootstrap(runId, requestContext.activeTenantId, sandboxRole);
     if (!bootstrap.attachable) {
       return json(bootstrap, { status: 409 });
     }
@@ -1288,12 +1291,14 @@ export async function handleGetRunTerminal(request: Request, env: Env, params: R
 
 export async function handleGetRunWs(request: Request, env: Env, params: RouteParams): Promise<Response> {
   return withApiError(async () => {
+    const url = new URL(request.url);
+    const sandboxRole = parseSandboxRoleQuery(url.searchParams.get('sandboxRole'));
     const board = getBoard(env);
     const requestContext = await resolveRequestTenantContext(env, board, request, { requireSession: true });
     const runId = parsePathParam(params.runId);
     const repoId = await resolveRepoIdForRun(board, runId);
     await assertRepoAccess(env, board, requestContext, repoId);
-    const bootstrap = await env.REPO_BOARD.getByName(repoId).getTerminalBootstrap(runId, requestContext.activeTenantId);
+    const bootstrap = await env.REPO_BOARD.getByName(repoId).getTerminalBootstrap(runId, requestContext.activeTenantId, sandboxRole);
     if (!bootstrap.attachable) {
       return json(bootstrap, { status: 409 });
     }
@@ -1306,6 +1311,7 @@ export async function handleGetRunWs(request: Request, env: Env, params: RoutePa
       tenantId: run.tenantId,
       id: `${runId}:${bootstrap.sessionName}`,
       runId,
+      sandboxRole,
       sandboxId: bootstrap.sandboxId,
       sessionName: bootstrap.sessionName,
       startedAt: run.operatorSession?.startedAt ?? new Date().toISOString(),
@@ -1352,6 +1358,8 @@ export async function handleGetRunArtifacts(request: Request, env: Env, params: 
 
 export async function handleTakeoverRun(request: Request, env: Env, params: RouteParams): Promise<Response> {
   return withApiError(async () => {
+    const input = parseTakeOverRunInput(await readOptionalJson(request));
+    const sandboxRole = input.sandboxRole ?? 'main';
     const board = getBoard(env);
     const requestContext = await resolveRequestTenantContext(env, board, request, { requireSession: true });
     const runId = parsePathParam(params.runId);
@@ -1359,8 +1367,9 @@ export async function handleTakeoverRun(request: Request, env: Env, params: Rout
     await assertRepoAccess(env, board, requestContext, repoId);
     const repoBoard = env.REPO_BOARD.getByName(repoId);
     const run = await repoBoard.getRun(runId, requestContext.activeTenantId);
-    if (run.sandboxId && run.codexProcessId) {
-      const sandbox = getSandbox(env.Sandbox, run.sandboxId);
+    const selectedSandboxId = sandboxRole === 'review' ? run.reviewSandboxId : run.sandboxId;
+    if (selectedSandboxId && run.codexProcessId) {
+      const sandbox = getSandbox(env.Sandbox, selectedSandboxId);
       try {
         await sandbox.killProcess(run.codexProcessId);
         const stopDeadline = Date.now() + 3_000;
@@ -1375,8 +1384,30 @@ export async function handleTakeoverRun(request: Request, env: Env, params: Rout
         console.warn('Failed to kill Codex process during takeover', { runId, processId: run.codexProcessId, error });
       }
     }
-    return json(await repoBoard.takeOverRun(runId, { actorId: 'same-session', actorLabel: 'Operator' }, requestContext.activeTenantId));
+    return json(await repoBoard.takeOverRun(runId, { actorId: 'same-session', actorLabel: 'Operator' }, requestContext.activeTenantId, sandboxRole));
   });
+}
+
+function parseSandboxRoleQuery(value: string | null): SandboxRole {
+  if (!value) {
+    return 'main';
+  }
+  if (value === 'main' || value === 'review') {
+    return value;
+  }
+  throw badRequest('Invalid sandboxRole.');
+}
+
+async function readOptionalJson(request: Request): Promise<unknown> {
+  const raw = await request.text();
+  if (!raw.trim()) {
+    return {};
+  }
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch {
+    throw badRequest('Request body must be valid JSON.');
+  }
 }
 
 export async function handleDebugExport(request: Request, env: Env): Promise<Response> {
