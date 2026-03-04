@@ -1,5 +1,5 @@
 export type IdempotencyPayload = {
-  provider: 'slack' | 'gitlab';
+  provider: 'slack' | 'gitlab' | 'github';
   tenantId: string;
   eventType: string;
   providerEventId: string;

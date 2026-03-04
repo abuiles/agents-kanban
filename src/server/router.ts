@@ -45,6 +45,7 @@ import {
   handleSlackInteractions as handleSlackInteractionsHandler
 } from './integrations/slack/handlers';
 import { handleGitlabWebhook as handleGitlabWebhookHandler } from './integrations/gitlab/handlers';
+import { handleGithubWebhook as handleGithubWebhookHandler } from './integrations/github/handlers';
 import type { AutoReviewProvider, Repo, SentinelRun } from '../ui/domain/types';
 import { getScmAdapter } from './scm/registry';
 import { getReviewPostingAdapter } from './review-posting/registry';
@@ -113,6 +114,10 @@ export async function handleSlackInteractions(request: Request, env: Env, ctx: E
 
 export async function handleGitlabWebhook(request: Request, env: Env): Promise<Response> {
   return handleGitlabWebhookHandler(request, env);
+}
+
+export async function handleGithubWebhook(request: Request, env: Env): Promise<Response> {
+  return handleGithubWebhookHandler(request, env);
 }
 
 export async function handleAuthSignup(request: Request, env: Env): Promise<Response> {

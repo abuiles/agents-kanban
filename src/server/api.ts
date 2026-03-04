@@ -57,7 +57,8 @@ import {
   handleSlackCommands,
   handleSlackEvents,
   handleSlackInteractions,
-  handleGitlabWebhook
+  handleGitlabWebhook,
+  handleGithubWebhook
 } from './router';
 import { json } from './http/response';
 
@@ -90,6 +91,9 @@ apiRouter.post('/api/integrations/slack/interactions', (c: Context) =>
 );
 apiRouter.post('/api/integrations/gitlab/webhook', (c: Context) =>
   handleGitlabWebhook(c.req.raw, c.env as Env)
+);
+apiRouter.post('/api/integrations/github/webhook', (c: Context) =>
+  handleGithubWebhook(c.req.raw, c.env as Env)
 );
 apiRouter.get('/api/board/ws', (c: Context) => handleBoardWs(c.req.raw, c.env as Env));
 apiRouter.get('/api/repos', (c: Context) => handleListRepos(c.req.raw, c.env as Env));
