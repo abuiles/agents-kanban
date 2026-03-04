@@ -322,6 +322,41 @@ function readPreviewConfig(value: unknown, field: string, required = true): Crea
   };
 }
 
+function readCommitConfig(value: unknown, field: string, required = true): CreateRepoInput['commitConfig'] | undefined {
+  if (!required && typeof value === 'undefined') {
+    return undefined;
+  }
+  if (!isRecord(value)) {
+    throw badRequest(`Invalid ${field}.`);
+  }
+
+  const messageTemplate = readTrimmedString(value.messageTemplate, `${field}.messageTemplate`, false);
+  const messageRegex = readTrimmedString(value.messageRegex, `${field}.messageRegex`, false);
+  const messageExamples = readStringArray(value.messageExamples, `${field}.messageExamples`, false)
+    ?.map((example) => example.trim())
+    .filter(Boolean);
+
+  if (messageRegex) {
+    try {
+      // Validate config at write time so runs fail less often on invalid settings.
+      // eslint-disable-next-line no-new
+      new RegExp(messageRegex);
+    } catch {
+      throw badRequest(`Invalid ${field}.messageRegex.`);
+    }
+  }
+
+  if (!messageTemplate && !messageRegex && !(messageExamples?.length)) {
+    return undefined;
+  }
+
+  return {
+    ...(messageTemplate ? { messageTemplate } : {}),
+    ...(messageRegex ? { messageRegex } : {}),
+    ...(messageExamples?.length ? { messageExamples } : {})
+  };
+}
+
 function normalizeRepoPreviewFields<T extends {
   previewMode?: CreateRepoInput['previewMode'];
   previewAdapter?: CreateRepoInput['previewAdapter'];
@@ -399,6 +434,7 @@ export function parseCreateRepoInput(body: unknown): CreateRepoInput {
     evidenceMode: readEnumValue(body.evidenceMode, 'evidenceMode', new Set(['auto', 'skip'] as const), false),
     previewAdapter: readEnumValue(body.previewAdapter, 'previewAdapter', PREVIEW_ADAPTERS, false),
     previewConfig: readPreviewConfig(body.previewConfig, 'previewConfig', false),
+    commitConfig: readCommitConfig(body.commitConfig, 'commitConfig', false),
     previewProvider: readEnumValue(body.previewProvider, 'previewProvider', new Set(['cloudflare'] as const), false),
     previewCheckName: readTrimmedString(body.previewCheckName, 'previewCheckName', false),
     codexAuthBundleR2Key:
@@ -433,6 +469,7 @@ export function parseUpdateRepoInput(body: unknown): UpdateRepoInput {
   if (hasOwn(body, 'evidenceMode')) patch.evidenceMode = readEnumValue(body.evidenceMode, 'evidenceMode', new Set(['auto', 'skip'] as const), false);
   if (hasOwn(body, 'previewAdapter')) patch.previewAdapter = readEnumValue(body.previewAdapter, 'previewAdapter', PREVIEW_ADAPTERS, false);
   if (hasOwn(body, 'previewConfig')) patch.previewConfig = readPreviewConfig(body.previewConfig, 'previewConfig', false);
+  if (hasOwn(body, 'commitConfig')) patch.commitConfig = readCommitConfig(body.commitConfig, 'commitConfig', false);
   if (hasOwn(body, 'previewProvider')) patch.previewProvider = readEnumValue(body.previewProvider, 'previewProvider', new Set(['cloudflare'] as const), false);
   if (hasOwn(body, 'previewCheckName')) patch.previewCheckName = readTrimmedString(body.previewCheckName, 'previewCheckName', false);
   if (hasOwn(body, 'codexAuthBundleR2Key')) patch.codexAuthBundleR2Key = readTrimmedString(body.codexAuthBundleR2Key, 'codexAuthBundleR2Key', false);

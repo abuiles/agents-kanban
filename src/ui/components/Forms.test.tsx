@@ -121,6 +121,69 @@ describe('RepoForm', () => {
     }));
   });
 
+  it('submits commit policy settings from the repo form', async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+
+    render(<RepoForm onSubmit={onSubmit} />);
+
+    await user.type(getInputField('Project path')!, 'abuiles/minions');
+    await user.type(getInputField('Baseline URL')!, 'https://repo.example.com');
+    await user.click(getInputField('Commit template')!);
+    await user.paste('feat(cp): {taskTitle} [{taskId}]');
+    await user.click(getInputField('Commit regex')!);
+    await user.paste('^feat\\(cp\\): .+ \\[task_[a-z0-9_]+\\]$');
+    await user.type(getTextareaField('Commit examples')!, 'feat(cp): Add banner\nfix(cp): Improve CTA');
+
+    await user.click(screen.getByRole('button', { name: 'Add repo' }));
+
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
+      commitConfig: {
+        messageTemplate: 'feat(cp): {taskTitle} [{taskId}]',
+        messageRegex: '^feat\\(cp\\): .+ \\[task_[a-z0-9_]+\\]$',
+        messageExamples: [
+          'feat(cp): Add banner',
+          'fix(cp): Improve CTA'
+        ]
+      }
+    }));
+  });
+
+  it('prefills and preserves commit policy settings when editing', async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+
+    render(
+      <RepoForm
+        onSubmit={onSubmit}
+        submitLabel="Save repo"
+        initialValues={{
+          slug: 'abuiles/minions',
+          projectPath: 'abuiles/minions',
+          baselineUrl: 'https://repo.example.com',
+          commitConfig: {
+            messageTemplate: 'feat(cp): {taskTitle}',
+            messageRegex: '^feat\\(cp\\): .+$',
+            messageExamples: ['feat(cp): Existing sample']
+          }
+        }}
+      />
+    );
+
+    expect(getInputField('Commit template')?.value).toBe('feat(cp): {taskTitle}');
+    expect(getInputField('Commit regex')?.value).toBe('^feat\\(cp\\): .+$');
+    expect(getTextareaField('Commit examples')?.value).toContain('feat(cp): Existing sample');
+
+    await user.click(screen.getByRole('button', { name: 'Save repo' }));
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
+      commitConfig: {
+        messageTemplate: 'feat(cp): {taskTitle}',
+        messageRegex: '^feat\\(cp\\): .+$',
+        messageExamples: ['feat(cp): Existing sample']
+      }
+    }));
+  });
+
   it('disables adapter-specific preview config when preview is skipped', async () => {
     const user = userEvent.setup();
     const onSubmit = vi.fn().mockResolvedValue(undefined);

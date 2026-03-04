@@ -271,6 +271,36 @@ describe('repo validation', () => {
     });
   });
 
+  it('parses commit policy config for repo settings', () => {
+    const parsed = parseCreateRepoInput({
+      slug: 'abuiles/minions',
+      baselineUrl: 'https://example.com',
+      commitConfig: {
+        messageTemplate: 'feat(cp): {taskTitle} [{taskId}]',
+        messageRegex: '^feat\\(cp\\): .+ \\[task_[a-z0-9_]+\\]$',
+        messageExamples: ['feat(cp): Add banner support [task_abc123]']
+      }
+    });
+
+    expect(parsed.commitConfig).toEqual({
+      messageTemplate: 'feat(cp): {taskTitle} [{taskId}]',
+      messageRegex: '^feat\\(cp\\): .+ \\[task_[a-z0-9_]+\\]$',
+      messageExamples: ['feat(cp): Add banner support [task_abc123]']
+    });
+  });
+
+  it('rejects invalid commit policy regex values', () => {
+    expect(() =>
+      parseCreateRepoInput({
+        slug: 'abuiles/minions',
+        baselineUrl: 'https://example.com',
+        commitConfig: {
+          messageRegex: '[unclosed'
+        }
+      })
+    ).toThrow('Invalid commitConfig.messageRegex.');
+  });
+
   it('accepts legacy GitHub slug-only payloads', () => {
     const parsed = parseCreateRepoInput({
       slug: 'abuiles/minions',

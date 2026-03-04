@@ -33,6 +33,10 @@ type Stage3Env = Env & {
 type SleepFn = (name: string, duration: number | `${number} ${string}`) => Promise<void>;
 type RunPhase = NonNullable<ReturnType<typeof buildRunLog>['phase']>;
 type SandboxRole = 'main' | 'preview' | 'evidence';
+type PushRemediationResult = {
+  branchName?: string;
+  diagnostics: string;
+};
 
 export async function scheduleRunJob(env: Env, ctx: ExecutionContext, params: RunJobParams) {
   const stage3Env = env as Stage3Env;
@@ -264,18 +268,101 @@ export async function executeRunJob(env: Env, params: RunJobParams, sleepFn: Sle
       }
 
       let commitMessage: string;
+      let effectiveBranchName = run.branchName;
+      const pushToBranch = async (branchName: string) =>
+        emitCommandLifecycle(repoBoard, params.runId, 'push', `cd /workspace/repo && git push origin HEAD:${shellEscape(branchName)}`, () =>
+          sandbox.exec(`cd /workspace/repo && git push origin HEAD:${shellEscape(branchName)}`)
+        );
+      const pushWithAdaptiveRecovery = async () => {
+        const initialPush = await pushToBranch(run.branchName);
+        if (initialPush.success) {
+          return run.branchName;
+        }
+
+        const initialError = formatPushFailureOutput(initialPush.stderr, initialPush.stdout, 'Push failed.');
+        if (!isBranchPolicyPushFailure(initialError)) {
+          throw new Error(initialError);
+        }
+
+        if (run.changeRequest?.prompt && getRunReviewUrl(run)) {
+          throw new Error(
+            [
+              `Push rejected by branch policy for existing review branch ${run.branchName}.`,
+              'Branch rename remediation is disabled for change requests that must update an existing review.',
+              `Remote error: ${initialError}`
+            ].join(' ')
+          );
+        }
+
+        await repoBoard.appendRunLogs(params.runId, [
+          buildRunLog(
+            params.runId,
+            'Initial push was rejected by remote branch policy. Attempting one LLM-guided branch-name remediation pass.',
+            'push'
+          )
+        ]);
+
+        const remediation = await proposePushBranchRemediation({
+          llmAdapter,
+          llmContext,
+          repo,
+          task: detail.task,
+          run,
+          cwd: '/workspace/repo',
+          model: llmModel,
+          reasoningEffort: llmReasoningEffort,
+          initialBranchName: run.branchName,
+          initialError
+        });
+        if (!remediation.branchName) {
+          throw new Error(`Push remediation failed to produce a valid branch candidate. ${remediation.diagnostics}`);
+        }
+
+        await repoBoard.appendRunLogs(params.runId, [
+          buildRunLog(params.runId, `LLM remediation proposed push branch ${remediation.branchName}.`, 'push')
+        ]);
+
+        const remediationPush = await pushToBranch(remediation.branchName);
+        if (!remediationPush.success) {
+          const remediationError = formatPushFailureOutput(remediationPush.stderr, remediationPush.stdout, 'Push failed.');
+          throw new Error(
+            [
+              'Push remediation attempt failed.',
+              `Original push error: ${initialError}`,
+              `Remediation diagnostics: ${remediation.diagnostics}`,
+              `Remediation push error: ${remediationError}`
+            ].join(' ')
+          );
+        }
+
+        await repoBoard.appendRunLogs(params.runId, [
+          buildRunLog(params.runId, `Push remediation succeeded; adopting branch ${remediation.branchName}.`, 'push')
+        ]);
+        return remediation.branchName;
+      };
+
       if (hasWorkingTreeChanges) {
-        commitMessage = `AgentsKanban: ${detail.task.title}`;
+        commitMessage = await resolveCommitMessageForRun({
+          llmAdapter,
+          llmContext,
+          repo,
+          task: detail.task,
+          run,
+          model: llmModel,
+          reasoningEffort: llmReasoningEffort,
+          candidate: buildDefaultCommitMessage(detail.task, run, repo)
+        });
         const commitResult = await emitCommandLifecycle(
           repoBoard,
           params.runId,
           'push',
-          `cd /workspace/repo && git add -A && git commit -m ${shellQuote(commitMessage)} && git push origin HEAD:${shellEscape(run.branchName)}`,
-          () => sandbox.exec(`cd /workspace/repo && git add -A && git commit -m ${shellQuote(commitMessage)} && git push origin HEAD:${shellEscape(run.branchName)}`)
+          `cd /workspace/repo && git add -A && git commit -m ${shellQuote(commitMessage)}`,
+          () => sandbox.exec(`cd /workspace/repo && git add -A && git commit -m ${shellQuote(commitMessage)}`)
         );
         if (!commitResult.success) {
-          throw new Error(commitResult.stderr || 'Commit and push failed.');
+          throw new Error(formatPushFailureOutput(commitResult.stderr, commitResult.stdout, 'Commit failed.'));
         }
+        effectiveBranchName = await pushWithAdaptiveRecovery();
       } else {
         const commitMessageResult = await emitCommandLifecycle(repoBoard, params.runId, 'push', 'cd /workspace/repo && git log -1 --pretty=%s', () =>
           sandbox.exec('cd /workspace/repo && git log -1 --pretty=%s')
@@ -283,16 +370,36 @@ export async function executeRunJob(env: Env, params: RunJobParams, sleepFn: Sle
         if (!commitMessageResult.success) {
           throw new Error(commitMessageResult.stderr || 'Failed to read the existing commit message.');
         }
-        commitMessage = commitMessageResult.stdout.trim() || `AgentsKanban: ${detail.task.title}`;
+        const existingCommitMessage = commitMessageResult.stdout.trim() || buildDefaultCommitMessage(detail.task, run, repo);
+        commitMessage = await resolveCommitMessageForRun({
+          llmAdapter,
+          llmContext,
+          repo,
+          task: detail.task,
+          run,
+          model: llmModel,
+          reasoningEffort: llmReasoningEffort,
+          candidate: existingCommitMessage
+        });
+        if (commitMessage !== existingCommitMessage) {
+          const amendResult = await emitCommandLifecycle(
+            repoBoard,
+            params.runId,
+            'push',
+            `cd /workspace/repo && git commit --amend -m ${shellQuote(commitMessage)}`,
+            () => sandbox.exec(`cd /workspace/repo && git commit --amend -m ${shellQuote(commitMessage)}`)
+          );
+          if (!amendResult.success) {
+            throw new Error(formatPushFailureOutput(amendResult.stderr, amendResult.stdout, 'Failed to amend commit message.'));
+          }
+          await repoBoard.appendRunLogs(params.runId, [
+            buildRunLog(params.runId, 'Amended existing local commit message to satisfy repo commit policy.', 'push')
+          ]);
+        }
         await repoBoard.appendRunLogs(params.runId, [
           buildRunLog(params.runId, `Detected an existing local commit from ${llmExecutorLabel}; pushing it without creating another commit.`, 'push')
         ]);
-        const pushResult = await emitCommandLifecycle(repoBoard, params.runId, 'push', `cd /workspace/repo && git push origin HEAD:${shellEscape(run.branchName)}`, () =>
-          sandbox.exec(`cd /workspace/repo && git push origin HEAD:${shellEscape(run.branchName)}`)
-        );
-        if (!pushResult.success) {
-          throw new Error(pushResult.stderr || 'Push failed.');
-        }
+        effectiveBranchName = await pushWithAdaptiveRecovery();
       }
 
       const shaResult = await emitCommandLifecycle(repoBoard, params.runId, 'push', 'cd /workspace/repo && git rev-parse HEAD', () =>
@@ -304,6 +411,7 @@ export async function executeRunJob(env: Env, params: RunJobParams, sleepFn: Sle
       await repoBoard.transitionRun(params.runId, {
         commitSha: shaResult.stdout.trim(),
         commitMessage,
+        branchName: effectiveBranchName,
         headSha: shaResult.stdout.trim(),
         executionSummary: { codexOutcome: 'changes' }
       });
@@ -756,6 +864,293 @@ async function failRun(repoBoard: DurableObjectStub<RepoBoardDO>, runId: string,
     retryable,
     phase
   });
+}
+
+function buildDefaultCommitMessage(task: Task, run: Awaited<ReturnType<RepoBoardDO['getRun']>>, repo: Repo) {
+  const template = repo.commitConfig?.messageTemplate;
+  if (!template?.trim()) {
+    return `AgentsKanban: ${task.title}`;
+  }
+
+  const values: Record<string, string> = {
+    taskTitle: task.title,
+    taskId: task.taskId,
+    runId: run.runId,
+    repoSlug: repo.slug,
+    defaultMessage: `AgentsKanban: ${task.title}`
+  };
+  const rendered = template.replace(/\{([a-zA-Z0-9_]+)\}/g, (_match, key: string) => values[key] ?? '');
+  return sanitizeCommitMessage(rendered) ?? `AgentsKanban: ${task.title}`;
+}
+
+function sanitizeCommitMessage(value: string | undefined) {
+  if (!value) {
+    return undefined;
+  }
+  const normalized = value
+    .replace(/\r?\n+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return normalized || undefined;
+}
+
+function getCommitPolicyRegex(repo: Repo) {
+  const pattern = repo.commitConfig?.messageRegex?.trim();
+  if (!pattern) {
+    return undefined;
+  }
+  try {
+    return new RegExp(pattern);
+  } catch {
+    throw new Error(`Invalid repo commit regex: ${pattern}`);
+  }
+}
+
+async function resolveCommitMessageForRun(input: {
+  llmAdapter: ReturnType<typeof getLlmAdapter>;
+  llmContext: { env: Env; sandbox: ReturnType<typeof getSandbox>; repoBoard: DurableObjectStub<RepoBoardDO>; runId: string };
+  repo: Repo;
+  task: Task;
+  run: Awaited<ReturnType<RepoBoardDO['getRun']>>;
+  model: string;
+  reasoningEffort: LlmReasoningEffort;
+  candidate: string;
+}): Promise<string> {
+  const commitRegex = getCommitPolicyRegex(input.repo);
+  const initial = sanitizeCommitMessage(input.candidate);
+  if (!initial) {
+    throw new Error('Resolved commit message is empty after normalization.');
+  }
+  if (!commitRegex) {
+    return initial;
+  }
+  if (commitRegex.test(initial)) {
+    return initial;
+  }
+
+  const remediationPrompt = [
+    'Rewrite the git commit message to satisfy repository policy.',
+    '',
+    `Repository: ${input.repo.slug}`,
+    `Task: ${input.task.title}`,
+    `Current commit message: ${initial}`,
+    `Required regex: ${input.repo.commitConfig?.messageRegex}`,
+    input.repo.commitConfig?.messageTemplate ? `Configured template: ${input.repo.commitConfig.messageTemplate}` : undefined,
+    input.repo.commitConfig?.messageExamples?.length
+      ? ['Examples:', ...input.repo.commitConfig.messageExamples.map((example) => `- ${example}`)].join('\n')
+      : undefined,
+    '',
+    'Return JSON only:',
+    '{ "commitMessage": "string", "reason": "string (optional)" }'
+  ].filter(Boolean).join('\n');
+  const remediation = await input.llmAdapter.runPrompt(input.llmContext, {
+    repo: input.repo,
+    task: input.task,
+    run: input.run,
+    cwd: '/workspace/repo',
+    prompt: remediationPrompt,
+    model: input.model,
+    reasoningEffort: input.reasoningEffort,
+    timeoutMs: 90_000,
+    phase: 'push',
+    outputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['commitMessage'],
+      properties: {
+        commitMessage: { type: 'string', minLength: 1 },
+        reason: { type: 'string' }
+      }
+    }
+  });
+
+  if (remediation.status !== 'success') {
+    throw new Error(
+      remediation.status === 'timed_out'
+        ? `Commit message remediation timed out after ${remediation.timeoutMs}ms.`
+        : `Commit message remediation failed: ${remediation.message}`
+    );
+  }
+  const remediated = sanitizeCommitMessage(extractStringFieldFromJsonOutput(remediation.rawOutput, 'commitMessage'));
+  if (!remediated) {
+    throw new Error('Commit message remediation returned an empty commitMessage value.');
+  }
+  if (!commitRegex.test(remediated)) {
+    throw new Error(
+      `Commit message remediation returned a non-compliant message. Regex: ${input.repo.commitConfig?.messageRegex}. Message: ${remediated}`
+    );
+  }
+
+  return remediated;
+}
+
+function extractStringFieldFromJsonOutput(rawOutput: string | undefined, field: string) {
+  const trimmed = rawOutput?.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+
+  try {
+    const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+    const value = parsed[field];
+    return typeof value === 'string' ? value : undefined;
+  } catch {
+    const escapedField = field.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const match = trimmed.match(new RegExp(`"${escapedField}"\\s*:\\s*"([^"]+)"`));
+    return match?.[1];
+  }
+}
+
+async function proposePushBranchRemediation(input: {
+  llmAdapter: ReturnType<typeof getLlmAdapter>;
+  llmContext: { env: Env; sandbox: ReturnType<typeof getSandbox>; repoBoard: DurableObjectStub<RepoBoardDO>; runId: string };
+  repo: Repo;
+  task: Task;
+  run: Awaited<ReturnType<RepoBoardDO['getRun']>>;
+  cwd: string;
+  model: string;
+  reasoningEffort: LlmReasoningEffort;
+  initialBranchName: string;
+  initialError: string;
+}): Promise<PushRemediationResult> {
+  const prompt = [
+    'A git push command failed because the remote rejected the branch name.',
+    '',
+    `Repository: ${input.repo.slug}`,
+    `Task: ${input.task.title}`,
+    `Current branch: ${input.initialBranchName}`,
+    `Push error: ${input.initialError}`,
+    '',
+    'Return a JSON object with a single compliant replacement branch name.',
+    'Rules:',
+    '- Use short lowercase segments separated by `/`, `-`, or `_`.',
+    '- Preserve agent context with an `agent/` prefix.',
+    '- Keep total length short for strict org rules.',
+    '- Include a short stable uniqueness suffix to avoid collisions.',
+    '- Do not include any extra explanation outside JSON.',
+    '',
+    'JSON schema:',
+    '{ "branchName": "string", "reason": "string (optional)" }'
+  ].join('\n');
+
+  const remediation = await input.llmAdapter.runPrompt(input.llmContext, {
+    repo: input.repo,
+    task: input.task,
+    run: input.run,
+    cwd: input.cwd,
+    prompt,
+    model: input.model,
+    reasoningEffort: input.reasoningEffort,
+    timeoutMs: 90_000,
+    phase: 'push',
+    outputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['branchName'],
+      properties: {
+        branchName: { type: 'string', minLength: 1 },
+        reason: { type: 'string' }
+      }
+    }
+  });
+
+  if (remediation.status !== 'success') {
+    return {
+      diagnostics:
+        remediation.status === 'timed_out'
+          ? `LLM remediation timed out after ${remediation.timeoutMs}ms.`
+          : remediation.message
+    };
+  }
+
+  const parsed = extractBranchNameFromRemediationOutput(remediation.rawOutput);
+  const branchName = sanitizeBranchNameCandidate(parsed);
+  if (!branchName) {
+    return {
+      diagnostics: `LLM remediation output did not include a valid branch name. Raw output: ${summarizeOutput(remediation.rawOutput)}`
+    };
+  }
+
+  return {
+    branchName,
+    diagnostics: 'One LLM remediation attempt completed.'
+  };
+}
+
+function extractBranchNameFromRemediationOutput(rawOutput: string | undefined) {
+  const trimmed = rawOutput?.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+
+  try {
+    const parsed = JSON.parse(trimmed) as { branchName?: unknown };
+    if (parsed && typeof parsed.branchName === 'string') {
+      return parsed.branchName;
+    }
+  } catch {
+    const branchMatch = trimmed.match(/"branchName"\s*:\s*"([^"]+)"/);
+    if (branchMatch?.[1]) {
+      return branchMatch[1];
+    }
+
+    const firstLine = trimmed.split('\n')[0]?.trim();
+    if (firstLine) {
+      return firstLine;
+    }
+  }
+
+  return undefined;
+}
+
+function sanitizeBranchNameCandidate(value: string | undefined) {
+  if (!value) {
+    return undefined;
+  }
+
+  const normalized = value
+    .trim()
+    .replace(/^refs\/heads\//, '')
+    .replace(/^['"]|['"]$/g, '');
+  if (!normalized) {
+    return undefined;
+  }
+  if (normalized.length > 255) {
+    return undefined;
+  }
+  if (
+    normalized.startsWith('/')
+    || normalized.endsWith('/')
+    || normalized.includes('//')
+    || normalized.includes('..')
+    || normalized.endsWith('.')
+    || normalized.includes('@{')
+    || /[\s~^:?*\\[\]]/.test(normalized)
+  ) {
+    return undefined;
+  }
+
+  const segments = normalized.split('/');
+  if (segments.some((segment) => !segment || segment.startsWith('.') || segment.endsWith('.lock'))) {
+    return undefined;
+  }
+
+  return normalized;
+}
+
+function isBranchPolicyPushFailure(errorMessage: string) {
+  const normalized = errorMessage.toLowerCase();
+  return (
+    normalized.includes('pre-receive hook declined')
+    || normalized.includes('does not follow the pattern')
+    || normalized.includes('branch name')
+    || normalized.includes('remote rejected')
+  );
+}
+
+function formatPushFailureOutput(stderr: string | undefined, stdout: string | undefined, fallback: string) {
+  const primary = stderr?.trim() || stdout?.trim();
+  return primary ? primary : fallback;
 }
 
 async function appendCommandLogs(repoBoard: DurableObjectStub<RepoBoardDO>, runId: string, phase: NonNullable<ReturnType<typeof buildRunLog>['phase']>, stdout?: string, stderr?: string) {

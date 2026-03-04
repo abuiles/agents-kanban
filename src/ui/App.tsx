@@ -568,6 +568,7 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
               evidenceMode: repoToEdit.evidenceMode,
               previewAdapter: repoToEdit.previewAdapter,
               previewConfig: repoToEdit.previewConfig,
+              commitConfig: repoToEdit.commitConfig,
               previewProvider: repoToEdit.previewProvider,
               previewCheckName: repoToEdit.previewCheckName,
               llmAdapter: repoToEdit.llmAdapter,

@@ -375,6 +375,244 @@ describe('executeRunJob LLM adapter coverage', () => {
     expect(harness.logs.some((entry) => entry.message.includes('Cursor CLI was responsible for choosing and running validation commands.'))).toBe(true);
   });
 
+  it('recovers push failures caused by remote branch rules with a single LLM remediation attempt', async () => {
+    const task = buildTask({
+      uiMeta: {
+        llmAdapter: 'codex',
+        llmModel: 'gpt-5.3-codex',
+        llmReasoningEffort: 'medium'
+      }
+    });
+    const repo = buildRepo();
+    const harness = createHarness(task, repo);
+    const sandbox = buildSandbox([
+      { type: 'stdout', data: 'Applied fix.\n' },
+      { type: 'exit', exitCode: 0 }
+    ]);
+    const baseExec = sandbox.exec.bind(sandbox);
+    let pushAttempts = 0;
+    sandbox.exec = async (command) => {
+      if (command.includes('/workspace/prompt-last-message.txt')) {
+        return {
+          success: true,
+          exitCode: 0,
+          stdout: '\n===CODEX_LAST_MESSAGE===\n{"branchName":"agent/push-fix-9k2m"}\n'
+        };
+      }
+      if (command.includes('git push origin HEAD:')) {
+        pushAttempts += 1;
+        if (pushAttempts === 1) {
+          return {
+            success: false,
+            exitCode: 1,
+            stderr: "remote: GitLab: Branch name 'agent/task_repo_very_long/run_repo_very_long' does not follow the pattern '^.{1,63}$'\nTo https://example.com/org/repo.git\n! [remote rejected] HEAD -> agent/task_repo_very_long/run_repo_very_long (pre-receive hook declined)"
+          };
+        }
+      }
+      return baseExec(command);
+    };
+    sandboxState.current = sandbox;
+
+    await executeRunJob(harness.env, { tenantId: 'tenant_legacy', repoId: repo.repoId, taskId: task.taskId, runId: 'run_1', mode: 'full_run' }, async () => {});
+
+    expect(harness.getRun()).toMatchObject({
+      status: 'DONE',
+      branchName: 'agent/push-fix-9k2m'
+    });
+    expect(harness.commands.some((command) => command.command.includes('git push origin HEAD:agent/push-fix-9k2m'))).toBe(true);
+    expect(harness.logs.some((entry) => entry.message.includes('Push remediation succeeded; adopting branch agent/push-fix-9k2m.'))).toBe(true);
+  });
+
+  it('fails when the remediation push attempt is also rejected', async () => {
+    const task = buildTask({
+      uiMeta: {
+        llmAdapter: 'codex',
+        llmModel: 'gpt-5.3-codex',
+        llmReasoningEffort: 'medium'
+      }
+    });
+    const repo = buildRepo();
+    const harness = createHarness(task, repo);
+    const sandbox = buildSandbox([
+      { type: 'stdout', data: 'Applied fix.\n' },
+      { type: 'exit', exitCode: 0 }
+    ]);
+    const baseExec = sandbox.exec.bind(sandbox);
+    sandbox.exec = async (command) => {
+      if (command.includes('/workspace/prompt-last-message.txt')) {
+        return {
+          success: true,
+          exitCode: 0,
+          stdout: '\n===CODEX_LAST_MESSAGE===\n{"branchName":"agent/push-fix-still-bad"}\n'
+        };
+      }
+      if (command.includes('git push origin HEAD:')) {
+        return {
+          success: false,
+          exitCode: 1,
+          stderr: "remote: GitLab: Branch name does not follow the pattern '^.{1,63}$'\n! [remote rejected] HEAD -> branch (pre-receive hook declined)"
+        };
+      }
+      return baseExec(command);
+    };
+    sandboxState.current = sandbox;
+
+    await expect(
+      executeRunJob(harness.env, { tenantId: 'tenant_legacy', repoId: repo.repoId, taskId: task.taskId, runId: 'run_1', mode: 'full_run' }, async () => {})
+    ).rejects.toThrow('Push remediation attempt failed.');
+
+    expect(harness.getRun().status).toBe('FAILED');
+  });
+
+  it('does not run remediation for non-policy push failures', async () => {
+    const task = buildTask({
+      uiMeta: {
+        llmAdapter: 'codex',
+        llmModel: 'gpt-5.3-codex',
+        llmReasoningEffort: 'medium'
+      }
+    });
+    const repo = buildRepo();
+    const harness = createHarness(task, repo);
+    const sandbox = buildSandbox([
+      { type: 'stdout', data: 'Applied fix.\n' },
+      { type: 'exit', exitCode: 0 }
+    ]);
+    const baseExec = sandbox.exec.bind(sandbox);
+    let remediationPromptInvoked = false;
+    sandbox.exec = async (command) => {
+      if (command.includes('/workspace/prompt-last-message.txt')) {
+        remediationPromptInvoked = true;
+      }
+      if (command.includes('git push origin HEAD:')) {
+        return {
+          success: false,
+          exitCode: 1,
+          stderr: 'fatal: Authentication failed for https://example.com/org/repo.git/'
+        };
+      }
+      return baseExec(command);
+    };
+    sandboxState.current = sandbox;
+
+    await expect(
+      executeRunJob(harness.env, { tenantId: 'tenant_legacy', repoId: repo.repoId, taskId: task.taskId, runId: 'run_1', mode: 'full_run' }, async () => {})
+    ).rejects.toThrow('Authentication failed');
+
+    expect(remediationPromptInvoked).toBe(false);
+  });
+
+  it('does not allow branch rename remediation for existing review change requests', async () => {
+    const task = buildTask({
+      uiMeta: {
+        llmAdapter: 'codex',
+        llmModel: 'gpt-5.3-codex',
+        llmReasoningEffort: 'medium'
+      }
+    });
+    const repo = buildRepo();
+    const harness = createHarness(task, repo);
+    await harness.repoBoard.transitionRun('run_1', {
+      reviewUrl: 'https://github.com/abuiles/minions/pull/17',
+      reviewNumber: 17,
+      reviewProvider: 'github',
+      changeRequest: {
+        prompt: 'Please revise this change.',
+        requestedAt: '2026-03-02T01:00:00.000Z'
+      }
+    });
+
+    const sandbox = buildSandbox([
+      { type: 'stdout', data: 'Applied fix.\n' },
+      { type: 'exit', exitCode: 0 }
+    ]);
+    const baseExec = sandbox.exec.bind(sandbox);
+    let remediationPromptInvoked = false;
+    sandbox.exec = async (command) => {
+      if (command.includes('/workspace/prompt-last-message.txt')) {
+        remediationPromptInvoked = true;
+      }
+      if (command.includes('git push origin HEAD:')) {
+        return {
+          success: false,
+          exitCode: 1,
+          stderr: "remote: GitLab: Branch name does not follow the pattern '^.{1,63}$'\n! [remote rejected] HEAD -> branch (pre-receive hook declined)"
+        };
+      }
+      return baseExec(command);
+    };
+    sandboxState.current = sandbox;
+
+    await expect(
+      executeRunJob(harness.env, { tenantId: 'tenant_legacy', repoId: repo.repoId, taskId: task.taskId, runId: 'run_1', mode: 'full_run' }, async () => {})
+    ).rejects.toThrow('Branch rename remediation is disabled for change requests');
+
+    expect(remediationPromptInvoked).toBe(false);
+  });
+
+  it('applies repo commit message template when it already satisfies commit regex policy', async () => {
+    const task = buildTask({
+      uiMeta: {
+        llmAdapter: 'codex',
+        llmModel: 'gpt-5.3-codex',
+        llmReasoningEffort: 'medium'
+      }
+    });
+    const repo = buildRepo({
+      commitConfig: {
+        messageTemplate: 'feat(cp): {taskTitle} [{taskId}]',
+        messageRegex: '^feat\\(cp\\): .+ \\[task_1\\]$'
+      }
+    });
+    const harness = createHarness(task, repo);
+    sandboxState.current = buildSandbox([
+      { type: 'stdout', data: 'Applied fix.\n' },
+      { type: 'exit', exitCode: 0 }
+    ]);
+
+    await executeRunJob(harness.env, { tenantId: 'tenant_legacy', repoId: repo.repoId, taskId: task.taskId, runId: 'run_1', mode: 'full_run' }, async () => {});
+
+    expect(harness.commands.some((command) => command.command.includes("git commit -m 'feat(cp): Adapter seam regression [task_1]'"))).toBe(true);
+  });
+
+  it('rewrites commit message through one LLM remediation attempt when repo regex policy rejects the candidate', async () => {
+    const task = buildTask({
+      uiMeta: {
+        llmAdapter: 'codex',
+        llmModel: 'gpt-5.3-codex',
+        llmReasoningEffort: 'medium'
+      }
+    });
+    const repo = buildRepo({
+      commitConfig: {
+        messageTemplate: 'AgentsKanban: {taskTitle}',
+        messageRegex: '^feat\\(cp\\): .+$',
+        messageExamples: ['feat(cp): Add banner block support']
+      }
+    });
+    const harness = createHarness(task, repo);
+    const sandbox = buildSandbox([
+      { type: 'stdout', data: 'Applied fix.\n' },
+      { type: 'exit', exitCode: 0 }
+    ]);
+    const baseExec = sandbox.exec.bind(sandbox);
+    sandbox.exec = async (command) => {
+      if (command.includes('/workspace/prompt-last-message.txt')) {
+        return {
+          success: true,
+          exitCode: 0,
+          stdout: '\n===CODEX_LAST_MESSAGE===\n{"commitMessage":"feat(cp): policy-compliant commit"}\n'
+        };
+      }
+      return baseExec(command);
+    };
+    sandboxState.current = sandbox;
+
+    await executeRunJob(harness.env, { tenantId: 'tenant_legacy', repoId: repo.repoId, taskId: task.taskId, runId: 'run_1', mode: 'full_run' }, async () => {});
+
+    expect(harness.commands.some((command) => command.command.includes("git commit -m 'feat(cp): policy-compliant commit'"))).toBe(true);
+  });
+
   it('emits partial usage entries when the run fails', async () => {
     const task = buildTask({
       uiMeta: {

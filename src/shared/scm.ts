@@ -54,6 +54,14 @@ export function normalizeRepo(repo: RepoScmLike & Omit<Repo, 'slug' | 'scmProvid
   if (!projectPath) {
     throw new Error('Repo project path is required.');
   }
+  const messageExamples = (repo.commitConfig?.messageExamples ?? [])
+    .map((example) => example.trim())
+    .filter(Boolean);
+  const commitConfig = {
+    messageTemplate: repo.commitConfig?.messageTemplate?.trim() || undefined,
+    messageRegex: repo.commitConfig?.messageRegex?.trim() || undefined,
+    messageExamples: messageExamples.length ? messageExamples : undefined
+  };
 
   return normalizeRepoPreviewConfig({
     ...repo,
@@ -61,7 +69,10 @@ export function normalizeRepo(repo: RepoScmLike & Omit<Repo, 'slug' | 'scmProvid
     slug: projectPath,
     scmProvider,
     scmBaseUrl: normalizeScmBaseUrl(scmProvider, repo.scmBaseUrl),
-    projectPath
+    projectPath,
+    commitConfig: (commitConfig.messageTemplate || commitConfig.messageRegex || commitConfig.messageExamples)
+      ? commitConfig
+      : undefined
   });
 }
 

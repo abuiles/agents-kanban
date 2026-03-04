@@ -1176,6 +1176,7 @@ function buildRepoRecord(input: CreateRepoInput | Repo): Repo {
     evidenceMode: 'evidenceMode' in input ? input.evidenceMode : 'auto',
     previewAdapter: 'previewAdapter' in input ? input.previewAdapter : undefined,
     previewConfig: 'previewConfig' in input ? input.previewConfig : undefined,
+    commitConfig: 'commitConfig' in input ? input.commitConfig : undefined,
     previewProvider: 'previewProvider' in input ? input.previewProvider : undefined,
     previewCheckName: input.previewCheckName,
     previewUrlPattern: 'previewUrlPattern' in input ? input.previewUrlPattern : undefined,

@@ -78,6 +78,9 @@ export function RepoForm({
   const initialPreviewCheckName = normalizedPreview.previewConfig?.checkName ?? '';
   const initialPromptRecipe = normalizedPreview.previewConfig?.promptRecipe ?? '';
   const initialCodexAuthBundleR2Key = initialValues?.codexAuthBundleR2Key ?? '';
+  const initialCommitMessageTemplate = initialValues?.commitConfig?.messageTemplate ?? '';
+  const initialCommitMessageRegex = initialValues?.commitConfig?.messageRegex ?? '';
+  const initialCommitMessageExamples = (initialValues?.commitConfig?.messageExamples ?? []).join('\n');
 
   const [scmProvider, setScmProvider] = useState<ScmProvider>(initialScmProvider);
   const [scmBaseUrl, setScmBaseUrl] = useState(initialScmBaseUrl);
@@ -93,6 +96,9 @@ export function RepoForm({
   const [llmAuthBundleR2Key, setLlmAuthBundleR2Key] = useState(initialLlmAuthBundleR2Key);
   const [promptRecipe, setPromptRecipe] = useState(initialPromptRecipe);
   const [codexAuthBundleR2Key, setCodexAuthBundleR2Key] = useState(initialCodexAuthBundleR2Key);
+  const [commitMessageTemplate, setCommitMessageTemplate] = useState(initialCommitMessageTemplate);
+  const [commitMessageRegex, setCommitMessageRegex] = useState(initialCommitMessageRegex);
+  const [commitMessageExamples, setCommitMessageExamples] = useState(initialCommitMessageExamples);
 
   useEffect(() => {
     setScmProvider(initialScmProvider);
@@ -109,6 +115,9 @@ export function RepoForm({
     setLlmAuthBundleR2Key(initialLlmAuthBundleR2Key);
     setPromptRecipe(initialPromptRecipe);
     setCodexAuthBundleR2Key(initialCodexAuthBundleR2Key);
+    setCommitMessageTemplate(initialCommitMessageTemplate);
+    setCommitMessageRegex(initialCommitMessageRegex);
+    setCommitMessageExamples(initialCommitMessageExamples);
   }, [
     initialScmProvider,
     initialScmBaseUrl,
@@ -123,7 +132,10 @@ export function RepoForm({
     initialLlmProfileId,
     initialLlmAuthBundleR2Key,
     initialPromptRecipe,
-    initialCodexAuthBundleR2Key
+    initialCodexAuthBundleR2Key,
+    initialCommitMessageTemplate,
+    initialCommitMessageRegex,
+    initialCommitMessageExamples
   ]);
 
   const projectPathHint = scmProvider === 'gitlab'
@@ -141,6 +153,15 @@ export function RepoForm({
   const previewConfig = {
     ...(previewAdapter === 'cloudflare_checks' && previewCheckName.trim() ? { checkName: previewCheckName.trim() } : {}),
     ...(previewAdapter === 'prompt_recipe' && promptRecipe.trim() ? { promptRecipe: promptRecipe.trim() } : {})
+  };
+  const commitMessageExamplesList = commitMessageExamples
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const commitConfig = {
+    ...(commitMessageTemplate.trim() ? { messageTemplate: commitMessageTemplate.trim() } : {}),
+    ...(commitMessageRegex.trim() ? { messageRegex: commitMessageRegex.trim() } : {}),
+    ...(commitMessageExamplesList.length ? { messageExamples: commitMessageExamplesList } : {})
   };
 
   return (
@@ -163,6 +184,7 @@ export function RepoForm({
           evidenceMode,
           previewAdapter,
           previewConfig: Object.keys(previewConfig).length > 0 ? previewConfig : undefined,
+          commitConfig: Object.keys(commitConfig).length > 0 ? commitConfig : undefined,
           previewCheckName: previewCheckName || undefined,
           codexAuthBundleR2Key: codexAuthBundleR2Key || (llmAdapter === 'codex' ? (llmAuthBundleR2Key || undefined) : undefined)
         });
@@ -180,6 +202,9 @@ export function RepoForm({
         setLlmAuthBundleR2Key('');
         setPromptRecipe('');
         setCodexAuthBundleR2Key('');
+        setCommitMessageTemplate('');
+        setCommitMessageRegex('');
+        setCommitMessageExamples('');
       }}
     >
       <div className="grid gap-4 md:grid-cols-3">
@@ -289,6 +314,33 @@ export function RepoForm({
           <input className={inputClass()} value={codexAuthBundleR2Key} onChange={(event) => setCodexAuthBundleR2Key(event.target.value)} placeholder="auth/codex.tgz" />
         </FieldShell>
       </div>
+      <div className="grid gap-4 md:grid-cols-2">
+        <FieldShell label="Commit template" hint="Optional. Tokens: {taskTitle}, {taskId}, {runId}, {repoSlug}, {defaultMessage}.">
+          <input
+            className={inputClass()}
+            value={commitMessageTemplate}
+            onChange={(event) => setCommitMessageTemplate(event.target.value)}
+            placeholder="feat(cp): {taskTitle} [{taskId}]"
+          />
+        </FieldShell>
+        <FieldShell label="Commit regex" hint="Optional JS regex that commit messages must match.">
+          <input
+            className={inputClass()}
+            value={commitMessageRegex}
+            onChange={(event) => setCommitMessageRegex(event.target.value)}
+            placeholder="^feat\\(cp\\): .+ \\[task_[a-z0-9_]+\\]$"
+          />
+        </FieldShell>
+      </div>
+      <FieldShell label="Commit examples" hint="Optional. One example commit message per line.">
+        <textarea
+          className={textareaClass()}
+          value={commitMessageExamples}
+          onChange={(event) => setCommitMessageExamples(event.target.value)}
+          rows={4}
+          placeholder={'feat(cp): Add banner block support [task_abc123]\nfix(cp): Correct CTA URL handling [task_def456]'}
+        />
+      </FieldShell>
       <PrimaryButton>{submitLabel}</PrimaryButton>
     </form>
   );

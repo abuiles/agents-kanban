@@ -36,6 +36,7 @@ export type CreateRepoInput = {
   evidenceMode?: Repo['evidenceMode'];
   previewAdapter?: Repo['previewAdapter'];
   previewConfig?: Repo['previewConfig'];
+  commitConfig?: Repo['commitConfig'];
   previewProvider?: Repo['previewProvider'];
   previewCheckName?: string;
   // Compatibility alias during migration to generic LLM executor fields.

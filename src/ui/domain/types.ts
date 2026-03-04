@@ -25,6 +25,11 @@ export type RepoPreviewConfig = {
   checkName?: string;
   promptRecipe?: string;
 };
+export type RepoCommitConfig = {
+  messageTemplate?: string;
+  messageRegex?: string;
+  messageExamples?: string[];
+};
 export type PreviewResolutionStatus = 'ready' | 'pending' | 'failed' | 'timed_out';
 export type PreviewDiagnostic = {
   code: string;
@@ -121,6 +126,7 @@ export type Repo = {
   evidenceMode?: 'auto' | 'skip';
   previewAdapter?: PreviewAdapterKind;
   previewConfig?: RepoPreviewConfig;
+  commitConfig?: RepoCommitConfig;
   previewProvider?: 'cloudflare';
   previewCheckName?: string;
   previewUrlPattern?: string;
