@@ -5,8 +5,10 @@ import {
   buildReviewSummaryMarker,
   retryReviewPosting
 } from './adapter';
+import { GitHubReviewPostingAdapter } from './github';
 import { GitLabReviewPostingAdapter } from './gitlab';
 import { JiraReviewPostingAdapter } from './jira';
+import { getReviewPostingAdapter } from './registry';
 
 function buildRepo(overrides: Partial<Repo> = {}): Repo {
   return {
@@ -254,6 +256,119 @@ describe('GitLab review posting adapter', () => {
   });
 });
 
+describe('GitHub review posting adapter', () => {
+  it('posts inline review comments when file and line context are available', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify([]), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([]), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ head: { sha: 'a'.repeat(40) } }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([]), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([]), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: 501, html_url: 'https://github.com/acme/demo/pull/7#discussion_r501' }), { status: 201 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const adapter = new GitHubReviewPostingAdapter();
+    const result = await adapter.postFindings({
+      repo: buildRepo({ scmProvider: 'github', scmBaseUrl: 'https://github.com', projectPath: 'acme/demo' }),
+      task: buildTask(),
+      run: buildRun({ reviewNumber: 7 }),
+      findings: [buildFinding({ findingId: 'rf_gh_inline', filePath: 'src/main.ts', lineStart: 27 })],
+      credential: { token: 'ghp_test' },
+      postInline: true
+    });
+
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0]).toMatchObject({
+      findingId: 'rf_gh_inline',
+      posted: true,
+      inline: true,
+      summary: false,
+      providerThreadId: '501'
+    });
+    expect(result.summary).toBeUndefined();
+    expect(fetchMock).toHaveBeenCalledTimes(6);
+    expect(fetchMock.mock.calls[5]?.[0]).toContain('/pulls/7/comments');
+  });
+
+  it('falls back to a summary issue comment when inline context is unavailable', async () => {
+    const finding = buildFinding({
+      findingId: 'rf_gh_summary',
+      filePath: undefined,
+      lineStart: undefined,
+      lineEnd: undefined
+    });
+    const marker = buildReviewFindingMarker(finding.findingId, 'run_demo');
+    const summaryMarker = buildReviewSummaryMarker('run_demo');
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify([]), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([]), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ head: { sha: 'b'.repeat(40) } }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([]), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        id: 601,
+        html_url: 'https://github.com/acme/demo/pull/7#issuecomment-601',
+        body: `${summaryMarker}\n${marker}`
+      }), { status: 201 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const adapter = new GitHubReviewPostingAdapter();
+    const result = await adapter.postFindings({
+      repo: buildRepo({ scmProvider: 'github', scmBaseUrl: 'https://github.com', projectPath: 'acme/demo' }),
+      task: buildTask(),
+      run: buildRun({ reviewNumber: 7 }),
+      findings: [finding],
+      credential: { token: 'ghp_test' },
+      postInline: true
+    });
+
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0]).toMatchObject({
+      findingId: 'rf_gh_summary',
+      posted: true,
+      inline: false,
+      summary: true,
+      providerThreadId: '601'
+    });
+    expect(result.summary).toMatchObject({
+      posted: true,
+      providerThreadId: '601'
+    });
+    expect(fetchMock.mock.calls[4]?.[0]).toContain('/issues/7/comments');
+  });
+
+  it('reuses marker-bearing GitHub comments for idempotent retry-safe posting', async () => {
+    const marker = buildReviewFindingMarker('rf_gh_idempotent', 'run_demo');
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify([
+        { id: 777, body: marker, html_url: 'https://github.com/acme/demo/pull/7#discussion_r777' }
+      ]), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([]), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ head: { sha: 'c'.repeat(40) } }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const adapter = new GitHubReviewPostingAdapter();
+    const result = await adapter.postFindings({
+      repo: buildRepo({ scmProvider: 'github', scmBaseUrl: 'https://github.com', projectPath: 'acme/demo' }),
+      task: buildTask(),
+      run: buildRun({ reviewNumber: 7 }),
+      findings: [buildFinding({ findingId: 'rf_gh_idempotent', filePath: 'src/main.ts', lineStart: 12 })],
+      credential: { token: 'ghp_test' },
+      postInline: true
+    });
+
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0]).toMatchObject({
+      findingId: 'rf_gh_idempotent',
+      posted: true,
+      inline: true,
+      summary: false,
+      providerThreadId: '777'
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.calls.find((call) => String(call[0]).includes('/pulls/7/comments') && (call[1] as RequestInit | undefined)?.method === 'POST')).toBeUndefined();
+  });
+});
+
 describe('Jira review posting adapter', () => {
   it('posts Jira comments with stable finding markers and location references', async () => {
     const markerA = buildReviewFindingMarker('rf_1', 'run_demo');
@@ -375,5 +490,13 @@ describe('Jira review posting adapter', () => {
 
     expect(context.rf_1).toEqual([`${markerA} LGTM`]);
     expect(context.rf_2).toBeUndefined();
+  });
+});
+
+describe('review-posting registry', () => {
+  it('resolves the github adapter', () => {
+    const adapter = getReviewPostingAdapter('github');
+    expect(adapter.provider).toBe('github');
+    expect(adapter).toBeInstanceOf(GitHubReviewPostingAdapter);
   });
 });
