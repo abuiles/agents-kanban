@@ -226,6 +226,7 @@ export type RunPreviewResolution = {
 
 export type RunEventType =
   | 'run.status_changed'
+  | 'run.checkpoint.created'
   | 'command.started'
   | 'command.completed'
   | 'log.appended'
