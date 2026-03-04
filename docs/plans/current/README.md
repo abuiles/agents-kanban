@@ -11,6 +11,7 @@ This folder is the source of truth for active planning and execution.
 - [P5: Slack + Jira + GitLab Operator Loop (Strict MVP)](./p5-slack-jira-gitlab-mvp.md)
 - [P6: Auto Review + Selective Change Loop](./p6-auto-review-and-change-loop.md)
 - [P7: Built-in Sentinel Orchestration](./p7-sentinel-orchestration.md)
+- [P8: Checkpoint Recovery + Ephemeral Context Notes](./p8-checkpoint-recovery-and-context-notes.md)
 - [Migration Status](./migration-status.md)
 
 ## How to use

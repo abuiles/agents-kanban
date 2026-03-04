@@ -14,7 +14,8 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "test:workers": "vitest -c vitest.worker.config.ts",
-    "bootstrap:single-tenant": "tsx scripts/bootstrap-single-tenant.ts"
+    "bootstrap:single-tenant": "tsx scripts/bootstrap-single-tenant.ts",
+    "sentinel:p5": "bash scripts/p5-sentinel.sh"
   },
   "devDependencies": {
     "@cloudflare/sandbox": "*",
