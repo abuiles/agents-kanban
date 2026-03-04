@@ -4,6 +4,7 @@ import type {
   IntegrationLoopState,
   OperatorSession,
   Repo,
+  RunCheckpoint,
   RunCommand,
   RunError,
   RunEvent,
@@ -336,6 +337,38 @@ export class RepoBoardDO extends DurableObject<Env> {
     assertTenantMatch(run.tenantId, tenantId, 'Run', runId);
 
     return run;
+  }
+
+  async getRunCheckpoints(runId: string, tenantId?: string): Promise<RunCheckpoint[]> {
+    const run = await this.getRun(runId, tenantId);
+    return cloneRunCheckpoints(run.checkpoints) ?? [];
+  }
+
+  async getTaskCheckpoints(taskId: string, options?: { latest?: boolean; tenantId?: string }): Promise<RunCheckpoint[]> {
+    await this.ready;
+    const task = this.state.tasks.find((candidate) => candidate.taskId === taskId);
+    if (!task) {
+      throw notFound(`Task ${taskId} not found.`, { taskId });
+    }
+    assertTenantMatch(task.tenantId, options?.tenantId, 'Task', taskId);
+
+    const checkpoints = this.state.runs
+      .filter((run) => run.taskId === taskId)
+      .filter((run) => !options?.tenantId || normalizeTenantId(run.tenantId) === normalizeTenantId(options.tenantId))
+      .flatMap((run) => cloneRunCheckpoints(run.checkpoints) ?? [])
+      .sort((left, right) => {
+        const byCreatedAt = right.createdAt.localeCompare(left.createdAt);
+        if (byCreatedAt !== 0) {
+          return byCreatedAt;
+        }
+        return right.checkpointId.localeCompare(left.checkpointId);
+      });
+
+    if (options?.latest) {
+      return checkpoints.slice(0, 1);
+    }
+
+    return checkpoints;
   }
 
   async retryRun(runId: string, options?: RetryRunInput & { tenantId?: string }) {

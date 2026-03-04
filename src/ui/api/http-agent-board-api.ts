@@ -21,7 +21,7 @@ import type {
   UserApiTokenRecord,
   UpsertScmCredentialInput
 } from '../domain/api';
-import type { AgentRun, BoardSnapshotV1, OperatorSession, Repo, RunCommand, RunEvent, RunLogEntry, ScmCredential, Task, TaskDetail, TerminalBootstrap } from '../domain/types';
+import type { AgentRun, BoardSnapshotV1, OperatorSession, Repo, RunCheckpoint, RunCommand, RunEvent, RunLogEntry, ScmCredential, Task, TaskDetail, TerminalBootstrap } from '../domain/types';
 import { getTaskDetail } from '../domain/selectors';
 import { parseBoardSnapshot } from '../store/board-snapshot';
 import { UiPreferencesStore } from '../store/ui-preferences-store';
@@ -252,6 +252,11 @@ export class HttpAgentBoardApi implements AgentBoardApi {
     return detail;
   }
 
+  async getTaskCheckpoints(taskId: string, options?: { latest?: boolean }) {
+    const search = options?.latest ? '?latest=true' : '';
+    return this.request<RunCheckpoint[]>(`/api/tasks/${encodeURIComponent(taskId)}/checkpoints${search}`);
+  }
+
   async updateTask(taskId: string, patch: UpdateTaskInput) {
     const task = await this.request<Task>(`/api/tasks/${encodeURIComponent(taskId)}`, { method: 'PATCH', body: JSON.stringify(patch) });
     await this.refresh();
@@ -268,6 +273,10 @@ export class HttpAgentBoardApi implements AgentBoardApi {
     const run = await this.request<AgentRun>(`/api/runs/${encodeURIComponent(runId)}`);
     this.mergeRun(run);
     return run;
+  }
+
+  async getRunCheckpoints(runId: string) {
+    return this.request<RunCheckpoint[]>(`/api/runs/${encodeURIComponent(runId)}/checkpoints`);
   }
 
   async retryRun(runId: string, input?: RetryRunInput) {

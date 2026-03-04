@@ -244,6 +244,54 @@ describe('DetailPanel', () => {
     expect(screen.getByText('Cursor CLI does not advertise resumable takeover for this run.')).toBeInTheDocument();
   });
 
+  it('renders checkpoint list and resumed-from indicator on latest run', () => {
+    const props = buildProps();
+    props.detail = {
+      ...props.detail,
+      runs: [{
+        ...props.detail.runs[0],
+        checkpoints: [{
+          checkpointId: 'run_demo:cp:001:codex',
+          runId: 'run_demo',
+          repoId: 'repo_demo',
+          taskId: 'task_demo',
+          phase: 'codex',
+          commitSha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          commitMessage: 'agentskanban checkpoint 001 (codex) [run_demo]',
+          createdAt: '2026-03-01T00:01:00.000Z'
+        }]
+      }],
+      latestRun: {
+        ...props.detail.latestRun!,
+        checkpoints: [{
+          checkpointId: 'run_demo:cp:001:codex',
+          runId: 'run_demo',
+          repoId: 'repo_demo',
+          taskId: 'task_demo',
+          phase: 'codex',
+          commitSha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          commitMessage: 'agentskanban checkpoint 001 (codex) [run_demo]',
+          createdAt: '2026-03-01T00:01:00.000Z'
+        }],
+        resumedFromCheckpointId: 'run_demo:cp:001:codex',
+        resumedFromCommitSha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+      }
+    };
+
+    render(<DetailPanel {...props} />);
+
+    expect(screen.getByText('Resumed from checkpoint')).toBeInTheDocument();
+    expect(screen.getAllByText('resumed-from').length).toBeGreaterThan(0);
+    expect(screen.getByText(/run_demo:cp:001:codex · codex · aaaaaaaa/)).toBeInTheDocument();
+  });
+
+  it('renders empty checkpoint states when metadata is absent', () => {
+    render(<DetailPanel {...buildProps()} />);
+
+    expect(screen.getByText('No checkpoints recorded on this run.')).toBeInTheDocument();
+    expect(screen.getByText('No checkpoints recorded for this task yet.')).toBeInTheDocument();
+  });
+
   it('routes edit task clicks to the edit handler', async () => {
     const user = userEvent.setup();
     const onEditTask = vi.fn();

@@ -13,6 +13,7 @@ import type {
   SentinelEvent,
   SentinelRun,
   RunCommand,
+  RunCheckpoint,
   RunEvent,
   RunLogEntry,
   ScmCredential,
@@ -245,9 +246,11 @@ export interface AgentBoardApi {
   createTask(input: CreateTaskInput): Promise<Task>;
   listTasks(filter?: { repoId?: string; tags?: string[] }): Promise<Task[]>;
   getTask(taskId: string): Promise<TaskDetail>;
+  getTaskCheckpoints(taskId: string, options?: { latest?: boolean }): Promise<RunCheckpoint[]>;
   updateTask(taskId: string, patch: UpdateTaskInput): Promise<Task>;
   startRun(taskId: string): Promise<AgentRun>;
   getRun(runId: string): Promise<AgentRun>;
+  getRunCheckpoints(runId: string): Promise<RunCheckpoint[]>;
   retryRun(runId: string, input?: RetryRunInput): Promise<AgentRun>;
   rerunReview(runId: string): Promise<AgentRun>;
   requestRunChanges(runId: string, input: RequestRunChangesInput): Promise<AgentRun>;

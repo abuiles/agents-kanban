@@ -913,6 +913,19 @@ export async function handleGetTask(request: Request, env: Env, params: RoutePar
   });
 }
 
+export async function handleGetTaskCheckpoints(request: Request, env: Env, params: RouteParams): Promise<Response> {
+  return withApiError(async () => {
+    const url = new URL(request.url);
+    const board = getBoard(env);
+    const requestContext = await resolveRequestTenantContext(env, board, request, { requireSession: true });
+    const taskId = parsePathParam(params.taskId);
+    const repoId = await resolveRepoIdForTask(board, taskId);
+    await assertRepoAccess(env, board, requestContext, repoId);
+    const latest = url.searchParams.get('latest') === 'true';
+    return json(await env.REPO_BOARD.getByName(repoId).getTaskCheckpoints(taskId, { latest, tenantId: requestContext.activeTenantId }));
+  });
+}
+
 export async function handleUpdateTask(request: Request, env: Env, params: RouteParams): Promise<Response> {
   return withApiError(async () => {
     const board = getBoard(env);
@@ -966,6 +979,17 @@ export async function handleGetRun(request: Request, env: Env, params: RoutePara
     const repoId = await resolveRepoIdForRun(board, runId);
     await assertRepoAccess(env, board, requestContext, repoId);
     return json(await env.REPO_BOARD.getByName(repoId).getRun(runId, requestContext.activeTenantId));
+  });
+}
+
+export async function handleGetRunCheckpoints(request: Request, env: Env, params: RouteParams): Promise<Response> {
+  return withApiError(async () => {
+    const board = getBoard(env);
+    const requestContext = await resolveRequestTenantContext(env, board, request, { requireSession: true });
+    const runId = parsePathParam(params.runId);
+    const repoId = await resolveRepoIdForRun(board, runId);
+    await assertRepoAccess(env, board, requestContext, repoId);
+    return json(await env.REPO_BOARD.getByName(repoId).getRunCheckpoints(runId, requestContext.activeTenantId));
   });
 }
 
