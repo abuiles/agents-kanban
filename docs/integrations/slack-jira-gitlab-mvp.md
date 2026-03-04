@@ -40,8 +40,8 @@ Out of scope (this phase):
 
 ## Operator day-to-day flow (no dashboard required)
 
-1. In Slack, run `/kanvy fix ABC-123` for deterministic Jira flow, or `/kanvy <free-text request>` from a channel or thread.
-2. If invoked from a channel (non-thread), the platform auto-seeds a thread and continues intake/status there.
+1. In Slack, run `/kanvy fix ABC-123` for deterministic Jira flow, or `/kanvy <free-text request>` from channel or thread.
+2. If free-text starts in channel (non-thread), the system posts a thread kickoff and sends an ephemeral handoff link; continue clarification in that thread.
 3. For free-text flow, answer clarifying questions in the same thread (max 4 turns before structured handoff prompt).
 4. For usage guidance, run `/kanvy help`.
 5. If multiple repo mappings are available, click a repo disambiguation button (Jira flow) or reply with repo id (free-text flow).
@@ -68,7 +68,6 @@ State and idempotency checks:
 - Rerun starts only from `DECISION_REQUIRED`.
 - Concurrent/duplicate approvals do not create duplicate reruns.
 - Late feedback remains deterministic via loop-state and dedupe keys.
-- Jira/Slack failure paths emit sanitized lifecycle logs (no token/secrets) for operator troubleshooting.
 
 ## Loop-state reference
 
@@ -81,6 +80,7 @@ State and idempotency checks:
 1. Jira lookup failure
    - Symptom: slash command ack succeeds but follow-up reports Jira fetch failure.
    - Operator action: verify `JIRA_TOKEN`, issue key, Jira reachability.
+   - Logs: inspect structured `slack_command_lifecycle` checkpoints (`jira_fetch_started`, `jira_fetch_failed`) including Jira host/path, category, and sanitized message.
 2. Missing repo mapping
    - Symptom: disambiguation or no-mapping message in Slack.
    - Operator action: add/enable Jira project -> repo mapping.

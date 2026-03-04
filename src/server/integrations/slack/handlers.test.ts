@@ -20,16 +20,14 @@ const runOrchestratorMocks = vi.hoisted(() => ({
   scheduleRunJob: vi.fn()
 }));
 const fetchSpy = vi.spyOn(globalThis, 'fetch');
+const consoleInfoSpy = vi.spyOn(console, 'info').mockImplementation(() => {});
 
 vi.mock('../../tenant-auth-db', () => tenantAuthDbMocks);
 vi.mock('../jira/client', () => jiraClientMocks);
 vi.mock('../../run-orchestrator', () => runOrchestratorMocks);
 
 function createKv(secret: string) {
-  const values = new Map<string, string>([
-    ['slack/signing-secret', secret],
-    ['slack/bot-token', 'xoxb-test']
-  ]);
+  const values = new Map<string, string>([['slack/signing-secret', secret]]);
   return {
     async get(key: string) {
       return values.get(key) ?? null;
@@ -124,6 +122,7 @@ describe('slack handlers', () => {
     vi.clearAllMocks();
     fetchSpy.mockReset();
     fetchSpy.mockResolvedValue(new Response('{}', { status: 200 }));
+    consoleInfoSpy.mockClear();
     tenantAuthDbMocks.getPrimaryTenantId.mockResolvedValue('tenant_local');
     tenantAuthDbMocks.upsertSlackThreadBinding.mockImplementation(async (input: {
       taskId: string;
@@ -325,11 +324,16 @@ describe('slack handlers', () => {
     }));
   });
 
-  it('auto-creates a thread for non-thread free-text /kanvy and continues intake there', async () => {
-    fetchSpy.mockImplementation(async (input: RequestInfo | URL) => {
+  it('auto-creates a thread handoff for non-thread free-text slash commands', async () => {
+    const repoBoard = makeRepoBoard({ taskId: 'task_handoff', runId: 'run_handoff' });
+    fetchSpy.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url.includes('slack.com/api/chat.postMessage')) {
-        return new Response(JSON.stringify({ ok: true, ts: '1672531299.5000' }), { status: 200 });
+      if (url.includes('https://slack.com/api/chat.postMessage')) {
+        const payload = JSON.parse(String(init?.body ?? '{}')) as { thread_ts?: string };
+        if (payload.thread_ts) {
+          return new Response(JSON.stringify({ ok: true, ts: payload.thread_ts }), { status: 200 });
+        }
+        return new Response(JSON.stringify({ ok: true, ts: '1672531200.9999' }), { status: 200 });
       }
       if (url.includes('/v1/chat/completions')) {
         return new Response(JSON.stringify({
@@ -337,12 +341,10 @@ describe('slack handlers', () => {
             message: {
               content: JSON.stringify({
                 intent: 'create_task',
-                confidence: 0.52,
-                taskTitle: 'Investigate checkout flake',
-                taskPrompt: 'Investigate intermittent checkout failures and propose fixes.',
+                confidence: 0.4,
                 acceptanceCriteria: [],
-                missingFields: ['acceptance_criteria'],
-                clarifyingQuestion: 'What acceptance criteria should I use?'
+                missingFields: ['repo'],
+                clarifyingQuestion: 'Which repo should I use?'
               })
             }
           }]
@@ -353,11 +355,11 @@ describe('slack handlers', () => {
 
     const rawBody = new URLSearchParams({
       command: '/kanvy',
-      text: 'Investigate flaky checkout tests',
+      text: 'investigate flaky tests',
       channel_id: 'C123',
       team_id: 'team_one',
       user_id: 'U1',
-      response_url: 'https://hooks.slack.com/commands/response'
+      response_url: 'https://hooks.slack.com/commands/handoff'
     }).toString();
     const signature = await buildSlackSignature('secret', nowTs, rawBody);
     const request = new Request('https://example.test/api/integrations/slack/commands', {
@@ -367,21 +369,25 @@ describe('slack handlers', () => {
     });
     const waitUntilTasks: Array<Promise<unknown>> = [];
     const waitUntil = vi.fn((task: Promise<unknown>) => waitUntilTasks.push(task));
+    const env = makeEnv('secret', repoBoard);
+    await env.SECRETS_KV.put('slack/bot-token', 'xoxb-test');
 
-    const response = await handleSlackCommands(request, makeEnv('secret'), { waitUntil } as unknown as ExecutionContext<unknown>);
-
+    const response = await handleSlackCommands(request, env, { waitUntil } as unknown as ExecutionContext<unknown>);
     expect(response.status).toBe(200);
     await waitUntilTasks[0];
-    expect(tenantAuthDbMocks.upsertSlackIntakeSession).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
-      tenantId: 'team_one',
-      channelId: 'C123',
-      threadTs: '1672531299.5000',
-      status: 'active'
-    }));
 
-    const calledUrls = vi.mocked(global.fetch).mock.calls.map((entry) => String(entry[0]));
-    expect(calledUrls.filter((url) => url.includes('slack.com/api/chat.postMessage')).length).toBeGreaterThanOrEqual(2);
-    expect(calledUrls.some((url) => url.includes('hooks.slack.com/commands/response'))).toBe(false);
+    const calls = vi.mocked(global.fetch).mock.calls as Array<[RequestInfo | URL, RequestInit]>;
+    const channelKickoff = calls.find((entry) => String(entry[0]).includes('https://slack.com/api/chat.postMessage')
+      && !String(entry[1].body).includes('"thread_ts"'));
+    const threadPrompt = calls.find((entry) => String(entry[0]).includes('https://slack.com/api/chat.postMessage')
+      && String(entry[1].body).includes('"thread_ts":"1672531200.9999"'));
+    const responseAck = calls.find((entry) => String(entry[0]).includes('https://hooks.slack.com/commands/handoff'));
+
+    expect(channelKickoff).toBeTruthy();
+    expect(threadPrompt).toBeTruthy();
+    expect(responseAck?.[1].body).toContain('Continuing in thread:');
+    expect(responseAck?.[1].body).toContain('message_ts=1672531200.9999');
+    expect(repoBoard.createTask).not.toHaveBeenCalled();
   });
 
   it('asks for repo disambiguation when multiple mappings exist', async () => {
@@ -463,7 +469,6 @@ describe('slack handlers', () => {
 
   it('returns clear Jira read failure responses and does not create tasks', async () => {
     const failingBoard = makeRepoBoard({ taskId: 'task_fail', runId: 'run_fail' });
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     jiraClientMocks.createJiraIssueSourceIntegrationFromEnv.mockReturnValue({
       fetchIssue: vi.fn().mockRejectedValue(new Error('temporary outage'))
     });
@@ -497,9 +502,15 @@ describe('slack handlers', () => {
     const calledPayload = JSON.parse(((vi.mocked(global.fetch).mock.calls[0] as [string, RequestInit])[1].body as string));
     expect(calledPayload.text).toContain('Failed to process /kanvy command for ABC-100');
     expect(calledPayload.text).toContain('temporary outage');
+    const lifecycleLogs = consoleInfoSpy.mock.calls
+      .map((entry) => String(entry[0]))
+      .filter((line) => line.includes('"event":"slack_command_lifecycle"'));
+    expect(lifecycleLogs.some((line) => line.includes('"checkpoint":"received"'))).toBe(true);
+    expect(lifecycleLogs.some((line) => line.includes('"checkpoint":"jira_fetch_started"'))).toBe(true);
+    expect(lifecycleLogs.some((line) => line.includes('"checkpoint":"jira_fetch_failed"'))).toBe(true);
+    expect(lifecycleLogs.some((line) => line.includes('"jira_failure_category":"unknown"'))).toBe(true);
+    expect(lifecycleLogs.some((line) => line.includes('"issue_key":"ABC-100"'))).toBe(true);
     expect(failingBoard.createTask).not.toHaveBeenCalled();
-    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('[slack:/kanvy] jira_flow_failed'));
-    errorSpy.mockRestore();
   });
 
   it('dedupes duplicate slash command deliveries for the same response url', async () => {

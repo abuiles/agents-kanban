@@ -58,7 +58,7 @@ AgentsKanban helps you run AI-assisted software work the same way you already ma
 
 - Trigger task execution from Slack slash commands with a Jira issue key (`/kanvy fix ABC-123`).
 - Show concise slash command usage help directly in Slack (`/kanvy help`).
-- Auto-seed a Slack thread when `/kanvy` is run from a channel message so intake and follow-ups stay in-thread.
+- Allow free-text `/kanvy <request>` from channel or thread; channel commands auto-create a thread handoff for intake continuation.
 - Resolve Jira project -> repository mapping and start the first run from `main`.
 - Mirror GitLab MR lifecycle and review feedback into the same Slack thread.
 - Gate reruns behind explicit Slack approval (`approve rerun`) in-thread.

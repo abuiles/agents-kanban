@@ -79,8 +79,8 @@ Operational notes:
 
 - `POST /api/integrations/slack/commands`
   - Verified with Slack signing secret and replay window checks.
-  - Accepts `/kanvy fix <JIRA_KEY>`, `/kanvy help`, and free-text `/kanvy <request>`.
-  - If invoked outside a thread, auto-creates a thread and continues intake/status there.
+  - Accepts `/kanvy fix <JIRA_KEY>`, `/kanvy help`, and `/kanvy <free-text request>`.
+  - For free-text commands sent outside a thread, auto-creates a thread kickoff and responds with an ephemeral handoff link.
   - Acknowledges immediately and continues Jira/repo/run processing asynchronously.
 - `POST /api/integrations/slack/interactions`
   - Supports actions: `repo_disambiguation`, `approve_rerun`, `pause`, `close`.

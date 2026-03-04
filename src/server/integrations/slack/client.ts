@@ -102,3 +102,48 @@ export async function postSlackThreadMessage(
     messageTs: payload.ts ?? payload.message?.ts
   };
 }
+
+export async function postSlackChannelMessage(
+  env: Env,
+  target: {
+    tenantId: string;
+    repoId?: string;
+    channelId: string;
+    text: string;
+  }
+): Promise<{ delivered: boolean; reason?: string; ts?: string }> {
+  const config = await resolveSlackConfig(env, target);
+  const token = await resolveSlackBotToken(env, config, target.tenantId);
+  if (!token) {
+    return { delivered: false, reason: 'missing_slack_bot_token' };
+  }
+
+  const response = await fetch('https://slack.com/api/chat.postMessage', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json; charset=utf-8'
+    },
+    body: JSON.stringify({
+      channel: target.channelId,
+      text: target.text,
+      unfurl_links: false,
+      unfurl_media: false,
+      mrkdwn: true
+    })
+  });
+
+  if (!response.ok) {
+    return { delivered: false, reason: `slack_http_${response.status}` };
+  }
+
+  const payload = await response.json().catch(() => undefined) as { ok?: boolean; ts?: unknown } | undefined;
+  if (payload?.ok !== true) {
+    return { delivered: false, reason: 'slack_api_error' };
+  }
+
+  return {
+    delivered: true,
+    ts: typeof payload.ts === 'string' && payload.ts.trim() ? payload.ts.trim() : undefined
+  };
+}
