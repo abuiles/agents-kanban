@@ -29,6 +29,7 @@ import {
 } from './shared/review-contract';
 import { executePromptWithLlmAdapter } from './llm/runtime';
 import { getReviewPostingAdapter } from './review-posting/registry';
+import { normalizeRepoCheckpointConfig } from '../shared/checkpoint';
 
 type WorkflowBinding<T> = {
   create(options?: { id?: string; params?: T; retention?: { successRetention?: string | number; errorRetention?: string | number } }): Promise<{ id: string }>;
@@ -202,6 +203,15 @@ export async function executeRunJob(env: Env, params: RunJobParams, sleepFn: Sle
       throw error;
     }
 
+    await checkpointPhaseBoundaryOrFail({
+      repoBoard,
+      runId: params.runId,
+      repo,
+      task: detail.task,
+      sandbox,
+      phase: 'bootstrap'
+    });
+
     await repoBoard.transitionRun(params.runId, { status: 'RUNNING_CODEX', appendTimelineNote: `${llmExecutorLabel} executing with full sandbox permissions.` });
 
     try {
@@ -237,12 +247,30 @@ export async function executeRunJob(env: Env, params: RunJobParams, sleepFn: Sle
       throw error;
     }
 
+    await checkpointPhaseBoundaryOrFail({
+      repoBoard,
+      runId: params.runId,
+      repo,
+      task: detail.task,
+      sandbox,
+      phase: 'codex'
+    });
+
     await repoBoard.transitionRun(params.runId, {
       status: 'RUNNING_TESTS',
       appendTimelineNote: `${llmExecutorLabel}-selected validation commands executed inside the sandbox.`,
       executionSummary: { testsOutcome: 'skipped' }
     });
     await repoBoard.appendRunLogs(params.runId, [buildRunLog(params.runId, `${llmExecutorLabel} was responsible for choosing and running validation commands.`, 'tests')]);
+
+    await checkpointPhaseBoundaryOrFail({
+      repoBoard,
+      runId: params.runId,
+      repo,
+      task: detail.task,
+      sandbox,
+      phase: 'tests'
+    });
 
     await repoBoard.transitionRun(params.runId, { status: 'PUSHING_BRANCH', appendTimelineNote: 'Preparing git diff and push.' });
 
@@ -1073,6 +1101,196 @@ function formatPreviewDiscoveryLog(discovery: PreviewAdapterResult) {
   }
 
   return `${discovery.resolution.explanation} | checks: ${checks}${diagnostics}`;
+}
+
+async function checkpointPhaseBoundaryOrFail(input: {
+  repoBoard: DurableObjectStub<RepoBoardDO>;
+  runId: string;
+  repo: Repo;
+  task: Task;
+  sandbox: ReturnType<typeof getSandbox>;
+  phase: 'bootstrap' | 'codex' | 'tests' | 'push';
+}) {
+  try {
+    await createPhaseBoundaryCheckpoint(input);
+  } catch (error) {
+    await failRun(input.repoBoard, input.runId, 'CHECKPOINT_FAILED', input.phase, error);
+    throw error;
+  }
+}
+
+async function createPhaseBoundaryCheckpoint(input: {
+  repoBoard: DurableObjectStub<RepoBoardDO>;
+  runId: string;
+  repo: Repo;
+  task: Task;
+  sandbox: ReturnType<typeof getSandbox>;
+  phase: 'bootstrap' | 'codex' | 'tests' | 'push';
+}) {
+  const normalizedRepo = normalizeRepoCheckpointConfig(input.repo);
+  if (!normalizedRepo.checkpointConfig.enabled || normalizedRepo.checkpointConfig.triggerMode !== 'phase_boundary') {
+    return;
+  }
+
+  const statusResult = await emitCommandLifecycle(
+    input.repoBoard,
+    input.runId,
+    input.phase,
+    'cd /workspace/repo && git status --short',
+    () => input.sandbox.exec('cd /workspace/repo && git status --short')
+  );
+  if (!statusResult.success) {
+    throw new Error(statusResult.stderr || `Failed to inspect git status before ${input.phase} checkpoint.`);
+  }
+  if (!statusResult.stdout?.trim()) {
+    return;
+  }
+
+  const run = await input.repoBoard.getRun(input.runId);
+  const sequence = (run.checkpoints?.length ?? 0) + 1;
+  const checkpointId = buildCheckpointId(run.runId, input.phase, sequence);
+  const commitMessage = buildCheckpointCommitMessage(run.runId, input.phase, sequence);
+  const contextNotesPath = normalizedRepo.checkpointConfig.contextNotes.filePath;
+
+  if (normalizedRepo.checkpointConfig.contextNotes.enabled) {
+    const contextNotesDirectory = dirname(contextNotesPath);
+    if (contextNotesDirectory) {
+      const mkdirResult = await emitCommandLifecycle(
+        input.repoBoard,
+        input.runId,
+        input.phase,
+        `cd /workspace/repo && mkdir -p ${shellQuote(contextNotesDirectory)}`,
+        () => input.sandbox.exec(`cd /workspace/repo && mkdir -p ${shellQuote(contextNotesDirectory)}`)
+      );
+      if (!mkdirResult.success) {
+        throw new Error(mkdirResult.stderr || `Failed to prepare context notes directory ${contextNotesDirectory}.`);
+      }
+    }
+    await input.sandbox.writeFile(
+      `/workspace/repo/${contextNotesPath}`,
+      buildRunContextNote({
+        task: input.task,
+        repo: input.repo,
+        run,
+        phase: input.phase,
+        sequence,
+        contextNotesPath
+      })
+    );
+  }
+
+  const commitResult = await emitCommandLifecycle(
+    input.repoBoard,
+    input.runId,
+    input.phase,
+    `cd /workspace/repo && git add -A && git commit -m ${shellQuote(commitMessage)}`,
+    () => input.sandbox.exec(`cd /workspace/repo && git add -A && git commit -m ${shellQuote(commitMessage)}`)
+  );
+  if (!commitResult.success) {
+    throw new Error(commitResult.stderr || 'Failed to create checkpoint commit.');
+  }
+
+  const shaResult = await emitCommandLifecycle(
+    input.repoBoard,
+    input.runId,
+    input.phase,
+    'cd /workspace/repo && git rev-parse HEAD',
+    () => input.sandbox.exec('cd /workspace/repo && git rev-parse HEAD')
+  );
+  if (!shaResult.success) {
+    throw new Error(shaResult.stderr || 'Failed to resolve checkpoint commit SHA.');
+  }
+  const commitSha = shaResult.stdout.trim();
+  const createdAt = new Date().toISOString();
+  const checkpoint = {
+    checkpointId,
+    runId: run.runId,
+    repoId: run.repoId,
+    taskId: run.taskId,
+    phase: input.phase,
+    commitSha,
+    commitMessage,
+    contextNotesPath: normalizedRepo.checkpointConfig.contextNotes.enabled ? contextNotesPath : undefined,
+    createdAt
+  } as const;
+  const checkpoints = [...(run.checkpoints ?? []), checkpoint];
+  const updatedRun = await input.repoBoard.transitionRun(input.runId, {
+    checkpoints,
+    appendTimelineNote: `Checkpoint created (${input.phase}): ${commitSha.slice(0, 12)}.`
+  });
+  await input.repoBoard.appendRunEvents(input.runId, [
+    buildRunEvent(
+      updatedRun,
+      'workflow',
+      'run.checkpoint.created',
+      `Checkpoint created at ${input.phase}: ${commitSha.slice(0, 12)}.`,
+      {
+        checkpointId,
+        phase: input.phase,
+        commitSha,
+        sequence,
+        hasContextNotes: normalizedRepo.checkpointConfig.contextNotes.enabled
+      }
+    )
+  ]);
+}
+
+function buildCheckpointId(runId: string, phase: 'bootstrap' | 'codex' | 'tests' | 'push', sequence: number) {
+  return `${runId}:cp:${String(sequence).padStart(3, '0')}:${phase}`;
+}
+
+function buildCheckpointCommitMessage(runId: string, phase: 'bootstrap' | 'codex' | 'tests' | 'push', sequence: number) {
+  return `agentskanban checkpoint ${String(sequence).padStart(3, '0')} (${phase}) [${runId}]`;
+}
+
+function buildRunContextNote(input: {
+  task: Task;
+  repo: Repo;
+  run: Awaited<ReturnType<RepoBoardDO['getRun']>>;
+  phase: 'bootstrap' | 'codex' | 'tests' | 'push';
+  sequence: number;
+  contextNotesPath: string;
+}) {
+  return [
+    '# AgentsKanban Run Context',
+    '',
+    `runId: ${input.run.runId}`,
+    `taskId: ${input.run.taskId}`,
+    `repoId: ${input.run.repoId}`,
+    `repoSlug: ${input.repo.slug}`,
+    `branchName: ${input.run.branchName}`,
+    `checkpointSequence: ${String(input.sequence).padStart(3, '0')}`,
+    `checkpointPhase: ${input.phase}`,
+    `contextNotesPath: ${input.contextNotesPath}`,
+    '',
+    'Task:',
+    `- title: ${input.task.title}`,
+    `- prompt: ${input.task.taskPrompt}`,
+    '',
+    'Acceptance Criteria:',
+    ...input.task.acceptanceCriteria.map((criterion) => `- ${criterion}`),
+    '',
+    'Notes:',
+    input.task.context.notes?.trim() ? `- ${input.task.context.notes.trim()}` : '- (none)',
+    '',
+    'Links:',
+    ...(input.task.context.links.length
+      ? input.task.context.links.map((link) => `- ${link.label}: ${link.url}`)
+      : ['- (none)']),
+    ''
+  ].join('\n');
+}
+
+function dirname(path: string) {
+  const normalized = path.trim().replace(/\/+$/, '');
+  if (!normalized) {
+    return '';
+  }
+  const separatorIndex = normalized.lastIndexOf('/');
+  if (separatorIndex <= 0) {
+    return '';
+  }
+  return normalized.slice(0, separatorIndex);
 }
 
 async function getScmCredential(

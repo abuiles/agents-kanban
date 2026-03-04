@@ -81,6 +81,19 @@ function buildRepo(overrides: Partial<Repo> = {}): Repo {
     enabled: true,
     previewMode: 'skip',
     evidenceMode: 'skip',
+    checkpointConfig: {
+      enabled: false,
+      triggerMode: 'phase_boundary',
+      contextNotes: {
+        enabled: true,
+        filePath: '.agentskanban/context/run-context.md',
+        cleanupBeforeReview: true
+      },
+      reviewPrep: {
+        squashBeforeFirstReviewOpen: true,
+        rewriteOnChangeRequestRerun: false
+      }
+    },
     llmAuthBundleR2Key: 'llm-auth-bundle',
     createdAt: '2026-03-02T00:00:00.000Z',
     updatedAt: '2026-03-02T00:00:00.000Z',
@@ -857,6 +870,137 @@ describe('executeRunJob LLM adapter coverage', () => {
     await executeRunJob(harness.env, { tenantId: 'tenant_legacy', repoId: repo.repoId, taskId: task.taskId, runId: 'run_1', mode: 'full_run' }, async () => {});
 
     expect(harness.commands.some((command) => command.command.includes("git commit -m 'feat(JIRA-1234): Implement new feature'"))).toBe(true);
+  });
+
+  it('creates deterministic checkpoint metadata and tracked context notes at dirty phase boundaries', async () => {
+    const task = buildTask({
+      taskPrompt: 'Implement deterministic checkpointing.',
+      acceptanceCriteria: ['checkpoint commit exists', 'context note is tracked'],
+      context: {
+        notes: 'Persist checkpoint metadata and context notes.',
+        links: [{ id: 'plan', label: 'P8 plan', url: 'https://example.com/p8' }]
+      }
+    });
+    const repo = buildRepo({
+      checkpointConfig: {
+        enabled: true,
+        triggerMode: 'phase_boundary',
+        contextNotes: {
+          enabled: true,
+          filePath: '.agentskanban/context/run-context.md',
+          cleanupBeforeReview: true
+        },
+        reviewPrep: {
+          squashBeforeFirstReviewOpen: true,
+          rewriteOnChangeRequestRerun: false
+        }
+      }
+    });
+    const harness = createHarness(task, repo);
+    const sandbox = buildSandbox([
+      { type: 'stdout', data: 'Applied fix.\n' },
+      { type: 'exit', exitCode: 0 }
+    ]);
+    const baseExec = sandbox.exec.bind(sandbox);
+    let statusCall = 0;
+    sandbox.exec = async (command) => {
+      if (command.includes('git status --short')) {
+        statusCall += 1;
+        if (statusCall === 2) {
+          return { success: true, exitCode: 0, stdout: 'M src/index.ts\n' };
+        }
+        return { success: true, exitCode: 0, stdout: '' };
+      }
+      return baseExec(command);
+    };
+    sandboxState.current = sandbox;
+
+    await executeRunJob(harness.env, { tenantId: 'tenant_legacy', repoId: repo.repoId, taskId: task.taskId, runId: 'run_1', mode: 'full_run' }, async () => {});
+
+    expect(harness.getRun().status).toBe('DONE');
+    expect(harness.getRun().checkpoints).toHaveLength(1);
+    expect(harness.getRun().checkpoints?.[0]).toMatchObject({
+      checkpointId: 'run_1:cp:001:codex',
+      phase: 'codex',
+      commitMessage: 'agentskanban checkpoint 001 (codex) [run_1]',
+      contextNotesPath: '.agentskanban/context/run-context.md'
+    });
+    expect(harness.events.some((event) => event.eventType === 'run.checkpoint.created')).toBe(true);
+    expect(harness.getRun().timeline.some((entry) => entry.note?.includes('Checkpoint created (codex):'))).toBe(true);
+    expect(harness.commands.filter((command) => command.command.includes('git add -A && git commit -m')).length).toBe(1);
+    expect(sandbox.writes).toContainEqual({
+      path: '/workspace/repo/.agentskanban/context/run-context.md',
+      contents: [
+        '# AgentsKanban Run Context',
+        '',
+        'runId: run_1',
+        'taskId: task_1',
+        'repoId: repo_1',
+        'repoSlug: abuiles/minions',
+        'branchName: agent/task_1/run_1',
+        'checkpointSequence: 001',
+        'checkpointPhase: codex',
+        'contextNotesPath: .agentskanban/context/run-context.md',
+        '',
+        'Task:',
+        '- title: Adapter seam regression',
+        '- prompt: Implement deterministic checkpointing.',
+        '',
+        'Acceptance Criteria:',
+        '- checkpoint commit exists',
+        '- context note is tracked',
+        '',
+        'Notes:',
+        '- Persist checkpoint metadata and context notes.',
+        '',
+        'Links:',
+        '- P8 plan: https://example.com/p8',
+        ''
+      ].join('\n')
+    });
+  });
+
+  it('does not create checkpoint commits when phase boundaries are clean', async () => {
+    const task = buildTask();
+    const repo = buildRepo({
+      checkpointConfig: {
+        enabled: true,
+        triggerMode: 'phase_boundary',
+        contextNotes: {
+          enabled: true,
+          filePath: '.agentskanban/context/run-context.md',
+          cleanupBeforeReview: true
+        },
+        reviewPrep: {
+          squashBeforeFirstReviewOpen: true,
+          rewriteOnChangeRequestRerun: false
+        }
+      }
+    });
+    const harness = createHarness(task, repo);
+    const sandbox = buildSandbox([
+      { type: 'stdout', data: 'Applied fix.\n' },
+      { type: 'exit', exitCode: 0 }
+    ]);
+    const baseExec = sandbox.exec.bind(sandbox);
+    sandbox.exec = async (command) => {
+      if (command.includes('git status --short')) {
+        return { success: true, exitCode: 0, stdout: '' };
+      }
+      if (command.includes('git rev-parse HEAD')) {
+        return { success: true, exitCode: 0, stdout: 'b'.repeat(40) };
+      }
+      return baseExec(command);
+    };
+    sandboxState.current = sandbox;
+
+    await executeRunJob(harness.env, { tenantId: 'tenant_legacy', repoId: repo.repoId, taskId: task.taskId, runId: 'run_1', mode: 'full_run' }, async () => {});
+
+    expect(harness.getRun().status).toBe('DONE');
+    expect(harness.getRun().checkpoints).toBeUndefined();
+    expect(harness.events.some((event) => event.eventType === 'run.checkpoint.created')).toBe(false);
+    expect(sandbox.writes.some((entry) => entry.path.includes('.agentskanban/context/run-context.md'))).toBe(false);
+    expect(harness.commands.some((command) => command.command.includes('agentskanban checkpoint'))).toBe(false);
   });
 
   it('emits partial usage entries when the run fails', async () => {
