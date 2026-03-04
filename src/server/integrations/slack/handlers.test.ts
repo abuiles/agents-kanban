@@ -204,6 +204,46 @@ describe('slack handlers', () => {
     });
   });
 
+  it('responds to /kanvy help with usage guidance and does not start a run', async () => {
+    const repoBoard = makeRepoBoard({ taskId: 'task_help', runId: 'run_help' });
+    const rawBody = new URLSearchParams({
+      command: '/kanvy',
+      text: 'help',
+      channel_id: 'C123',
+      thread_ts: '1672531200.1234',
+      team_id: 'team_one',
+      user_id: 'U1',
+      response_url: 'https://hooks.slack.com/commands/help'
+    }).toString();
+    const timestamp = nowTs;
+    const signature = await buildSlackSignature('secret', timestamp, rawBody);
+    const request = new Request('https://example.test/api/integrations/slack/commands', {
+      method: 'POST',
+      headers: slackHeaders(timestamp, signature),
+      body: rawBody
+    });
+    const waitUntilTasks: Array<Promise<unknown>> = [];
+    const waitUntil = vi.fn((task: Promise<unknown>) => {
+      waitUntilTasks.push(task);
+    });
+
+    const response = await handleSlackCommands(request, makeEnv('secret', repoBoard), { waitUntil } as unknown as ExecutionContext<unknown>);
+    const body = await response.json() as { ok: boolean; text: string };
+
+    expect(response.status).toBe(200);
+    expect(body.ok).toBe(true);
+    expect(body.text).toContain('Accepted /kanvy help command');
+    expect(waitUntil).toHaveBeenCalledTimes(1);
+    await waitUntilTasks[0];
+    const calledPayload = JSON.parse(((vi.mocked(global.fetch).mock.calls[0] as [string, RequestInit])[1].body as string));
+    expect(calledPayload.text).toContain('/kanvy fix <JIRA_KEY>');
+    expect(calledPayload.text).toContain('/kanvy help');
+    expect(calledPayload.text).toContain('Free-text flow');
+    expect(fetchIssue).not.toHaveBeenCalled();
+    expect(repoBoard.createTask).not.toHaveBeenCalled();
+    expect(repoBoard.startRun).not.toHaveBeenCalled();
+  });
+
   it('asks for repo disambiguation when multiple mappings exist', async () => {
     tenantAuthDbMocks.listJiraProjectRepoMappingsByProject.mockResolvedValue([
       { jiraProjectKey: 'ABC', repoId: 'repo_alpha', priority: 0, active: true, id: 'm1', tenantId: 'tenant_local', createdAt: '', updatedAt: '' },

@@ -26,6 +26,12 @@ const FALLBACK_DISAMBIGUATION_WARNING = 'No matching repository was auto-selecte
 const DISAMBIGUATION_MULTIPLE_MAPPINGS_MESSAGE = 'Multiple repositories are mapped for Jira project';
 const DISAMBIGUATION_NO_MAPPING_MESSAGE = 'No active mapping exists for project';
 const INGRESS_DEDUPE_TTL_SECONDS = 10 * 60;
+const KANVY_HELP_TEXT = [
+  'Usage: `/kanvy fix <JIRA_KEY>` or `/kanvy help`.',
+  'Examples:',
+  '- Jira fast-path: `/kanvy fix ABC-123`',
+  '- Free-text flow: `/kanvy Investigate flaky checkout tests and propose a fix plan`'
+].join('\n');
 
 type RepoDisambiguationChoice = {
   repoId: string;
@@ -513,6 +519,14 @@ async function runSlackCommandAsync(
   payload: ReturnType<typeof parseSlackSlashCommandBody>,
   ctx?: ExecutionContext<unknown>
 ) {
+  if (payload.intent === 'help') {
+    await postSlackResponse(payload.responseUrl, {
+      response_type: 'ephemeral',
+      text: KANVY_HELP_TEXT
+    });
+    return;
+  }
+
   const tenantId = await resolveThreadTenantId(env, payload.teamId);
   const slashDedupeKey = buildIdempotencyKey({
     provider: 'slack',
@@ -613,7 +627,9 @@ export async function handleSlackCommands(
     }
     return json({
       ok: true,
-      text: `Accepted /kanvy command for ${payload.issueKey}.`
+      text: payload.intent === 'help'
+        ? 'Accepted /kanvy help command.'
+        : `Accepted /kanvy command for ${payload.issueKey}.`
     });
   } catch (error) {
     return handleError(error);
