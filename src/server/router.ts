@@ -31,6 +31,7 @@ import { parseBoardSnapshot } from '../ui/store/board-snapshot';
 import { scheduleRunJob } from './run-orchestrator';
 import { getRunUsage, getTenantRunUsage, getTenantUsageSummary } from './usage-reporting';
 import { normalizeTenantId, normalizeTenantIdStrict } from '../shared/tenant';
+import { hasRunReview } from '../shared/scm';
 import * as tenantAuthDb from './tenant-auth-db';
 import {
   handleSlackCommands as handleSlackCommandsHandler,
@@ -630,6 +631,38 @@ export async function handleRetryRun(request: Request, env: Env, params: RoutePa
       orchestrationMode: workflow.id.startsWith('local-alarm-') ? 'local_alarm' : 'workflow'
     });
     return json(await env.REPO_BOARD.getByName(repoId).getRun(run.runId, requestContext.activeTenantId));
+  });
+}
+
+export async function handleRerunReview(request: Request, env: Env, params: RouteParams, ctx: ExecutionContext<unknown>): Promise<Response> {
+  return withApiError(async () => {
+    const board = getBoard(env);
+    const requestContext = await resolveRequestTenantContext(env, board, request, { requireSession: true });
+    const runId = parsePathParam(params.runId);
+    const repoId = await resolveRepoIdForRun(board, runId);
+    await assertRepoAccess(env, board, requestContext, repoId);
+    const repoBoard = env.REPO_BOARD.getByName(repoId);
+    const run = await repoBoard.getRun(runId, requestContext.activeTenantId);
+    if (!hasRunReview(run)) {
+      throw badRequest('Manual review rerun requires an existing review context on this run.');
+    }
+    if (run.reviewExecution?.status === 'running') {
+      return json(run);
+    }
+
+    const workflow = await scheduleRunJob(env, ctx as unknown as ExecutionContext, {
+      tenantId: requestContext.activeTenantId,
+      repoId,
+      taskId: run.taskId,
+      runId,
+      mode: 'review_only'
+    });
+    await repoBoard.transitionRun(run.runId, {
+      workflowInstanceId: workflow.id,
+      orchestrationMode: workflow.id.startsWith('local-alarm-') ? 'local_alarm' : 'workflow',
+      appendTimelineNote: 'Manual review rerun queued.'
+    });
+    return json(await repoBoard.getRun(run.runId, requestContext.activeTenantId));
   });
 }
 

@@ -254,7 +254,8 @@ function createHarness(task: Task, repo: Repo) {
     RUN_ARTIFACTS: {
       get: vi.fn().mockResolvedValue({
         arrayBuffer: async () => new TextEncoder().encode('bundle').buffer
-      })
+      }),
+      put: vi.fn().mockResolvedValue(undefined)
     }
   } as unknown as Env;
 
@@ -288,6 +289,113 @@ beforeEach(() => {
 });
 
 describe('executeRunJob LLM adapter coverage', () => {
+  it('auto-runs review on REVIEW entry when enabled', async () => {
+    const task = buildTask({
+      sourceRef: 'https://jira.example.com/browse/AK-123',
+      uiMeta: {
+        llmAdapter: 'codex',
+        llmModel: 'gpt-5.3-codex',
+        llmReasoningEffort: 'medium'
+      }
+    });
+    const repo = buildRepo({
+      autoReview: {
+        enabled: true,
+        provider: 'jira',
+        postInline: false
+      }
+    });
+    const harness = createHarness(task, repo);
+    (harness.env as unknown as { JIRA_TOKEN?: string }).JIRA_TOKEN = 'jira-token-test';
+    const sandbox = buildSandbox([
+      { type: 'stdout', data: 'Applied fix.\n' },
+      { type: 'exit', exitCode: 0 }
+    ]);
+    const baseExec = sandbox.exec.bind(sandbox);
+    sandbox.exec = async (command) => {
+      if (command.includes('/workspace/prompt-last-message.txt')) {
+        return {
+          success: true,
+          exitCode: 0,
+          stdout: '\n===CODEX_LAST_MESSAGE===\n{"findings":[{"severity":"high","title":"Missing empty state guard","description":"Add a guard for null payloads.","filePath":"src/index.ts","lineStart":12}]}\n'
+        };
+      }
+      return baseExec(command);
+    };
+    sandboxState.current = sandbox;
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/rest/api/2/issue/AK-123/comment') && init?.method === 'POST') {
+        return new Response(JSON.stringify({ id: '301' }), { status: 200 });
+      }
+      if (url.includes('/rest/api/2/issue/AK-123/comment')) {
+        return new Response(JSON.stringify({ comments: [] }), { status: 200 });
+      }
+      throw new Error(`Unexpected fetch URL: ${url}`);
+    }));
+
+    await executeRunJob(harness.env, { tenantId: 'tenant_legacy', repoId: repo.repoId, taskId: task.taskId, runId: 'run_1', mode: 'full_run' }, async () => {});
+
+    expect(harness.getRun().reviewExecution).toMatchObject({
+      enabled: true,
+      trigger: 'auto_on_review',
+      status: 'completed',
+      round: 1,
+      promptSource: 'native'
+    });
+    expect(harness.getRun().reviewFindingsSummary).toMatchObject({
+      total: 1,
+      open: 1,
+      posted: 1,
+      provider: 'jira'
+    });
+    expect(harness.getRun().reviewPostState).toMatchObject({
+      provider: 'jira',
+      status: 'completed',
+      postedCount: 1,
+      findingsCount: 1
+    });
+    expect(harness.getRun().reviewArtifacts).toEqual({
+      findingsJsonKey: 'tenants/tenant_legacy/runs/run_1/review/findings.json',
+      reviewMarkdownKey: 'tenants/tenant_legacy/runs/run_1/review/review-findings.md'
+    });
+    expect(harness.getRun().timeline.some((entry) => entry.note?.includes('Auto review started (round 1).'))).toBe(true);
+    expect(harness.getRun().timeline.some((entry) => entry.note?.includes('Review completed (round 1; 1 findings, 1 posted).'))).toBe(true);
+  });
+
+  it('skips auto-review when effective setting is disabled', async () => {
+    const task = buildTask({
+      uiMeta: {
+        llmAdapter: 'codex',
+        llmModel: 'gpt-5.3-codex',
+        llmReasoningEffort: 'medium'
+      }
+    });
+    const repo = buildRepo({
+      autoReview: {
+        enabled: false,
+        provider: 'jira',
+        postInline: false
+      }
+    });
+    const harness = createHarness(task, repo);
+    sandboxState.current = buildSandbox([
+      { type: 'stdout', data: 'Applied fix.\n' },
+      { type: 'exit', exitCode: 0 }
+    ]);
+
+    await executeRunJob(harness.env, { tenantId: 'tenant_legacy', repoId: repo.repoId, taskId: task.taskId, runId: 'run_1', mode: 'full_run' }, async () => {});
+
+    expect(harness.getRun().reviewExecution).toMatchObject({
+      enabled: false,
+      trigger: 'auto_on_review',
+      status: 'not_started',
+      round: 0
+    });
+    expect(harness.getRun().reviewFindings).toBeUndefined();
+    expect(harness.getRun().timeline.some((entry) => entry.note?.includes('Auto-review skipped: disabled for this run context.'))).toBe(true);
+  });
+
   it('preserves Codex resume/session parity through the adapterized execution path', async () => {
     const task = buildTask({
       uiMeta: {

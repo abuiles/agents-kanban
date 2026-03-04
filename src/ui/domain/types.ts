@@ -160,6 +160,7 @@ export type RunReviewExecution = {
   round: number;
   startedAt?: string;
   endedAt?: string;
+  durationMs?: number;
 };
 export type RunReviewFindingsSummary = {
   total: number;
@@ -170,6 +171,19 @@ export type RunReviewFindingsSummary = {
 export type RunReviewArtifacts = {
   findingsJsonKey: string;
   reviewMarkdownKey: string;
+};
+export type RunReviewPostState = {
+  provider: AutoReviewProvider;
+  round: number;
+  status: 'not_attempted' | 'completed' | 'failed';
+  startedAt: string;
+  endedAt?: string;
+  postedCount: number;
+  findingsCount: number;
+  errors: string[];
+  summaryPosted?: boolean;
+  summaryThreadId?: string;
+  summaryThreadUrl?: string;
 };
 export type PreviewResolutionStatus = 'ready' | 'pending' | 'failed' | 'timed_out';
 export type PreviewDiagnostic = {
@@ -550,6 +564,7 @@ export type AgentRun = {
   reviewFindings?: ReviewFinding[];
   reviewFindingsSummary?: RunReviewFindingsSummary;
   reviewArtifacts?: RunReviewArtifacts;
+  reviewPostState?: RunReviewPostState;
   artifacts?: string[];
   artifactManifest?: ArtifactManifest;
   errors: RunError[];

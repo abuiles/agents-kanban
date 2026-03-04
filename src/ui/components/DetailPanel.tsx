@@ -115,6 +115,7 @@ export function DetailPanel({
   onEditTask,
   onRequestChanges,
   onRetryRun,
+  onRerunReview,
   onRetryPreview,
   onRetryEvidence,
   onOpenTerminal,
@@ -128,6 +129,7 @@ export function DetailPanel({
   onEditTask: (taskId: string) => void;
   onRequestChanges: (runId: string) => void;
   onRetryRun: (runId: string) => void;
+  onRerunReview: (runId: string) => void;
   onRetryPreview: (runId: string) => void;
   onRetryEvidence: (runId: string) => void;
   onOpenTerminal: (runId: string) => void;
@@ -222,6 +224,13 @@ export function DetailPanel({
                 className="inline-flex h-9 items-center rounded-lg border border-cyan-400/35 bg-cyan-500/15 px-3 text-sm font-medium text-cyan-50 transition hover:bg-cyan-500/25"
               >
                 Retry run
+              </button>
+              <button
+                type="button"
+                onClick={() => onRerunReview(latestRun.runId)}
+                className="inline-flex h-9 items-center rounded-lg border border-indigo-400/35 bg-indigo-500/15 px-3 text-sm font-medium text-indigo-50 transition hover:bg-indigo-500/25"
+              >
+                Re-run review
               </button>
               <button
                 type="button"
