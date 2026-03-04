@@ -206,6 +206,7 @@ export interface AgentBoardApi {
   startRun(taskId: string): Promise<AgentRun>;
   getRun(runId: string): Promise<AgentRun>;
   retryRun(runId: string): Promise<AgentRun>;
+  rerunReview(runId: string): Promise<AgentRun>;
   requestRunChanges(runId: string, input: RequestRunChangesInput): Promise<AgentRun>;
   retryPreview(runId: string): Promise<AgentRun>;
   retryEvidence(runId: string): Promise<AgentRun>;

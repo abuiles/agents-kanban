@@ -1,7 +1,7 @@
 import { getSandbox, type ExecResult } from '@cloudflare/sandbox';
 import type { RepoBoardDO } from './durable/repo-board';
 import type { BoardIndexDO } from './durable/board-index';
-import type { LlmReasoningEffort, Repo, RunCommand, RunCommandPhase, RunEvent, Task } from '../ui/domain/types';
+import type { AutoReviewProvider, LlmReasoningEffort, Repo, RunCommand, RunCommandPhase, RunEvent, Task } from '../ui/domain/types';
 import { buildRunLog, type RunJobParams } from './shared/real-run';
 import { NonRetryableError } from 'cloudflare:workflows';
 import { buildWorkflowInvocationId } from './workflow-id';
@@ -17,6 +17,18 @@ import type { PreviewAdapterContext, PreviewAdapterResult } from './preview/adap
 import { writeUsageLedgerEntriesBestEffort } from './usage-ledger';
 import { normalizeTenantId } from '../shared/tenant';
 import { redactSensitiveText } from './security/redaction';
+import {
+  attachReviewArtifactsToManifest,
+  buildReviewArtifactPointers,
+  buildReviewFindingsJsonArtifact,
+  buildReviewFindingsMarkdownArtifact,
+  buildRunReviewArtifacts,
+  parseReviewFindings,
+  resolveAutoReviewConfig,
+  REVIEW_FINDINGS_OUTPUT_SCHEMA
+} from './shared/review-contract';
+import { executePromptWithLlmAdapter } from './llm/runtime';
+import { getReviewPostingAdapter } from './review-posting/registry';
 
 type WorkflowBinding<T> = {
   create(options?: { id?: string; params?: T; retention?: { successRetention?: string | number; errorRetention?: string | number } }): Promise<{ id: string }>;
@@ -27,12 +39,13 @@ type Stage3Env = Env & {
   RUN_ARTIFACTS?: R2Bucket;
   GITHUB_TOKEN?: string;
   GITLAB_TOKEN?: string;
+  JIRA_TOKEN?: string;
   OPENAI_API_KEY?: string;
 };
 
 type SleepFn = (name: string, duration: number | `${number} ${string}`) => Promise<void>;
 type RunPhase = NonNullable<ReturnType<typeof buildRunLog>['phase']>;
-type SandboxRole = 'main' | 'preview' | 'evidence';
+type SandboxRole = 'main' | 'preview' | 'evidence' | 'review';
 type PushRemediationResult = {
   branchName?: string;
   diagnostics: string;
@@ -59,7 +72,7 @@ export async function executeRunJob(env: Env, params: RunJobParams, sleepFn: Sle
   const board = env.BOARD_INDEX.getByName('agentboard') as DurableObjectStub<BoardIndexDO>;
   const detail = await repoBoard.getTask(params.taskId);
   const run = await repoBoard.getRun(params.runId);
-  if (run.status === 'FAILED' || run.status === 'DONE') {
+  if ((run.status === 'FAILED' || run.status === 'DONE') && params.mode !== 'review_only') {
     return;
   }
   const repo = await board.getRepo(params.repoId);
@@ -136,6 +149,11 @@ export async function executeRunJob(env: Env, params: RunJobParams, sleepFn: Sle
         await getScmCredential(env as Stage3Env, repo, scmAdapter),
         promptRecipeRuntime
       );
+    }
+
+    if (params.mode === 'review_only') {
+      await executeRunReview(env as Stage3Env, repoBoard, detail.task, repo, params.runId, 'manual_rerun', sleepFn);
+      return;
     }
 
     const scmCredential = await getScmCredential(env as Stage3Env, repo, scmAdapter);
@@ -452,6 +470,8 @@ export async function executeRunJob(env: Env, params: RunJobParams, sleepFn: Sle
       throw error;
     }
 
+    await executeRunReview(env as Stage3Env, repoBoard, detail.task, repo, params.runId, 'auto_on_review', sleepFn);
+
     if (!shouldRunPreview(repo)) {
       await finishRunWithoutPreview(repoBoard, params.runId, 'Preview discovery and evidence are disabled for this repo.');
       return;
@@ -557,6 +577,270 @@ npx -y playwright install chromium
     await scmAdapter.upsertRunComment(repo, task, updated, scmCredential);
   }
   await repoBoard.transitionRun(runId, { status: 'DONE', evidenceStatus: 'READY', endedAt: new Date().toISOString(), appendTimelineNote: 'Evidence captured and manifest stored.' });
+}
+
+async function executeRunReview(
+  env: Stage3Env,
+  repoBoard: DurableObjectStub<RepoBoardDO>,
+  task: Task,
+  repo: Repo,
+  runId: string,
+  trigger: 'auto_on_review' | 'manual_rerun',
+  sleepFn: SleepFn
+) {
+  const baseRun = await repoBoard.getRun(runId);
+  if (baseRun.reviewExecution?.status === 'running') {
+    return;
+  }
+
+  const autoReview = resolveAutoReviewConfig(repo, task);
+  const previousRound = baseRun.reviewExecution?.round ?? 0;
+  if (!autoReview.enabled) {
+    await repoBoard.transitionRun(runId, {
+      reviewExecution: {
+        enabled: false,
+        trigger,
+        promptSource: autoReview.promptSource,
+        status: 'not_started',
+        round: previousRound
+      },
+      appendTimelineNote: trigger === 'auto_on_review'
+        ? 'Auto-review skipped: disabled for this run context.'
+        : 'Manual review rerun skipped: auto-review is disabled for this run context.'
+    });
+    return;
+  }
+
+  const startedAt = new Date().toISOString();
+  const round = previousRound + 1;
+  await repoBoard.transitionRun(runId, {
+    reviewExecution: {
+      enabled: true,
+      trigger,
+      promptSource: autoReview.promptSource,
+      status: 'running',
+      round,
+      startedAt
+    },
+    reviewPostState: {
+      provider: autoReview.provider,
+      round,
+      status: 'not_attempted',
+      startedAt,
+      postedCount: 0,
+      findingsCount: 0,
+      errors: []
+    },
+    appendTimelineNote: `${trigger === 'auto_on_review' ? 'Auto' : 'Manual'} review started (round ${round}).`
+  });
+  await repoBoard.appendRunLogs(runId, [
+    buildRunLog(runId, `Running ${trigger === 'auto_on_review' ? 'automatic' : 'manual'} review round ${round}.`, 'pr')
+  ]);
+
+  try {
+    const run = await repoBoard.getRun(runId);
+    const llmAdapterKind = resolveLlmAdapterKind(task, run.llmAdapter);
+    const llmAdapter = getLlmAdapter(llmAdapterKind);
+    const llmModel = task.uiMeta?.llmModel ?? task.uiMeta?.codexModel ?? 'gpt-5.1-codex-mini';
+    const llmReasoningEffort = task.uiMeta?.llmReasoningEffort ?? task.uiMeta?.codexReasoningEffort ?? 'medium';
+    const scmAdapter = getScmAdapter(repo);
+    const scmCredential = await getScmCredential(env, repo, scmAdapter);
+    const reviewSandbox = getSandbox(env.Sandbox, buildSandboxId(runId, 'review'));
+    const llmContext = { env, sandbox: reviewSandbox, repoBoard, runId };
+
+    await emitCommandLifecycle(repoBoard, runId, 'pr', 'mkdir -p /workspace/repo', () => reviewSandbox.exec('mkdir -p /workspace/repo'));
+    await configureSandboxRuntimeSecrets(reviewSandbox, env);
+    await reviewSandbox.gitCheckout(scmAdapter.buildCloneUrl(repo, scmCredential), {
+      branch: repo.defaultBranch,
+      targetDir: '/workspace/repo'
+    });
+    const checkout = await emitCommandLifecycle(
+      repoBoard,
+      runId,
+      'pr',
+      `cd /workspace/repo && git fetch origin ${shellEscape(run.branchName)} && git checkout -B ${shellEscape(run.branchName)} FETCH_HEAD`,
+      () => reviewSandbox.exec(`cd /workspace/repo && git fetch origin ${shellEscape(run.branchName)} && git checkout -B ${shellEscape(run.branchName)} FETCH_HEAD`)
+    );
+    if (!checkout.success) {
+      throw new Error(checkout.stderr || `Failed to prepare review branch ${run.branchName}.`);
+    }
+
+    const promptResult = await executePromptWithLlmAdapter(
+      llmAdapter,
+      llmContext,
+      {
+        repo,
+        task,
+        run,
+        cwd: '/workspace/repo',
+        prompt: buildReviewPrompt(task, repo, run, autoReview.prompt),
+        model: llmModel,
+        reasoningEffort: llmReasoningEffort,
+        timeoutMs: 180_000,
+        outputSchema: REVIEW_FINDINGS_OUTPUT_SCHEMA,
+        phase: 'pr'
+      },
+      sleepFn
+    );
+    if (promptResult.status !== 'success') {
+      throw new Error(
+        promptResult.status === 'timed_out'
+          ? `Review prompt timed out after ${promptResult.timeoutMs}ms.`
+          : promptResult.message
+      );
+    }
+
+    const parsed = parseReviewFindings(promptResult.rawOutput);
+    if (!parsed.ok) {
+      throw new Error(`${parsed.code}: ${parsed.message}`);
+    }
+
+    const postingStartedAt = new Date().toISOString();
+    let postErrors: string[] = [];
+    let postedCount = 0;
+    let findings = parsed.findings;
+    let summaryPosted: boolean | undefined;
+    let summaryThreadId: string | undefined;
+    let summaryThreadUrl: string | undefined;
+    const reviewCredential = getReviewPostingCredential(env, autoReview.provider);
+
+    if (!reviewCredential) {
+      postErrors = [`Missing ${autoReview.provider === 'gitlab' ? 'GITLAB_TOKEN' : 'JIRA_TOKEN'} for review posting provider ${autoReview.provider}.`];
+    } else {
+      try {
+        const postingAdapter = getReviewPostingAdapter(autoReview.provider);
+        const posting = await postingAdapter.postFindings({
+          repo,
+          task,
+          run,
+          findings,
+          credential: reviewCredential,
+          postInline: autoReview.postInline
+        });
+        findings = posting.updatedFindings;
+        postedCount = posting.findings.filter((entry) => entry.posted).length;
+        postErrors = posting.errors;
+        summaryPosted = posting.summary?.posted;
+        summaryThreadId = posting.summary?.providerThreadId;
+        summaryThreadUrl = posting.summary?.providerThreadUrl;
+      } catch (error) {
+        postErrors = [error instanceof Error ? error.message : String(error)];
+      }
+    }
+
+    const pointers = buildReviewArtifactPointers({ tenantId: run.tenantId, runId });
+    const findingsJson = buildReviewFindingsJsonArtifact(findings);
+    const findingsMarkdown = buildReviewFindingsMarkdownArtifact(findings);
+    await persistReviewArtifacts(env, run, pointers.findingsJson.key, findingsJson, pointers.reviewMarkdown.key, findingsMarkdown);
+    const reviewArtifacts = buildRunReviewArtifacts({ tenantId: run.tenantId, runId });
+    const latestRun = await repoBoard.getRun(runId);
+    const endedAt = new Date().toISOString();
+
+    await repoBoard.transitionRun(runId, {
+      reviewExecution: {
+        enabled: true,
+        trigger,
+        promptSource: autoReview.promptSource,
+        status: 'completed',
+        round,
+        startedAt,
+        endedAt,
+        durationMs: Math.max(0, Date.parse(endedAt) - Date.parse(startedAt))
+      },
+      reviewFindings: findings,
+      reviewFindingsSummary: {
+        total: findings.length,
+        open: findings.filter((finding) => finding.status === 'open').length,
+        posted: postedCount,
+        provider: autoReview.provider
+      },
+      reviewArtifacts,
+      reviewPostState: {
+        provider: autoReview.provider,
+        round,
+        status: postErrors.length ? 'failed' : 'completed',
+        startedAt: postingStartedAt,
+        endedAt,
+        postedCount,
+        findingsCount: findings.length,
+        errors: postErrors,
+        summaryPosted,
+        summaryThreadId,
+        summaryThreadUrl
+      },
+      artifactManifest: latestRun.artifactManifest
+        ? attachReviewArtifactsToManifest(latestRun.artifactManifest, { tenantId: run.tenantId, runId })
+        : undefined,
+      artifacts: [...new Set([...(latestRun.artifacts ?? []), reviewArtifacts.findingsJsonKey, reviewArtifacts.reviewMarkdownKey])],
+      appendTimelineNote: `Review completed (round ${round}; ${findings.length} findings, ${postedCount} posted).`
+    });
+    await repoBoard.appendRunLogs(runId, [
+      buildRunLog(runId, `Review round ${round} completed with ${findings.length} findings (${postedCount} posted).`, 'pr')
+    ]);
+  } catch (error) {
+    const endedAt = new Date().toISOString();
+    const message = redactSensitiveText(error instanceof Error ? error.message : String(error));
+    const latestRun = await repoBoard.getRun(runId);
+    await repoBoard.appendRunLogs(runId, [buildRunLog(runId, message, 'pr', 'error')]);
+    await repoBoard.transitionRun(runId, {
+      reviewExecution: {
+        enabled: true,
+        trigger,
+        promptSource: autoReview.promptSource,
+        status: 'failed',
+        round,
+        startedAt,
+        endedAt,
+        durationMs: Math.max(0, Date.parse(endedAt) - Date.parse(startedAt))
+      },
+      reviewPostState: latestRun.reviewPostState?.round === round
+        ? {
+            ...latestRun.reviewPostState,
+            status: 'failed',
+            endedAt,
+            errors: latestRun.reviewPostState.errors.length ? latestRun.reviewPostState.errors : [message]
+          }
+        : {
+            provider: autoReview.provider,
+            round,
+            status: 'failed',
+            startedAt,
+            endedAt,
+            postedCount: 0,
+            findingsCount: 0,
+            errors: [message]
+          },
+      appendTimelineNote: `Review failed (round ${round}): ${message}`
+    });
+  }
+}
+
+function buildReviewPrompt(task: Task, repo: Repo, run: Awaited<ReturnType<RepoBoardDO['getRun']>>, customPrompt?: string) {
+  const reviewIntent = customPrompt?.trim()
+    ? `Review instructions:\n${customPrompt.trim()}`
+    : [
+        'Review instructions:',
+        'Perform a code review focused on correctness, regressions, security risks, and missing tests.',
+        'Only report actionable findings that should block merge.'
+      ].join('\n');
+
+  return [
+    `You are reviewing code changes for ${repo.slug}.`,
+    `Run: ${run.runId}`,
+    `Branch: ${run.branchName}`,
+    '',
+    `Task: ${task.title}`,
+    task.description ? `Task description: ${task.description}` : undefined,
+    '',
+    'Acceptance criteria:',
+    ...task.acceptanceCriteria.map((item) => `- ${item}`),
+    '',
+    reviewIntent,
+    '',
+    'Return JSON only using this exact schema shape:',
+    '{ "findings": [ { "severity": "critical|high|medium|low|info", "title": "string", "description": "string", "filePath": "string?", "lineStart": "number?", "lineEnd": "number?" } ] }',
+    'If there are no issues, return {"findings":[]}.'
+  ].filter(Boolean).join('\n');
 }
 
 async function waitForPreview(
@@ -807,6 +1091,13 @@ async function getScmCredential(
   );
 }
 
+function getReviewPostingCredential(env: Stage3Env, provider: AutoReviewProvider) {
+  if (provider === 'gitlab') {
+    return env.GITLAB_TOKEN?.trim() ? { token: env.GITLAB_TOKEN.trim() } : undefined;
+  }
+  return env.JIRA_TOKEN?.trim() ? { token: env.JIRA_TOKEN.trim() } : undefined;
+}
+
 async function configureSandboxRuntimeSecrets(
   sandbox: ReturnType<typeof getSandbox>,
   env: Stage3Env
@@ -850,6 +1141,47 @@ async function persistArtifactManifest(env: Stage3Env, run: Awaited<ReturnType<R
       quantity: payload.length,
       source: 'workflow',
       metadata: { object: 'manifest.json' }
+    }
+  ]);
+}
+
+async function persistReviewArtifacts(
+  env: Stage3Env,
+  run: Awaited<ReturnType<RepoBoardDO['getRun']>>,
+  findingsJsonKey: string,
+  findingsJson: string,
+  reviewMarkdownKey: string,
+  reviewMarkdown: string
+) {
+  if (!env.RUN_ARTIFACTS) {
+    return;
+  }
+  await env.RUN_ARTIFACTS.put(findingsJsonKey, findingsJson, {
+    httpMetadata: { contentType: 'application/json' }
+  });
+  await env.RUN_ARTIFACTS.put(reviewMarkdownKey, reviewMarkdown, {
+    httpMetadata: { contentType: 'text/markdown; charset=utf-8' }
+  });
+  await writeUsageLedgerEntriesBestEffort(env, [
+    {
+      tenantId: normalizeTenantId(run.tenantId),
+      repoId: run.repoId,
+      taskId: run.taskId,
+      runId: run.runId,
+      category: 'r2_write_ops',
+      quantity: 2,
+      source: 'workflow',
+      metadata: { object: 'review-artifacts' }
+    },
+    {
+      tenantId: normalizeTenantId(run.tenantId),
+      repoId: run.repoId,
+      taskId: run.taskId,
+      runId: run.runId,
+      category: 'r2_storage_bytes',
+      quantity: findingsJson.length + reviewMarkdown.length,
+      source: 'workflow',
+      metadata: { object: 'review-artifacts' }
     }
   ]);
 }

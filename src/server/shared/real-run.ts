@@ -3,7 +3,7 @@ import { DEFAULT_SUPPORTS_RESUME_BY_ADAPTER, normalizeRunLlmState, normalizeTask
 import { normalizeRunReviewMetadata } from '../../shared/scm';
 import { normalizeTenantId } from '../../shared/tenant';
 
-export type RunJobMode = 'full_run' | 'evidence_only' | 'preview_only';
+export type RunJobMode = 'full_run' | 'evidence_only' | 'preview_only' | 'review_only';
 
 export type RunJobParams = {
   tenantId: string;
@@ -48,6 +48,11 @@ export type RunTransitionPatch = {
   artifactManifest?: ArtifactManifest;
   artifacts?: string[];
   executionSummary?: AgentRun['executionSummary'];
+  reviewExecution?: AgentRun['reviewExecution'];
+  reviewFindings?: AgentRun['reviewFindings'];
+  reviewFindingsSummary?: AgentRun['reviewFindingsSummary'];
+  reviewArtifacts?: AgentRun['reviewArtifacts'];
+  reviewPostState?: AgentRun['reviewPostState'];
   endedAt?: string;
   currentStepStartedAt?: string;
   appendTimelineNote?: string;
@@ -189,6 +194,20 @@ export function buildArtifactManifest(run: AgentRun, task: Task, repo: Repo, env
       label: 'Playwright video',
       url: `r2://${baseKey}/evidence/video.mp4`
     },
+    reviewFindingsJson: run.reviewArtifacts
+      ? {
+          key: run.reviewArtifacts.findingsJsonKey,
+          label: 'Review findings JSON',
+          url: `r2://${run.reviewArtifacts.findingsJsonKey}`
+        }
+      : undefined,
+    reviewMarkdown: run.reviewArtifacts
+      ? {
+          key: run.reviewArtifacts.reviewMarkdownKey,
+          label: 'Review markdown',
+          url: `r2://${run.reviewArtifacts.reviewMarkdownKey}`
+        }
+      : undefined,
     metadata: {
       tenantId: normalizeTenantId(run.tenantId),
       generatedAt: new Date().toISOString(),

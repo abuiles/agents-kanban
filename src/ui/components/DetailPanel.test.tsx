@@ -115,6 +115,7 @@ function buildProps() {
     onEditTask: vi.fn(),
     onRequestChanges: vi.fn(),
     onRetryRun: vi.fn(),
+    onRerunReview: vi.fn(),
     onRetryPreview: vi.fn(),
     onRetryEvidence: vi.fn(),
     onOpenTerminal: vi.fn(),
@@ -295,5 +296,22 @@ describe('DetailPanel', () => {
 
     expect(onOpenTerminal).toHaveBeenCalledWith('run_demo');
     expect(onTakeOverRun).toHaveBeenCalledWith('run_demo');
+  });
+
+  it('routes re-run review clicks to the review rerun handler', async () => {
+    const user = userEvent.setup();
+    const onRerunReview = vi.fn();
+
+    render(
+      <DetailPanel
+        {...buildProps()}
+        onRerunReview={onRerunReview}
+      />
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Re-run review' }));
+
+    expect(onRerunReview).toHaveBeenCalledTimes(1);
+    expect(onRerunReview).toHaveBeenCalledWith('run_demo');
   });
 });

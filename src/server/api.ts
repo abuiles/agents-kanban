@@ -34,6 +34,7 @@ import {
   handleListTasks,
   handleMe,
   handleRequestChanges,
+  handleRerunReview,
   handleRetryEvidence,
   handleRetryPreview,
   handleRetryRun,
@@ -115,6 +116,9 @@ apiRouter.get('/api/runs/:runId', (c: Context) =>
 );
 apiRouter.post('/api/runs/:runId/retry', (c: Context) =>
   handleRetryRun(c.req.raw, c.env as Env, { runId: c.req.param('runId') }, c.executionCtx as unknown as ExecutionContext<unknown>)
+);
+apiRouter.post('/api/runs/:runId/review', (c: Context) =>
+  handleRerunReview(c.req.raw, c.env as Env, { runId: c.req.param('runId') }, c.executionCtx as unknown as ExecutionContext<unknown>)
 );
 apiRouter.post('/api/runs/:runId/cancel', (c: Context) =>
   handleCancelRun(c.req.raw, c.env as Env, { runId: c.req.param('runId') })

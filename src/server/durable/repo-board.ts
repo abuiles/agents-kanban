@@ -37,7 +37,7 @@ const MAX_EVENT_MESSAGE_CHARS = 600;
 const MAX_COMMAND_PREVIEW_CHARS = 1000;
 
 type RepoScopedEvent = BoardEvent & { repoId?: string };
-type LocalJobs = Record<string, 'full_run' | 'evidence_only' | 'preview_only'>;
+type LocalJobs = Record<string, 'full_run' | 'evidence_only' | 'preview_only' | 'review_only'>;
 
 export class RepoBoardDO extends DurableObject<Env> {
   private state: RepoBoardState = EMPTY_REPO_BOARD_STATE;
@@ -504,7 +504,7 @@ export class RepoBoardDO extends DurableObject<Env> {
   async transitionRun(runId: string, patch: RunTransitionPatch, tenantId?: string): Promise<AgentRun> {
     await this.ready;
     const run = await this.getRun(runId, tenantId);
-    if (isTerminalRunStatus(run.status)) {
+    if (isTerminalRunStatus(run.status) && patch.status && patch.status !== run.status) {
       return run;
     }
     const nowIso = new Date().toISOString();
@@ -798,7 +798,7 @@ export class RepoBoardDO extends DurableObject<Env> {
     return updated;
   }
 
-  async scheduleLocalRun(runId: string, mode: 'full_run' | 'evidence_only' | 'preview_only') {
+  async scheduleLocalRun(runId: string, mode: 'full_run' | 'evidence_only' | 'preview_only' | 'review_only') {
     await this.ready;
     this.localJobs[runId] = mode;
     await this.persistLocalJobs();
@@ -1151,6 +1151,14 @@ function cloneRepoBoardState(state: RepoBoardState): RepoBoardState {
               : undefined
           }
         : undefined,
+      reviewExecution: run.reviewExecution ? { ...run.reviewExecution } : undefined,
+      reviewFindings: run.reviewFindings?.map((finding) => ({
+        ...finding,
+        replyContext: finding.replyContext ? [...finding.replyContext] : undefined
+      })),
+      reviewFindingsSummary: run.reviewFindingsSummary ? { ...run.reviewFindingsSummary } : undefined,
+      reviewArtifacts: run.reviewArtifacts ? { ...run.reviewArtifacts } : undefined,
+      reviewPostState: run.reviewPostState ? { ...run.reviewPostState, errors: [...(run.reviewPostState.errors ?? [])] } : undefined,
       artifacts: run.artifacts ? [...run.artifacts] : undefined,
       latestCodexResumeCommand: (run.llmAdapter ?? run.operatorSession?.llmAdapter ?? 'codex') === 'codex'
         ? (run.latestCodexResumeCommand ?? run.llmResumeCommand)
@@ -1217,7 +1225,15 @@ function normalizeRepoBoardState(state?: Partial<RepoBoardState> | null): RepoBo
                 }
               : undefined
           }
-        : undefined
+        : undefined,
+      reviewExecution: run.reviewExecution ? { ...run.reviewExecution } : undefined,
+      reviewFindings: run.reviewFindings?.map((finding) => ({
+        ...finding,
+        replyContext: finding.replyContext ? [...finding.replyContext] : undefined
+      })),
+      reviewFindingsSummary: run.reviewFindingsSummary ? { ...run.reviewFindingsSummary } : undefined,
+      reviewArtifacts: run.reviewArtifacts ? { ...run.reviewArtifacts } : undefined,
+      reviewPostState: run.reviewPostState ? { ...run.reviewPostState, errors: [...(run.reviewPostState.errors ?? [])] } : undefined
     };
   });
   const runTenantIds = new Map(normalizedRuns.map((run) => [run.runId, run.tenantId]));

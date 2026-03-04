@@ -512,6 +512,43 @@ export class LocalAgentBoardApi implements AgentBoardApi {
     });
   }
 
+  async rerunReview(runId: string): Promise<AgentRun> {
+    const run = await this.getRun(runId);
+    const startedAt = nowIso();
+    const round = (run.reviewExecution?.round ?? 0) + 1;
+    const reviewExecution = {
+      enabled: true,
+      trigger: 'manual_rerun' as const,
+      promptSource: run.reviewExecution?.promptSource ?? 'native',
+      status: 'completed' as const,
+      round,
+      startedAt,
+      endedAt: startedAt,
+      durationMs: 0
+    };
+
+    let updatedRun: AgentRun | undefined;
+    this.store.update((snapshot) => ({
+      ...snapshot,
+      runs: snapshot.runs.map((candidate) => {
+        if (candidate.runId !== runId) {
+          return candidate;
+        }
+        updatedRun = {
+          ...candidate,
+          reviewExecution,
+          timeline: [...candidate.timeline, { status: candidate.status, at: startedAt, note: 'Manual review rerun completed (mock).' }]
+        };
+        return updatedRun;
+      })
+    }));
+
+    if (!updatedRun) {
+      throw new Error(`Run ${runId} not found.`);
+    }
+    return updatedRun;
+  }
+
   async requestRunChanges(runId: string, input: RequestRunChangesInput): Promise<AgentRun> {
     const run = await this.getRun(runId);
     const task = this.store.getSnapshot().tasks.find((candidate) => candidate.taskId === run.taskId);

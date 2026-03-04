@@ -205,6 +205,12 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
     setNotice('Started a fresh run.');
   }
 
+  async function rerunReview(runId: string) {
+    const run = await api.rerunReview(runId);
+    await api.setSelectedTaskId(run.taskId);
+    setNotice('Queued manual review rerun for this review context.');
+  }
+
   async function retryPreview(runId: string) {
     const run = await api.retryPreview(runId);
     await api.setSelectedTaskId(run.taskId);
@@ -533,6 +539,7 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
               onEditTask={(taskId) => setTaskToEditId(taskId)}
               onRequestChanges={(runId) => setChangeRequestRunId(runId)}
               onRetryRun={(runId) => void retryRun(runId)}
+              onRerunReview={(runId) => void rerunReview(runId)}
               onRetryPreview={(runId) => void retryPreview(runId)}
               onRetryEvidence={(runId) => void retryEvidence(runId)}
               onOpenTerminal={(runId) => void openTerminal(runId)}
