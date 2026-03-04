@@ -871,6 +871,10 @@ function buildDefaultCommitMessage(task: Task, run: Awaited<ReturnType<RepoBoard
   if (!template?.trim()) {
     return `AgentsKanban: ${task.title}`;
   }
+  if (!/\{[a-zA-Z0-9_]+\}/.test(template)) {
+    // Free-form policy guidance belongs in the LLM prompt, not as a literal commit subject.
+    return `AgentsKanban: ${task.title}`;
+  }
 
   const values: Record<string, string> = {
     taskTitle: task.title,
@@ -916,26 +920,33 @@ async function resolveCommitMessageForRun(input: {
   reasoningEffort: LlmReasoningEffort;
   candidate: string;
 }): Promise<string> {
+  const hasPolicyGuidance = Boolean(
+    input.repo.commitConfig?.messageTemplate?.trim()
+    || input.repo.commitConfig?.messageRegex?.trim()
+    || input.repo.commitConfig?.messageExamples?.length
+  );
   const commitRegex = getCommitPolicyRegex(input.repo);
   const initial = sanitizeCommitMessage(input.candidate);
   if (!initial) {
     throw new Error('Resolved commit message is empty after normalization.');
   }
-  if (!commitRegex) {
+  if (!hasPolicyGuidance) {
     return initial;
   }
-  if (commitRegex.test(initial)) {
+  if (commitRegex && commitRegex.test(initial)) {
     return initial;
   }
 
   const remediationPrompt = [
-    'Rewrite the git commit message to satisfy repository policy.',
+    'Generate a single git commit subject line that follows this repository commit convention.',
     '',
     `Repository: ${input.repo.slug}`,
     `Task: ${input.task.title}`,
     `Current commit message: ${initial}`,
-    `Required regex: ${input.repo.commitConfig?.messageRegex}`,
-    input.repo.commitConfig?.messageTemplate ? `Configured template: ${input.repo.commitConfig.messageTemplate}` : undefined,
+    input.repo.commitConfig?.messageTemplate
+      ? `Commit policy guidance: ${input.repo.commitConfig.messageTemplate}`
+      : undefined,
+    input.repo.commitConfig?.messageRegex ? `Required regex: ${input.repo.commitConfig?.messageRegex}` : undefined,
     input.repo.commitConfig?.messageExamples?.length
       ? ['Examples:', ...input.repo.commitConfig.messageExamples.map((example) => `- ${example}`)].join('\n')
       : undefined,
@@ -956,6 +967,9 @@ async function resolveCommitMessageForRun(input: {
   });
 
   if (remediation.status !== 'success') {
+    if (!commitRegex) {
+      return initial;
+    }
     throw new Error(
       remediation.status === 'timed_out'
         ? `Commit message remediation timed out after ${remediation.timeoutMs}ms.`
@@ -964,9 +978,12 @@ async function resolveCommitMessageForRun(input: {
   }
   const remediated = sanitizeCommitMessage(extractStringFieldFromJsonOutput(remediation.rawOutput, 'commitMessage'));
   if (!remediated) {
+    if (!commitRegex) {
+      return initial;
+    }
     throw new Error('Commit message remediation returned an empty commitMessage value.');
   }
-  if (!commitRegex.test(remediated)) {
+  if (commitRegex && !commitRegex.test(remediated)) {
     throw new Error(
       `Commit message remediation returned a non-compliant message. Regex: ${input.repo.commitConfig?.messageRegex}. Message: ${remediated}`
     );

@@ -613,6 +613,43 @@ describe('executeRunJob LLM adapter coverage', () => {
     expect(harness.commands.some((command) => command.command.includes("git commit -m 'feat(cp): policy-compliant commit'"))).toBe(true);
   });
 
+  it('uses LLM commit guidance even when no commit regex is configured', async () => {
+    const task = buildTask({
+      uiMeta: {
+        llmAdapter: 'codex',
+        llmModel: 'gpt-5.3-codex',
+        llmReasoningEffort: 'medium'
+      }
+    });
+    const repo = buildRepo({
+      commitConfig: {
+        messageTemplate: 'Make sure commits follow the commit conventions used in this repository. Example: feat(JIRA-1234): Implement new feature.',
+        messageExamples: ['feat(JIRA-1234): Implement new feature']
+      }
+    });
+    const harness = createHarness(task, repo);
+    const sandbox = buildSandbox([
+      { type: 'stdout', data: 'Applied fix.\n' },
+      { type: 'exit', exitCode: 0 }
+    ]);
+    const baseExec = sandbox.exec.bind(sandbox);
+    sandbox.exec = async (command) => {
+      if (command.includes('/workspace/prompt-last-message.txt')) {
+        return {
+          success: true,
+          exitCode: 0,
+          stdout: '\n===CODEX_LAST_MESSAGE===\n{"commitMessage":"feat(JIRA-1234): Implement new feature"}\n'
+        };
+      }
+      return baseExec(command);
+    };
+    sandboxState.current = sandbox;
+
+    await executeRunJob(harness.env, { tenantId: 'tenant_legacy', repoId: repo.repoId, taskId: task.taskId, runId: 'run_1', mode: 'full_run' }, async () => {});
+
+    expect(harness.commands.some((command) => command.command.includes("git commit -m 'feat(JIRA-1234): Implement new feature'"))).toBe(true);
+  });
+
   it('emits partial usage entries when the run fails', async () => {
     const task = buildTask({
       uiMeta: {
