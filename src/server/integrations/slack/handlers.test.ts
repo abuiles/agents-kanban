@@ -26,7 +26,10 @@ vi.mock('../jira/client', () => jiraClientMocks);
 vi.mock('../../run-orchestrator', () => runOrchestratorMocks);
 
 function createKv(secret: string) {
-  const values = new Map<string, string>([['slack/signing-secret', secret]]);
+  const values = new Map<string, string>([
+    ['slack/signing-secret', secret],
+    ['slack/bot-token', 'xoxb-test']
+  ]);
   return {
     async get(key: string) {
       return values.get(key) ?? null;
@@ -322,6 +325,65 @@ describe('slack handlers', () => {
     }));
   });
 
+  it('auto-creates a thread for non-thread free-text /kanvy and continues intake there', async () => {
+    fetchSpy.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('slack.com/api/chat.postMessage')) {
+        return new Response(JSON.stringify({ ok: true, ts: '1672531299.5000' }), { status: 200 });
+      }
+      if (url.includes('/v1/chat/completions')) {
+        return new Response(JSON.stringify({
+          choices: [{
+            message: {
+              content: JSON.stringify({
+                intent: 'create_task',
+                confidence: 0.52,
+                taskTitle: 'Investigate checkout flake',
+                taskPrompt: 'Investigate intermittent checkout failures and propose fixes.',
+                acceptanceCriteria: [],
+                missingFields: ['acceptance_criteria'],
+                clarifyingQuestion: 'What acceptance criteria should I use?'
+              })
+            }
+          }]
+        }), { status: 200 });
+      }
+      return new Response('{}', { status: 200 });
+    });
+
+    const rawBody = new URLSearchParams({
+      command: '/kanvy',
+      text: 'Investigate flaky checkout tests',
+      channel_id: 'C123',
+      team_id: 'team_one',
+      user_id: 'U1',
+      response_url: 'https://hooks.slack.com/commands/response'
+    }).toString();
+    const signature = await buildSlackSignature('secret', nowTs, rawBody);
+    const request = new Request('https://example.test/api/integrations/slack/commands', {
+      method: 'POST',
+      headers: slackHeaders(nowTs, signature),
+      body: rawBody
+    });
+    const waitUntilTasks: Array<Promise<unknown>> = [];
+    const waitUntil = vi.fn((task: Promise<unknown>) => waitUntilTasks.push(task));
+
+    const response = await handleSlackCommands(request, makeEnv('secret'), { waitUntil } as unknown as ExecutionContext<unknown>);
+
+    expect(response.status).toBe(200);
+    await waitUntilTasks[0];
+    expect(tenantAuthDbMocks.upsertSlackIntakeSession).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      tenantId: 'team_one',
+      channelId: 'C123',
+      threadTs: '1672531299.5000',
+      status: 'active'
+    }));
+
+    const calledUrls = vi.mocked(global.fetch).mock.calls.map((entry) => String(entry[0]));
+    expect(calledUrls.filter((url) => url.includes('slack.com/api/chat.postMessage')).length).toBeGreaterThanOrEqual(2);
+    expect(calledUrls.some((url) => url.includes('hooks.slack.com/commands/response'))).toBe(false);
+  });
+
   it('asks for repo disambiguation when multiple mappings exist', async () => {
     tenantAuthDbMocks.listJiraProjectRepoMappingsByProject.mockResolvedValue([
       { jiraProjectKey: 'ABC', repoId: 'repo_alpha', priority: 0, active: true, id: 'm1', tenantId: 'tenant_local', createdAt: '', updatedAt: '' },
@@ -401,6 +463,7 @@ describe('slack handlers', () => {
 
   it('returns clear Jira read failure responses and does not create tasks', async () => {
     const failingBoard = makeRepoBoard({ taskId: 'task_fail', runId: 'run_fail' });
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     jiraClientMocks.createJiraIssueSourceIntegrationFromEnv.mockReturnValue({
       fetchIssue: vi.fn().mockRejectedValue(new Error('temporary outage'))
     });
@@ -435,6 +498,8 @@ describe('slack handlers', () => {
     expect(calledPayload.text).toContain('Failed to process /kanvy command for ABC-100');
     expect(calledPayload.text).toContain('temporary outage');
     expect(failingBoard.createTask).not.toHaveBeenCalled();
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('[slack:/kanvy] jira_flow_failed'));
+    errorSpy.mockRestore();
   });
 
   it('dedupes duplicate slash command deliveries for the same response url', async () => {

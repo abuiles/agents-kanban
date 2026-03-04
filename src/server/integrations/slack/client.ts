@@ -58,10 +58,10 @@ export async function postSlackThreadMessage(
     tenantId: string;
     repoId?: string;
     channelId: string;
-    threadTs: string;
+    threadTs?: string;
     text: string;
   }
-): Promise<{ delivered: boolean; reason?: string }> {
+): Promise<{ delivered: boolean; reason?: string; messageTs?: string }> {
   const config = await resolveSlackConfig(env, target);
   const token = await resolveSlackBotToken(env, config, target.tenantId);
   if (!token) {
@@ -76,7 +76,7 @@ export async function postSlackThreadMessage(
     },
     body: JSON.stringify({
       channel: target.channelId,
-      thread_ts: target.threadTs,
+      ...(target.threadTs ? { thread_ts: target.threadTs } : {}),
       text: target.text,
       unfurl_links: false,
       unfurl_media: false,
@@ -88,10 +88,17 @@ export async function postSlackThreadMessage(
     return { delivered: false, reason: `slack_http_${response.status}` };
   }
 
-  const payload = await response.json().catch(() => undefined) as { ok?: boolean } | undefined;
+  const payload = await response.json().catch(() => undefined) as {
+    ok?: boolean;
+    ts?: string;
+    message?: { ts?: string };
+  } | undefined;
   if (payload?.ok !== true) {
     return { delivered: false, reason: 'slack_api_error' };
   }
 
-  return { delivered: true };
+  return {
+    delivered: true,
+    messageTs: payload.ts ?? payload.message?.ts
+  };
 }

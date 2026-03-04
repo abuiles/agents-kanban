@@ -40,13 +40,14 @@ Out of scope (this phase):
 
 ## Operator day-to-day flow (no dashboard required)
 
-1. In Slack, run `/kanvy fix ABC-123` for deterministic Jira flow, or `/kanvy <free-text request>` from a thread.
-2. For free-text flow, answer clarifying questions in the same thread (max 4 turns before structured handoff prompt).
-3. For usage guidance, run `/kanvy help`.
-4. If multiple repo mappings are available, click a repo disambiguation button (Jira flow) or reply with repo id (free-text flow).
-5. Monitor status and MR feedback in the same Slack thread.
-6. When feedback arrives and run enters `DECISION_REQUIRED`, click `Approve rerun`.
-7. Continue the thread loop until `DONE`, `PAUSED`, or `FAILED`.
+1. In Slack, run `/kanvy fix ABC-123` for deterministic Jira flow, or `/kanvy <free-text request>` from a channel or thread.
+2. If invoked from a channel (non-thread), the platform auto-seeds a thread and continues intake/status there.
+3. For free-text flow, answer clarifying questions in the same thread (max 4 turns before structured handoff prompt).
+4. For usage guidance, run `/kanvy help`.
+5. If multiple repo mappings are available, click a repo disambiguation button (Jira flow) or reply with repo id (free-text flow).
+6. Monitor status and MR feedback in the same Slack thread.
+7. When feedback arrives and run enters `DECISION_REQUIRED`, click `Approve rerun`.
+8. Continue the thread loop until `DONE`, `PAUSED`, or `FAILED`.
 
 ## Reliability and hardening behavior
 
@@ -67,6 +68,7 @@ State and idempotency checks:
 - Rerun starts only from `DECISION_REQUIRED`.
 - Concurrent/duplicate approvals do not create duplicate reruns.
 - Late feedback remains deterministic via loop-state and dedupe keys.
+- Jira/Slack failure paths emit sanitized lifecycle logs (no token/secrets) for operator troubleshooting.
 
 ## Loop-state reference
 

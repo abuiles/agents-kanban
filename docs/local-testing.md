@@ -281,8 +281,10 @@ Use this when validating day-to-day operator flow without dashboard actions.
 3. Trigger slash command:
    - `/kanvy fix ABC-123`
    - `/kanvy help`
+   - `/kanvy Investigate flaky checkout tests`
 4. Confirm slash command ack is immediate and async processing posts one of:
    - run start confirmation
+   - auto-seeded thread kickoff message (for non-thread slash commands)
    - repo disambiguation buttons
    - failure message (for example Jira read failure)
    - usage instructions with examples for Jira fast-path and free-text flow (for `/kanvy help`)
