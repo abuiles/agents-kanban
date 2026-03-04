@@ -84,11 +84,13 @@ export class RepoBoardDO extends DurableObject<Env> {
     return this.state.runs.some((run) => run.runId === runId);
   }
 
-  async listTasks(tenantId?: string) {
+  async listTasks(tenantId?: string, options?: { tags?: string[] }) {
     await this.ready;
     const normalizedTenantId = tenantId ? normalizeTenantId(tenantId) : undefined;
+    const tags = normalizeTaskTags(options?.tags);
     return [...this.state.tasks]
       .filter((task) => !normalizedTenantId || normalizeTenantId(task.tenantId) === normalizedTenantId)
+      .filter((task) => !tags || tags.every((tag) => task.tags?.includes(tag)))
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
   }
 
@@ -128,6 +130,7 @@ export class RepoBoardDO extends DurableObject<Env> {
       taskPrompt: input.taskPrompt,
       acceptanceCriteria: input.acceptanceCriteria,
       context: input.context,
+      tags: normalizeTaskTags(input.tags),
       baselineUrlOverride: input.baselineUrlOverride,
       status: input.status ?? 'INBOX',
       createdAt: now,
@@ -187,6 +190,7 @@ export class RepoBoardDO extends DurableObject<Env> {
       branchSource: hasPatchField('branchSource') ? cloneTaskBranchSource(patch.branchSource) : cloneTaskBranchSource(existing.branchSource),
       sourceRef: patch.sourceRef ?? existing.sourceRef,
       context: patch.context ?? existing.context,
+      tags: hasPatchField('tags') ? normalizeTaskTags(patch.tags) : normalizeTaskTags(existing.tags),
       acceptanceCriteria: patch.acceptanceCriteria ?? existing.acceptanceCriteria,
       uiMeta: normalizeTaskUiMeta({
         simulationProfile: patch.simulationProfile ?? existing.uiMeta?.simulationProfile ?? 'happy_path',
@@ -1120,6 +1124,7 @@ function cloneRepoBoardState(state: RepoBoardState): RepoBoardState {
       dependencyState: cloneTaskDependencyState(task.dependencyState),
       automationState: cloneTaskAutomationState(task.automationState),
       branchSource: cloneTaskBranchSource(task.branchSource),
+      tags: normalizeTaskTags(task.tags),
       context: { ...task.context, links: task.context.links.map((link) => ({ ...link })) },
       uiMeta: normalizeTaskUiMeta(task.uiMeta ? { ...task.uiMeta } : undefined)
     })),
@@ -1176,6 +1181,7 @@ function normalizeRepoBoardState(state?: Partial<RepoBoardState> | null): RepoBo
     ...task,
     tenantId: normalizeTenantId(task.tenantId),
     branchSource: cloneTaskBranchSource(task.branchSource),
+    tags: normalizeTaskTags(task.tags),
     uiMeta: normalizeTaskUiMeta(task.uiMeta)
   }));
   const taskTenantIds = new Map(normalizedTasks.map((task) => [task.taskId, task.tenantId]));
@@ -1277,4 +1283,24 @@ function cloneTaskAutomationState(automationState: Task['automationState']) {
 
 function cloneTaskBranchSource(branchSource: Task['branchSource']) {
   return branchSource ? normalizeTaskBranchSourceReviewMetadata({ ...branchSource }) : undefined;
+}
+
+function normalizeTaskTags(tags: Task['tags']) {
+  if (!Array.isArray(tags)) {
+    return undefined;
+  }
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+  for (const tag of tags) {
+    if (typeof tag !== 'string') {
+      continue;
+    }
+    const trimmed = tag.trim();
+    if (!trimmed || seen.has(trimmed)) {
+      continue;
+    }
+    seen.add(trimmed);
+    normalized.push(trimmed);
+  }
+  return normalized.length ? normalized : undefined;
 }

@@ -23,6 +23,7 @@ import { parseImportedBoard } from '../store/import-export';
 import { RunSimulator } from './run-simulator';
 import { normalizeOperatorSession, normalizeRunLlmState, normalizeTaskUiMeta } from '../../shared/llm';
 import { normalizeCredentialHost, normalizeRepo } from '../../shared/scm';
+import { DEFAULT_REPO_SENTINEL_CONFIG, normalizeRepoSentinelConfig } from '../../shared/sentinel';
 
 function nowIso() {
   return new Date().toISOString();
@@ -204,12 +205,37 @@ export class LocalAgentBoardApi implements AgentBoardApi {
 
   async createRepo(input: CreateRepoInput): Promise<Repo> {
     const timestamp = nowIso();
+    const normalizedAutoReview = {
+      enabled: input.autoReview?.enabled ?? false,
+      provider: input.autoReview?.provider ?? 'gitlab',
+      postInline: input.autoReview?.postInline ?? false,
+      ...(input.autoReview?.prompt ? { prompt: input.autoReview.prompt.trim() } : {})
+    };
+    const normalizedSentinelConfig = normalizeRepoSentinelConfig({
+      sentinelConfig: {
+        ...DEFAULT_REPO_SENTINEL_CONFIG,
+        ...input.sentinelConfig,
+        reviewGate: {
+          ...DEFAULT_REPO_SENTINEL_CONFIG.reviewGate,
+          ...(input.sentinelConfig?.reviewGate ?? {})
+        },
+        mergePolicy: {
+          ...DEFAULT_REPO_SENTINEL_CONFIG.mergePolicy,
+          ...(input.sentinelConfig?.mergePolicy ?? {})
+        },
+        conflictPolicy: {
+          ...DEFAULT_REPO_SENTINEL_CONFIG.conflictPolicy,
+          ...(input.sentinelConfig?.conflictPolicy ?? {})
+        }
+      }
+    }).sentinelConfig;
     const repo: Repo = normalizeRepo({
       repoId: randomId('repo'),
       slug: input.slug ?? input.projectPath ?? '',
       scmProvider: input.scmProvider,
       scmBaseUrl: input.scmBaseUrl,
-      autoReview: input.autoReview,
+      autoReview: normalizedAutoReview,
+      sentinelConfig: normalizedSentinelConfig,
       projectPath: input.projectPath,
       llmAdapter: input.llmAdapter,
       llmProfileId: input.llmProfileId,
@@ -247,17 +273,55 @@ export class LocalAgentBoardApi implements AgentBoardApi {
         }
 
         const hasAutoReviewPatch = Object.prototype.hasOwnProperty.call(patch, 'autoReview');
+        const hasSentinelConfigPatch = Object.prototype.hasOwnProperty.call(patch, 'sentinelConfig');
         const mergedAutoReview = hasAutoReviewPatch
           ? {
               ...(repo.autoReview ?? { enabled: false, provider: 'gitlab', postInline: false }),
               ...patch.autoReview
             }
           : repo.autoReview;
+        const mergedSentinelConfig = hasSentinelConfigPatch
+          ? {
+              ...(repo.sentinelConfig ?? {}),
+              ...patch.sentinelConfig,
+              reviewGate: {
+                ...(repo.sentinelConfig?.reviewGate ?? {}),
+                ...(patch.sentinelConfig?.reviewGate ?? {})
+              },
+              mergePolicy: {
+                ...(repo.sentinelConfig?.mergePolicy ?? {}),
+                ...(patch.sentinelConfig?.mergePolicy ?? {})
+              },
+              conflictPolicy: {
+                ...(repo.sentinelConfig?.conflictPolicy ?? {}),
+                ...(patch.sentinelConfig?.conflictPolicy ?? {})
+              }
+            }
+          : repo.sentinelConfig;
+        const normalizedSentinelConfig = normalizeRepoSentinelConfig({
+          sentinelConfig: {
+            ...DEFAULT_REPO_SENTINEL_CONFIG,
+            ...(mergedSentinelConfig ?? {}),
+            reviewGate: {
+              ...DEFAULT_REPO_SENTINEL_CONFIG.reviewGate,
+              ...(mergedSentinelConfig?.reviewGate ?? {})
+            },
+            mergePolicy: {
+              ...DEFAULT_REPO_SENTINEL_CONFIG.mergePolicy,
+              ...(mergedSentinelConfig?.mergePolicy ?? {})
+            },
+            conflictPolicy: {
+              ...DEFAULT_REPO_SENTINEL_CONFIG.conflictPolicy,
+              ...(mergedSentinelConfig?.conflictPolicy ?? {})
+            }
+          }
+        }).sentinelConfig;
 
         updatedRepo = normalizeRepo({
           ...repo,
-          autoReview: mergedAutoReview,
           ...patch,
+          autoReview: mergedAutoReview,
+          sentinelConfig: normalizedSentinelConfig,
           slug: patch.slug ?? patch.projectPath ?? repo.slug,
           projectPath: patch.projectPath ?? patch.slug ?? repo.projectPath,
           updatedAt: nowIso()
@@ -323,6 +387,7 @@ export class LocalAgentBoardApi implements AgentBoardApi {
       taskPrompt: input.taskPrompt,
       acceptanceCriteria: input.acceptanceCriteria,
       context: input.context,
+      tags: normalizeTaskTags(input.tags),
       baselineUrlOverride: input.baselineUrlOverride,
       status: input.status ?? 'INBOX',
       createdAt: timestamp,
@@ -348,8 +413,13 @@ export class LocalAgentBoardApi implements AgentBoardApi {
     return task;
   }
 
-  async listTasks(filter?: { repoId?: string }): Promise<Task[]> {
-    return getTasksForRepo(this.store.getSnapshot().tasks, filter?.repoId ?? 'all');
+  async listTasks(filter?: { repoId?: string; tags?: string[] }): Promise<Task[]> {
+    const tasks = getTasksForRepo(this.store.getSnapshot().tasks, filter?.repoId ?? 'all');
+    const tags = normalizeTaskTags(filter?.tags);
+    if (!tags) {
+      return tasks;
+    }
+    return tasks.filter((task) => tags.every((tag) => task.tags?.includes(tag)));
   }
 
   async getTask(taskId: string): Promise<TaskDetail> {
@@ -375,6 +445,7 @@ export class LocalAgentBoardApi implements AgentBoardApi {
           ...patch,
           sourceRef: patch.sourceRef ?? task.sourceRef,
           context: patch.context ?? task.context,
+          tags: Object.prototype.hasOwnProperty.call(patch, 'tags') ? normalizeTaskTags(patch.tags) : normalizeTaskTags(task.tags),
           acceptanceCriteria: patch.acceptanceCriteria ?? task.acceptanceCriteria,
           uiMeta: normalizeTaskUiMeta({
             simulationProfile: patch.simulationProfile ?? task.uiMeta?.simulationProfile ?? 'happy_path',
@@ -607,6 +678,23 @@ export class LocalAgentBoardApi implements AgentBoardApi {
     await this.startRun(task.taskId);
     return this.store.getSnapshot().tasks.find((candidate) => candidate.taskId === task.taskId)!;
   }
+}
+
+function normalizeTaskTags(tags: Task['tags']) {
+  if (!Array.isArray(tags)) {
+    return undefined;
+  }
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+  for (const tag of tags) {
+    const trimmed = tag.trim();
+    if (!trimmed || seen.has(trimmed)) {
+      continue;
+    }
+    seen.add(trimmed);
+    normalized.push(trimmed);
+  }
+  return normalized.length ? normalized : undefined;
 }
 
 let singleton: LocalAgentBoardApi | undefined;

@@ -1,5 +1,6 @@
 import type { AgentRun, Repo, ScmProvider, TaskBranchSource } from '../ui/domain/types';
 import { normalizeRepoPreviewConfig } from './preview';
+import { normalizeRepoSentinelConfig } from './sentinel';
 import { normalizeTenantId } from './tenant';
 
 export const SCM_PROVIDERS = new Set(['github', 'gitlab'] as const);
@@ -63,17 +64,19 @@ export function normalizeRepo(repo: RepoScmLike & Omit<Repo, 'slug' | 'scmProvid
     messageExamples: messageExamples.length ? messageExamples : undefined
   };
 
-  return normalizeRepoPreviewConfig({
-    ...repo,
-    tenantId: normalizeTenantId(repo.tenantId),
-    slug: projectPath,
-    scmProvider,
-    scmBaseUrl: normalizeScmBaseUrl(scmProvider, repo.scmBaseUrl),
-    projectPath,
-    commitConfig: (commitConfig.messageTemplate || commitConfig.messageRegex || commitConfig.messageExamples)
-      ? commitConfig
-      : undefined
-  });
+  return normalizeRepoSentinelConfig(
+    normalizeRepoPreviewConfig({
+      ...repo,
+      tenantId: normalizeTenantId(repo.tenantId),
+      slug: projectPath,
+      scmProvider,
+      scmBaseUrl: normalizeScmBaseUrl(scmProvider, repo.scmBaseUrl),
+      projectPath,
+      commitConfig: (commitConfig.messageTemplate || commitConfig.messageRegex || commitConfig.messageExamples)
+        ? commitConfig
+        : undefined
+    })
+  );
 }
 
 export function getRepoScmProvider(repo: RepoScmLike): ScmProvider {

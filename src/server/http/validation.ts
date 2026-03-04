@@ -16,6 +16,7 @@ const AUTO_REVIEW_PROVIDERS = new Set(['gitlab', 'jira'] as const);
 const AUTO_REVIEW_MODES = new Set(['inherit', 'on', 'off'] as const);
 const AUTO_REVIEW_SELECTION_MODES = new Set(['all', 'include', 'exclude', 'freeform'] as const);
 const PREVIEW_ADAPTERS = new Set(['cloudflare_checks', 'prompt_recipe'] as const);
+const SENTINEL_MERGE_METHODS = new Set(['merge', 'squash', 'rebase'] as const);
 const TENANT_MEMBER_ROLES = new Set(['owner', 'member'] as const);
 const TENANT_SEAT_STATES = new Set(['active', 'invited', 'revoked'] as const);
 
@@ -398,7 +399,7 @@ function readRequestRunChangesSelection(value: unknown, field = 'reviewSelection
     throw badRequest(`Invalid ${field}.`);
   }
 
-  const mode = readEnumValue(value.mode, `${field}.mode`, AUTO_REVIEW_SELECTION_MODES, true);
+  const mode = readEnumValue(value.mode, `${field}.mode`, AUTO_REVIEW_SELECTION_MODES, true)!;
   const findingIds = readStringArray(value.findingIds, `${field}.findingIds`, false)
     ?.map((findingId) => findingId.trim())
     .filter(Boolean);
@@ -410,6 +411,98 @@ function readRequestRunChangesSelection(value: unknown, field = 'reviewSelection
     ...(findingIds?.length ? { findingIds } : {}),
     ...(instruction ? { instruction } : {}),
     ...(typeof includeReplies === 'boolean' ? { includeReplies } : {})
+  };
+}
+
+function readTaskTags(value: unknown, field: string, required = false): string[] | undefined {
+  const tags = readStringArray(value, field, required);
+  if (typeof tags === 'undefined') {
+    return undefined;
+  }
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+  for (const tag of tags) {
+    const trimmed = tag.trim();
+    if (!trimmed || seen.has(trimmed)) {
+      continue;
+    }
+    seen.add(trimmed);
+    normalized.push(trimmed);
+  }
+  return normalized;
+}
+
+function readSentinelConfig(
+  value: unknown,
+  field: string,
+  required = true
+): NonNullable<CreateRepoInput['sentinelConfig']> | undefined {
+  if (!required && typeof value === 'undefined') {
+    return undefined;
+  }
+  if (!isRecord(value)) {
+    throw badRequest(`Invalid ${field}.`);
+  }
+
+  const reviewGate = hasOwn(value, 'reviewGate')
+    ? (() => {
+        if (!isRecord(value.reviewGate)) {
+          throw badRequest(`Invalid ${field}.reviewGate.`);
+        }
+        return {
+          ...(hasOwn(value.reviewGate, 'requireChecksGreen')
+            ? { requireChecksGreen: readBoolean(value.reviewGate.requireChecksGreen, `${field}.reviewGate.requireChecksGreen`, false) }
+            : {}),
+          ...(hasOwn(value.reviewGate, 'requireAutoReviewPass')
+            ? { requireAutoReviewPass: readBoolean(value.reviewGate.requireAutoReviewPass, `${field}.reviewGate.requireAutoReviewPass`, false) }
+            : {})
+        };
+      })()
+    : undefined;
+  const mergePolicy = hasOwn(value, 'mergePolicy')
+    ? (() => {
+        if (!isRecord(value.mergePolicy)) {
+          throw badRequest(`Invalid ${field}.mergePolicy.`);
+        }
+        return {
+          ...(hasOwn(value.mergePolicy, 'autoMergeEnabled')
+            ? { autoMergeEnabled: readBoolean(value.mergePolicy.autoMergeEnabled, `${field}.mergePolicy.autoMergeEnabled`, false) }
+            : {}),
+          ...(hasOwn(value.mergePolicy, 'method')
+            ? { method: readEnumValue(value.mergePolicy.method, `${field}.mergePolicy.method`, SENTINEL_MERGE_METHODS, false) }
+            : {}),
+          ...(hasOwn(value.mergePolicy, 'deleteBranch')
+            ? { deleteBranch: readBoolean(value.mergePolicy.deleteBranch, `${field}.mergePolicy.deleteBranch`, false) }
+            : {})
+        };
+      })()
+    : undefined;
+  const conflictPolicy = hasOwn(value, 'conflictPolicy')
+    ? (() => {
+        if (!isRecord(value.conflictPolicy)) {
+          throw badRequest(`Invalid ${field}.conflictPolicy.`);
+        }
+        return {
+          ...(hasOwn(value.conflictPolicy, 'rebaseBeforeMerge')
+            ? { rebaseBeforeMerge: readBoolean(value.conflictPolicy.rebaseBeforeMerge, `${field}.conflictPolicy.rebaseBeforeMerge`, false) }
+            : {}),
+          ...(hasOwn(value.conflictPolicy, 'remediationEnabled')
+            ? { remediationEnabled: readBoolean(value.conflictPolicy.remediationEnabled, `${field}.conflictPolicy.remediationEnabled`, false) }
+            : {}),
+          ...(hasOwn(value.conflictPolicy, 'maxAttempts')
+            ? { maxAttempts: readPositiveInteger(value.conflictPolicy.maxAttempts, `${field}.conflictPolicy.maxAttempts`, false) }
+            : {})
+        };
+      })()
+    : undefined;
+
+  return {
+    ...(hasOwn(value, 'enabled') ? { enabled: readBoolean(value.enabled, `${field}.enabled`, false) } : {}),
+    ...(hasOwn(value, 'globalMode') ? { globalMode: readBoolean(value.globalMode, `${field}.globalMode`, false) } : {}),
+    ...(hasOwn(value, 'defaultGroupTag') ? { defaultGroupTag: readTrimmedString(value.defaultGroupTag, `${field}.defaultGroupTag`, false) } : {}),
+    ...(reviewGate ? { reviewGate } : {}),
+    ...(mergePolicy ? { mergePolicy } : {}),
+    ...(conflictPolicy ? { conflictPolicy } : {})
   };
 }
 
@@ -486,8 +579,16 @@ export function parseCreateRepoInput(body: unknown): CreateRepoInput {
     defaultBranch: readTrimmedString(body.defaultBranch, 'defaultBranch', false),
     baselineUrl: readTrimmedString(body.baselineUrl, 'baselineUrl')!,
     autoReview: hasOwn(body, 'autoReview')
-      ? readAutoReviewConfig(body.autoReview, 'autoReview')
+      ? {
+          enabled: false,
+          provider: 'gitlab',
+          postInline: false,
+          ...readAutoReviewConfig(body.autoReview, 'autoReview')
+        }
       : { enabled: false, provider: 'gitlab', postInline: false },
+    sentinelConfig: hasOwn(body, 'sentinelConfig')
+      ? readSentinelConfig(body.sentinelConfig, 'sentinelConfig')
+      : {},
     enabled: readBoolean(body.enabled, 'enabled', false),
     previewMode: readEnumValue(body.previewMode, 'previewMode', new Set(['auto', 'skip'] as const), false),
     evidenceMode: readEnumValue(body.evidenceMode, 'evidenceMode', new Set(['auto', 'skip'] as const), false),
@@ -532,6 +633,7 @@ export function parseUpdateRepoInput(body: unknown): UpdateRepoInput {
   if (hasOwn(body, 'previewProvider')) patch.previewProvider = readEnumValue(body.previewProvider, 'previewProvider', new Set(['cloudflare'] as const), false);
   if (hasOwn(body, 'previewCheckName')) patch.previewCheckName = readTrimmedString(body.previewCheckName, 'previewCheckName', false);
   if (hasOwn(body, 'autoReview')) patch.autoReview = readAutoReviewConfig(body.autoReview, 'autoReview', false);
+  if (hasOwn(body, 'sentinelConfig')) patch.sentinelConfig = readSentinelConfig(body.sentinelConfig, 'sentinelConfig', false);
   if (hasOwn(body, 'codexAuthBundleR2Key')) patch.codexAuthBundleR2Key = readTrimmedString(body.codexAuthBundleR2Key, 'codexAuthBundleR2Key', false);
 
   if (hasOwn(body, 'previewAdapter') || hasOwn(body, 'previewConfig') || hasOwn(body, 'previewProvider') || hasOwn(body, 'previewCheckName')) {
@@ -585,6 +687,7 @@ export function parseCreateTaskInput(body: unknown): CreateTaskInput {
     acceptanceCriteria: readStringArray(body.acceptanceCriteria, 'acceptanceCriteria')!,
     context: readContext(body.context)!,
     baselineUrlOverride: readString(body.baselineUrlOverride, 'baselineUrlOverride', false),
+    tags: readTaskTags(body.tags, 'tags', false),
     status: readString(body.status, 'status', false) as CreateTaskInput['status'],
     autoReviewMode: readEnumValue(body.autoReviewMode, 'autoReviewMode', AUTO_REVIEW_MODES, false) ?? 'inherit',
     autoReviewPrompt: readTrimmedString(body.autoReviewPrompt, 'autoReviewPrompt', false),
@@ -612,6 +715,7 @@ export function parseUpdateTaskInput(body: unknown): UpdateTaskInput {
   if (hasOwn(body, 'acceptanceCriteria')) patch.acceptanceCriteria = readStringArray(body.acceptanceCriteria, 'acceptanceCriteria', false);
   if (hasOwn(body, 'context')) patch.context = readContext(body.context, false);
   if (hasOwn(body, 'baselineUrlOverride')) patch.baselineUrlOverride = readString(body.baselineUrlOverride, 'baselineUrlOverride', false);
+  if (hasOwn(body, 'tags')) patch.tags = readTaskTags(body.tags, 'tags', false);
   if (hasOwn(body, 'status')) patch.status = readString(body.status, 'status', false) as UpdateTaskInput['status'];
   if (hasOwn(body, 'autoReviewMode')) patch.autoReviewMode = readEnumValue(body.autoReviewMode, 'autoReviewMode', AUTO_REVIEW_MODES, false);
   if (hasOwn(body, 'autoReviewPrompt')) patch.autoReviewPrompt = readTrimmedString(body.autoReviewPrompt, 'autoReviewPrompt', false);

@@ -7,6 +7,7 @@ import type { BoardEvent } from '../shared/events';
 import { stringifyBoardEvent } from '../shared/events';
 import { buildBoardSnapshot, type BoardSyncResponse } from '../shared/state';
 import { buildRepoScmKey, getRepoHost, getRepoProjectPath, normalizeCredentialHost, normalizeRepo } from '../../shared/scm';
+import { DEFAULT_REPO_SENTINEL_CONFIG, normalizeRepoSentinelConfig } from '../../shared/sentinel';
 import { DEFAULT_TENANT_ID, normalizeTenantId } from '../../shared/tenant';
 
 const REPOS_STORAGE_KEY = 'board-index-repos';
@@ -757,17 +758,37 @@ export class BoardIndexDO extends DurableObject<Env> {
     await this.ready;
     const existing = await this.getRepo(repoId);
     const hasAutoReviewPatch = Object.prototype.hasOwnProperty.call(patch, 'autoReview');
+    const hasSentinelConfigPatch = Object.prototype.hasOwnProperty.call(patch, 'sentinelConfig');
     const mergedAutoReview = hasAutoReviewPatch
       ? {
           ...(existing.autoReview ?? { enabled: false, provider: 'gitlab', postInline: false }),
           ...patch.autoReview
         }
       : existing.autoReview;
+    const mergedSentinelConfig = hasSentinelConfigPatch
+      ? {
+          ...(existing.sentinelConfig ?? {}),
+          ...patch.sentinelConfig,
+          reviewGate: {
+            ...(existing.sentinelConfig?.reviewGate ?? {}),
+            ...(patch.sentinelConfig?.reviewGate ?? {})
+          },
+          mergePolicy: {
+            ...(existing.sentinelConfig?.mergePolicy ?? {}),
+            ...(patch.sentinelConfig?.mergePolicy ?? {})
+          },
+          conflictPolicy: {
+            ...(existing.sentinelConfig?.conflictPolicy ?? {}),
+            ...(patch.sentinelConfig?.conflictPolicy ?? {})
+          }
+        }
+      : existing.sentinelConfig;
 
     const updated = buildRepoRecord({
       ...existing,
       ...patch,
       autoReview: mergedAutoReview,
+      sentinelConfig: mergedSentinelConfig,
       slug: patch.slug ?? patch.projectPath ?? existing.slug,
       projectPath: patch.projectPath ?? patch.slug ?? existing.projectPath,
       repoId: existing.repoId,
@@ -1178,6 +1199,24 @@ function buildRepoRecord(input: CreateRepoInput | Repo): Repo {
     postInline: input.autoReview?.postInline ?? false,
     ...(input.autoReview?.prompt ? { prompt: input.autoReview.prompt.trim() } : {})
   };
+  const normalizedSentinelConfig = normalizeRepoSentinelConfig({
+    sentinelConfig: {
+      ...DEFAULT_REPO_SENTINEL_CONFIG,
+      ...input.sentinelConfig,
+      reviewGate: {
+        ...DEFAULT_REPO_SENTINEL_CONFIG.reviewGate,
+        ...(input.sentinelConfig?.reviewGate ?? {})
+      },
+      mergePolicy: {
+        ...DEFAULT_REPO_SENTINEL_CONFIG.mergePolicy,
+        ...(input.sentinelConfig?.mergePolicy ?? {})
+      },
+      conflictPolicy: {
+        ...DEFAULT_REPO_SENTINEL_CONFIG.conflictPolicy,
+        ...(input.sentinelConfig?.conflictPolicy ?? {})
+      }
+    }
+  }).sentinelConfig;
 
   const normalized = normalizeRepo({
     ...input,
@@ -1186,6 +1225,7 @@ function buildRepoRecord(input: CreateRepoInput | Repo): Repo {
     baselineUrl: input.baselineUrl,
     enabled: input.enabled ?? true,
     autoReview: normalizedAutoReview,
+    sentinelConfig: normalizedSentinelConfig,
     llmAdapter: input.llmAdapter,
     llmProfileId: input.llmProfileId,
     githubAuthMode: 'githubAuthMode' in input ? input.githubAuthMode : undefined,
