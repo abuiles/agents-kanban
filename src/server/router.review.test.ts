@@ -128,7 +128,8 @@ describe('handleRequestChanges', () => {
       if (url.includes('/rest/api/2/issue/ABC-123/comment')) {
         return new Response(JSON.stringify({
           comments: [
-            { body: `${markerA} Reviewer requested stronger null checks.` }
+            { body: `${markerA} Reviewer requested stronger null checks.` },
+            { body: `${markerA} Please include request payload schema validation too.` }
           ]
         }), { status: 200 });
       }

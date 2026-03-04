@@ -184,7 +184,13 @@ describe('GitLab review posting adapter', () => {
           diff_refs: { base_sha: 'base', head_sha: 'head', start_sha: 'start' }
         }), { status: 200 })
       )
+      .mockResolvedValueOnce(new Response(JSON.stringify([]), { status: 200 }))
       .mockResolvedValueOnce(new Response('bad request', { status: 400 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([]), { status: 200 }))
+      .mockResolvedValueOnce(new Response('bad request', { status: 400 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([]), { status: 200 }))
+      .mockResolvedValueOnce(new Response('bad request', { status: 400 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([]), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify({
         id: 1000,
         notes: [{ id: '3000', body: `summary body includes ${marker} and ${summaryMarker}`, url: 'https://gitlab.example.com/note/3000' }]
@@ -250,9 +256,14 @@ describe('GitLab review posting adapter', () => {
 
 describe('Jira review posting adapter', () => {
   it('posts Jira comments with stable finding markers and location references', async () => {
+    const markerA = buildReviewFindingMarker('rf_1', 'run_demo');
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({ comments: [] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ comments: [] }), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ id: '9001' }), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        comments: [{ id: '9001', body: markerA }]
+      }), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ id: '9002' }), { status: 201 }));
     vi.stubGlobal('fetch', fetchMock);
 

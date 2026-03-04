@@ -35,7 +35,14 @@ function buildEnv(kv: KvStore, boardRuns: Array<Record<string, unknown>>) {
     BOARD_INDEX: {
       getByName: () => ({
         listRepos: async () => [
-          { repoId: 'repo_1', tenantId: 'tenant_local', slug: 'repo-1' }
+          {
+            repoId: 'repo_1',
+            tenantId: 'tenant_local',
+            slug: 'group/project',
+            scmProvider: 'gitlab',
+            scmBaseUrl: 'https://gitlab.example',
+            projectPath: 'group/project'
+          }
         ]
       })
     },
@@ -164,7 +171,7 @@ describe('gitlab webhook handler', () => {
     }), env);
 
     expect(first.status).toBe(200);
-    expect(await first.json()).toMatchObject({ status: 'ignored_repo_unmapped' });
+    expect(await first.json()).toMatchObject({ status: 'ignored_run_unmapped' });
     expect(await second.json()).toMatchObject({ status: 'duplicate_delivery' });
   });
 
