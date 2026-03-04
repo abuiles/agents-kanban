@@ -19,6 +19,7 @@ import {
   handleDeleteTask,
   handleGetRepoSentinel,
   handleGetRun,
+  handleGetRunCheckpoints,
   handleGetRunArtifacts,
   handleGetRunCommands,
   handleGetRunEvents,
@@ -28,6 +29,7 @@ import {
   handleGetRunWs,
   handleGetScmCredential,
   handleGetTask,
+  handleGetTaskCheckpoints,
   handleListApiTokens,
   handleListInvites,
   handleListRepos,
@@ -143,6 +145,9 @@ apiRouter.get('/api/tenant-usage/runs', (c: Context) => handleTenantRunUsage(c.r
 apiRouter.get('/api/tasks/:taskId', (c: Context) =>
   handleGetTask(c.req.raw, c.env as Env, { taskId: c.req.param('taskId') })
 );
+apiRouter.get('/api/tasks/:taskId/checkpoints', (c: Context) =>
+  handleGetTaskCheckpoints(c.req.raw, c.env as Env, { taskId: c.req.param('taskId') })
+);
 apiRouter.patch('/api/tasks/:taskId', (c: Context) =>
   handleUpdateTask(c.req.raw, c.env as Env, { taskId: c.req.param('taskId') })
 );
@@ -155,6 +160,9 @@ apiRouter.post('/api/tasks/:taskId/run', (c: Context) =>
 
 apiRouter.get('/api/runs/:runId', (c: Context) =>
   handleGetRun(c.req.raw, c.env as Env, { runId: c.req.param('runId') })
+);
+apiRouter.get('/api/runs/:runId/checkpoints', (c: Context) =>
+  handleGetRunCheckpoints(c.req.raw, c.env as Env, { runId: c.req.param('runId') })
 );
 apiRouter.post('/api/runs/:runId/retry', (c: Context) =>
   handleRetryRun(c.req.raw, c.env as Env, { runId: c.req.param('runId') }, c.executionCtx as unknown as ExecutionContext<unknown>)

@@ -21,7 +21,7 @@ import type {
   UserApiTokenRecord,
   UpsertScmCredentialInput
 } from '../domain/api';
-import type { AgentRun, Repo, RunCommand, RunEvent, RunLogEntry, ScmCredential, Task, TaskDetail, TenantMember, TerminalBootstrap, User } from '../domain/types';
+import type { AgentRun, Repo, RunCheckpoint, RunCommand, RunEvent, RunLogEntry, ScmCredential, Task, TaskDetail, TenantMember, TerminalBootstrap, User } from '../domain/types';
 import { getTaskDetail, getTasksForRepo } from '../domain/selectors';
 import { LocalBoardStore } from '../store/local-board-store';
 import { parseImportedBoard } from '../store/import-export';
@@ -592,6 +592,20 @@ export class LocalAgentBoardApi implements AgentBoardApi {
     return detail;
   }
 
+  async getTaskCheckpoints(taskId: string, options?: { latest?: boolean }): Promise<RunCheckpoint[]> {
+    const detail = await this.getTask(taskId);
+    const checkpoints = detail.runs
+      .flatMap((run) => run.checkpoints ?? [])
+      .sort((left, right) => {
+        const byCreatedAt = right.createdAt.localeCompare(left.createdAt);
+        if (byCreatedAt !== 0) {
+          return byCreatedAt;
+        }
+        return right.checkpointId.localeCompare(left.checkpointId);
+      });
+    return options?.latest ? checkpoints.slice(0, 1) : checkpoints;
+  }
+
   async updateTask(taskId: string, patch: UpdateTaskInput): Promise<Task> {
     let updatedTask: Task | undefined;
     this.store.update((snapshot) => ({
@@ -657,6 +671,11 @@ export class LocalAgentBoardApi implements AgentBoardApi {
     }
 
     return run;
+  }
+
+  async getRunCheckpoints(runId: string): Promise<RunCheckpoint[]> {
+    const run = await this.getRun(runId);
+    return [...(run.checkpoints ?? [])];
   }
 
   async retryRun(runId: string, _input?: RetryRunInput): Promise<AgentRun> {

@@ -34,6 +34,13 @@ function compactUrl(value: string) {
   }
 }
 
+function shortSha(value?: string) {
+  if (!value) {
+    return '—';
+  }
+  return value.slice(0, 8);
+}
+
 function statusTone(status: string) {
   if (status === 'FAILED') return 'border-rose-500/25 bg-rose-500/10 text-rose-100';
   if (status === 'DONE') return 'border-emerald-500/25 bg-emerald-500/10 text-emerald-100';
@@ -151,6 +158,17 @@ export function DetailPanel({
   const latestCommands = latestRun ? commands.filter((command) => command.runId === latestRun.runId) : [];
   const latestEvents = latestRun ? events.filter((event) => event.runId === latestRun.runId) : [];
   const currentCommand = latestRun?.currentCommandId ? latestCommands.find((command) => command.id === latestRun.currentCommandId) : undefined;
+  const latestRunCheckpoints = latestRun?.checkpoints ?? [];
+  const taskCheckpoints = detail.runs
+    .flatMap((run) => run.checkpoints ?? [])
+    .sort((left, right) => {
+      const byCreatedAt = right.createdAt.localeCompare(left.createdAt);
+      if (byCreatedAt !== 0) {
+        return byCreatedAt;
+      }
+      return right.checkpointId.localeCompare(left.checkpointId);
+    });
+  const latestTaskCheckpoint = taskCheckpoints[0];
 
   async function copyLogs() {
     if (!canCopyLogs) {
@@ -314,6 +332,13 @@ export function DetailPanel({
                 <div className="text-[11px] uppercase tracking-[0.16em] text-slate-500">Reasoning</div>
                 <code className="mt-1 block break-all text-xs text-slate-200">{latestRun.llmReasoningEffort ?? taskLlmReasoningEffort}</code>
               </div>
+              {latestRun.resumedFromCheckpointId || latestRun.resumedFromCommitSha ? (
+                <div className="rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-3 py-2 sm:col-span-2">
+                  <div className="text-[11px] uppercase tracking-[0.16em] text-cyan-200">Resumed from checkpoint</div>
+                  <div className="mt-1 text-xs text-cyan-50">{latestRun.resumedFromCheckpointId ?? 'unknown checkpoint'}</div>
+                  <div className="mt-1 text-xs text-cyan-100/80">Commit {shortSha(latestRun.resumedFromCommitSha)}</div>
+                </div>
+              ) : null}
             </div>
             <div className="rounded-lg border border-slate-800 bg-slate-900/70 p-3">
               <div className="mb-2 flex items-center justify-between gap-3">
@@ -399,6 +424,28 @@ export function DetailPanel({
                   )}
                 </div>
               ) : null}
+            </div>
+
+            <div className="rounded-lg border border-slate-800 bg-slate-900/70 p-3">
+              <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">Checkpoints</div>
+              <div className="space-y-2">
+                {latestRunCheckpoints.length ? latestRunCheckpoints.map((checkpoint) => (
+                  <div key={checkpoint.checkpointId} className="rounded-lg border border-slate-800 bg-slate-950/70 px-3 py-2">
+                    <div className="flex items-center justify-between gap-3 text-xs text-slate-400">
+                      <span>{checkpoint.phase}</span>
+                      <span title={formatTimestamp(checkpoint.createdAt)}>{formatRelativeTime(checkpoint.createdAt)}</span>
+                    </div>
+                    <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+                      <code className="text-slate-200">{shortSha(checkpoint.commitSha)}</code>
+                      {latestRun.resumedFromCheckpointId === checkpoint.checkpointId ? (
+                        <span className="rounded-full border border-cyan-500/35 bg-cyan-500/15 px-2 py-0.5 text-[10px] uppercase tracking-[0.12em] text-cyan-100">
+                          resumed-from
+                        </span>
+                      ) : null}
+                    </div>
+                  </div>
+                )) : <p className="text-sm text-slate-500">No checkpoints recorded on this run.</p>}
+              </div>
             </div>
 
             <div className="rounded-lg border border-slate-800 bg-slate-900/70 p-3">
@@ -599,6 +646,25 @@ export function DetailPanel({
                 </div>
               </div>
             ) : null}
+          </PanelSection>
+
+          <PanelSection title="Task checkpoints">
+            {latestTaskCheckpoint ? (
+              <div className="space-y-2">
+                <div className="rounded-lg border border-slate-800 bg-slate-900/70 px-3 py-2">
+                  <div className="text-[11px] uppercase tracking-[0.16em] text-slate-500">Latest checkpoint</div>
+                  <div className="mt-1 text-xs text-slate-200">
+                    {latestTaskCheckpoint.checkpointId} · {latestTaskCheckpoint.phase} · {shortSha(latestTaskCheckpoint.commitSha)}
+                  </div>
+                  <div className="mt-1 text-xs text-slate-400">{formatTimestamp(latestTaskCheckpoint.createdAt)}</div>
+                </div>
+                <div className="text-xs text-slate-500">
+                  {taskCheckpoints.length} checkpoint{taskCheckpoints.length === 1 ? '' : 's'} across {detail.runs.length} run{detail.runs.length === 1 ? '' : 's'}.
+                </div>
+              </div>
+            ) : (
+              <p className="text-sm text-slate-500">No checkpoints recorded for this task yet.</p>
+            )}
           </PanelSection>
 
           <PanelSection title="Acceptance criteria">
