@@ -8,10 +8,10 @@ export default defineConfig({
   resolve: {
     alias: process.env.VITEST
       ? [
-          { find: '@cloudflare/sandbox/xterm', replacement: path.resolve(__dirname, 'tests/worker/sandbox-xterm-test-shim.ts') },
-          { find: /^@cloudflare\/sandbox$/, replacement: path.resolve(__dirname, 'tests/worker/sandbox-test-shim.ts') },
-          { find: 'cloudflare:workflows', replacement: path.resolve(__dirname, 'tests/cloudflare-workflows-test-shim.ts') }
-        ]
+        { find: '@cloudflare/sandbox/xterm', replacement: path.resolve(__dirname, 'tests/worker/sandbox-xterm-test-shim.ts') },
+        { find: /^@cloudflare\/sandbox$/, replacement: path.resolve(__dirname, 'tests/worker/sandbox-test-shim.ts') },
+        { find: 'cloudflare:workflows', replacement: path.resolve(__dirname, 'tests/cloudflare-workflows-test-shim.ts') }
+      ]
       : undefined
   },
   plugins: process.env.VITEST ? [tailwindcss(), react()] : [tailwindcss(), cloudflare(), react()],
@@ -24,6 +24,7 @@ export default defineConfig({
     host: true,
     allowedHosts: [
       ".trycloudflare.com", // Allow all Cloudflare tunnel subdomains,
+      ".agentskanban.com", // Allow all Cloudflare tunnel subdomains,
     ],
   },
 });

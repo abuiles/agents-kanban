@@ -7,6 +7,7 @@ type TunnelMode = 'off' | 'auto' | 'external';
 const DEV_PORT = process.env.AK_DEV_PORT?.trim() || '5173';
 const LOCAL_DEV_URL = `http://localhost:${DEV_PORT}`;
 const externalUrl = process.env.AK_DEV_PUBLIC_URL?.trim();
+const cloudflaredTunnelName = process.env.AK_DEV_CLOUDFLARED_TUNNEL?.trim() || 'ab-1';
 const mode = resolveTunnelMode(process.env.AK_DEV_TUNNEL, externalUrl);
 
 let viteProcess: ChildProcess | null = null;
@@ -94,7 +95,7 @@ function startVite() {
 
 function startTunnelAuto() {
   const command = resolveCommand('cloudflared');
-  tunnelProcess = spawn(command, ['tunnel', '--no-autoupdate', '--url', LOCAL_DEV_URL], {
+  tunnelProcess = spawn(command, ['tunnel', 'run', cloudflaredTunnelName], {
     stdio: ['ignore', 'pipe', 'pipe'],
     env: process.env
   });
@@ -150,7 +151,7 @@ function printBanner() {
     }
     return;
   }
-  log('Tunnel mode: auto (cloudflared)');
+  log(`Tunnel mode: auto (cloudflared, tunnel=${cloudflaredTunnelName})`);
 }
 
 function start() {
