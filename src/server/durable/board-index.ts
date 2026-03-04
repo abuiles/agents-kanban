@@ -7,6 +7,7 @@ import type { BoardEvent } from '../shared/events';
 import { stringifyBoardEvent } from '../shared/events';
 import { buildBoardSnapshot, type BoardSyncResponse } from '../shared/state';
 import { buildRepoScmKey, getRepoHost, getRepoProjectPath, normalizeCredentialHost, normalizeRepo } from '../../shared/scm';
+import { DEFAULT_REPO_CHECKPOINT_CONFIG, normalizeRepoCheckpointConfig } from '../../shared/checkpoint';
 import { DEFAULT_REPO_SENTINEL_CONFIG, normalizeRepoSentinelConfig } from '../../shared/sentinel';
 import { DEFAULT_TENANT_ID, normalizeTenantId } from '../../shared/tenant';
 
@@ -759,6 +760,7 @@ export class BoardIndexDO extends DurableObject<Env> {
     const existing = await this.getRepo(repoId);
     const hasAutoReviewPatch = Object.prototype.hasOwnProperty.call(patch, 'autoReview');
     const hasSentinelConfigPatch = Object.prototype.hasOwnProperty.call(patch, 'sentinelConfig');
+    const hasCheckpointConfigPatch = Object.prototype.hasOwnProperty.call(patch, 'checkpointConfig');
     const mergedAutoReview = hasAutoReviewPatch
       ? {
           ...(existing.autoReview ?? { enabled: false, provider: 'gitlab', postInline: false }),
@@ -783,12 +785,27 @@ export class BoardIndexDO extends DurableObject<Env> {
           }
         }
       : existing.sentinelConfig;
+    const mergedCheckpointConfig = hasCheckpointConfigPatch
+      ? {
+          ...(existing.checkpointConfig ?? DEFAULT_REPO_CHECKPOINT_CONFIG),
+          ...patch.checkpointConfig,
+          contextNotes: {
+            ...(existing.checkpointConfig?.contextNotes ?? DEFAULT_REPO_CHECKPOINT_CONFIG.contextNotes),
+            ...(patch.checkpointConfig?.contextNotes ?? {})
+          },
+          reviewPrep: {
+            ...(existing.checkpointConfig?.reviewPrep ?? DEFAULT_REPO_CHECKPOINT_CONFIG.reviewPrep),
+            ...(patch.checkpointConfig?.reviewPrep ?? {})
+          }
+        }
+      : existing.checkpointConfig;
 
     const updated = buildRepoRecord({
       ...existing,
       ...patch,
       autoReview: mergedAutoReview,
       sentinelConfig: mergedSentinelConfig,
+      checkpointConfig: mergedCheckpointConfig,
       slug: patch.slug ?? patch.projectPath ?? existing.slug,
       projectPath: patch.projectPath ?? patch.slug ?? existing.projectPath,
       repoId: existing.repoId,
@@ -1217,6 +1234,20 @@ function buildRepoRecord(input: CreateRepoInput | Repo): Repo {
       }
     }
   }).sentinelConfig;
+  const normalizedCheckpointConfig = normalizeRepoCheckpointConfig({
+    checkpointConfig: {
+      ...DEFAULT_REPO_CHECKPOINT_CONFIG,
+      ...input.checkpointConfig,
+      contextNotes: {
+        ...DEFAULT_REPO_CHECKPOINT_CONFIG.contextNotes,
+        ...(input.checkpointConfig?.contextNotes ?? {})
+      },
+      reviewPrep: {
+        ...DEFAULT_REPO_CHECKPOINT_CONFIG.reviewPrep,
+        ...(input.checkpointConfig?.reviewPrep ?? {})
+      }
+    }
+  }).checkpointConfig;
 
   const normalized = normalizeRepo({
     ...input,
@@ -1226,6 +1257,7 @@ function buildRepoRecord(input: CreateRepoInput | Repo): Repo {
     enabled: input.enabled ?? true,
     autoReview: normalizedAutoReview,
     sentinelConfig: normalizedSentinelConfig,
+    checkpointConfig: normalizedCheckpointConfig,
     llmAdapter: input.llmAdapter,
     llmProfileId: input.llmProfileId,
     githubAuthMode: 'githubAuthMode' in input ? input.githubAuthMode : undefined,

@@ -18,6 +18,7 @@ const AUTO_REVIEW_MODES = new Set(['inherit', 'on', 'off'] as const);
 const AUTO_REVIEW_SELECTION_MODES = new Set(['all', 'include', 'exclude', 'freeform'] as const);
 const PREVIEW_ADAPTERS = new Set(['cloudflare_checks', 'prompt_recipe'] as const);
 const SENTINEL_MERGE_METHODS = new Set(['merge', 'squash', 'rebase'] as const);
+const CHECKPOINT_TRIGGER_MODES = new Set(['phase_boundary'] as const);
 const TENANT_MEMBER_ROLES = new Set(['owner', 'member'] as const);
 const TENANT_SEAT_STATES = new Set(['active', 'invited', 'revoked'] as const);
 
@@ -507,6 +508,61 @@ function readSentinelConfig(
   };
 }
 
+function readCheckpointConfig(
+  value: unknown,
+  field: string,
+  required = true
+): NonNullable<CreateRepoInput['checkpointConfig']> | undefined {
+  if (!required && typeof value === 'undefined') {
+    return undefined;
+  }
+  if (!isRecord(value)) {
+    throw badRequest(`Invalid ${field}.`);
+  }
+
+  const contextNotes = hasOwn(value, 'contextNotes')
+    ? (() => {
+        if (!isRecord(value.contextNotes)) {
+          throw badRequest(`Invalid ${field}.contextNotes.`);
+        }
+        return {
+          ...(hasOwn(value.contextNotes, 'enabled')
+            ? { enabled: readBoolean(value.contextNotes.enabled, `${field}.contextNotes.enabled`, false) }
+            : {}),
+          ...(hasOwn(value.contextNotes, 'filePath')
+            ? { filePath: readTrimmedString(value.contextNotes.filePath, `${field}.contextNotes.filePath`, false) }
+            : {}),
+          ...(hasOwn(value.contextNotes, 'cleanupBeforeReview')
+            ? { cleanupBeforeReview: readBoolean(value.contextNotes.cleanupBeforeReview, `${field}.contextNotes.cleanupBeforeReview`, false) }
+            : {})
+        };
+      })()
+    : undefined;
+
+  const reviewPrep = hasOwn(value, 'reviewPrep')
+    ? (() => {
+        if (!isRecord(value.reviewPrep)) {
+          throw badRequest(`Invalid ${field}.reviewPrep.`);
+        }
+        return {
+          ...(hasOwn(value.reviewPrep, 'squashBeforeFirstReviewOpen')
+            ? { squashBeforeFirstReviewOpen: readBoolean(value.reviewPrep.squashBeforeFirstReviewOpen, `${field}.reviewPrep.squashBeforeFirstReviewOpen`, false) }
+            : {}),
+          ...(hasOwn(value.reviewPrep, 'rewriteOnChangeRequestRerun')
+            ? { rewriteOnChangeRequestRerun: readBoolean(value.reviewPrep.rewriteOnChangeRequestRerun, `${field}.reviewPrep.rewriteOnChangeRequestRerun`, false) }
+            : {})
+        };
+      })()
+    : undefined;
+
+  return {
+    ...(hasOwn(value, 'enabled') ? { enabled: readBoolean(value.enabled, `${field}.enabled`, false) } : {}),
+    ...(hasOwn(value, 'triggerMode') ? { triggerMode: readEnumValue(value.triggerMode, `${field}.triggerMode`, CHECKPOINT_TRIGGER_MODES, false) } : {}),
+    ...(contextNotes ? { contextNotes } : {}),
+    ...(reviewPrep ? { reviewPrep } : {})
+  };
+}
+
 function normalizeRepoPreviewFields<T extends {
   previewMode?: CreateRepoInput['previewMode'];
   previewAdapter?: CreateRepoInput['previewAdapter'];
@@ -590,6 +646,9 @@ export function parseCreateRepoInput(body: unknown): CreateRepoInput {
     sentinelConfig: hasOwn(body, 'sentinelConfig')
       ? readSentinelConfig(body.sentinelConfig, 'sentinelConfig')
       : {},
+    checkpointConfig: hasOwn(body, 'checkpointConfig')
+      ? readCheckpointConfig(body.checkpointConfig, 'checkpointConfig')
+      : {},
     enabled: readBoolean(body.enabled, 'enabled', false),
     previewMode: readEnumValue(body.previewMode, 'previewMode', new Set(['auto', 'skip'] as const), false),
     evidenceMode: readEnumValue(body.evidenceMode, 'evidenceMode', new Set(['auto', 'skip'] as const), false),
@@ -635,6 +694,7 @@ export function parseUpdateRepoInput(body: unknown): UpdateRepoInput {
   if (hasOwn(body, 'previewCheckName')) patch.previewCheckName = readTrimmedString(body.previewCheckName, 'previewCheckName', false);
   if (hasOwn(body, 'autoReview')) patch.autoReview = readAutoReviewConfig(body.autoReview, 'autoReview', false);
   if (hasOwn(body, 'sentinelConfig')) patch.sentinelConfig = readSentinelConfig(body.sentinelConfig, 'sentinelConfig', false);
+  if (hasOwn(body, 'checkpointConfig')) patch.checkpointConfig = readCheckpointConfig(body.checkpointConfig, 'checkpointConfig', false);
   if (hasOwn(body, 'codexAuthBundleR2Key')) patch.codexAuthBundleR2Key = readTrimmedString(body.codexAuthBundleR2Key, 'codexAuthBundleR2Key', false);
 
   if (hasOwn(body, 'previewAdapter') || hasOwn(body, 'previewConfig') || hasOwn(body, 'previewProvider') || hasOwn(body, 'previewCheckName')) {

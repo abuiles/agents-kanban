@@ -1,4 +1,5 @@
 import type { AgentRun, Repo, ScmProvider, TaskBranchSource } from '../ui/domain/types';
+import { normalizeRepoCheckpointConfig } from './checkpoint';
 import { normalizeRepoPreviewConfig } from './preview';
 import { normalizeRepoSentinelConfig } from './sentinel';
 import { normalizeTenantId } from './tenant';
@@ -64,18 +65,20 @@ export function normalizeRepo(repo: RepoScmLike & Omit<Repo, 'slug' | 'scmProvid
     messageExamples: messageExamples.length ? messageExamples : undefined
   };
 
-  return normalizeRepoSentinelConfig(
-    normalizeRepoPreviewConfig({
-      ...repo,
-      tenantId: normalizeTenantId(repo.tenantId),
-      slug: projectPath,
-      scmProvider,
-      scmBaseUrl: normalizeScmBaseUrl(scmProvider, repo.scmBaseUrl),
-      projectPath,
-      commitConfig: (commitConfig.messageTemplate || commitConfig.messageRegex || commitConfig.messageExamples)
-        ? commitConfig
-        : undefined
-    })
+  return normalizeRepoCheckpointConfig(
+    normalizeRepoSentinelConfig(
+      normalizeRepoPreviewConfig({
+        ...repo,
+        tenantId: normalizeTenantId(repo.tenantId),
+        slug: projectPath,
+        scmProvider,
+        scmBaseUrl: normalizeScmBaseUrl(scmProvider, repo.scmBaseUrl),
+        projectPath,
+        commitConfig: (commitConfig.messageTemplate || commitConfig.messageRegex || commitConfig.messageExamples)
+          ? commitConfig
+          : undefined
+      })
+    )
   );
 }
 

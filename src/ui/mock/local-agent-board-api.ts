@@ -26,6 +26,7 @@ import { LocalBoardStore } from '../store/local-board-store';
 import { parseImportedBoard } from '../store/import-export';
 import { RunSimulator } from './run-simulator';
 import { normalizeOperatorSession, normalizeRunLlmState, normalizeTaskUiMeta } from '../../shared/llm';
+import { DEFAULT_REPO_CHECKPOINT_CONFIG, normalizeRepoCheckpointConfig } from '../../shared/checkpoint';
 import { normalizeCredentialHost, normalizeRepo } from '../../shared/scm';
 import { DEFAULT_REPO_SENTINEL_CONFIG, normalizeRepoSentinelConfig } from '../../shared/sentinel';
 
@@ -280,6 +281,7 @@ export class LocalAgentBoardApi implements AgentBoardApi {
 
         const hasAutoReviewPatch = Object.prototype.hasOwnProperty.call(patch, 'autoReview');
         const hasSentinelConfigPatch = Object.prototype.hasOwnProperty.call(patch, 'sentinelConfig');
+        const hasCheckpointConfigPatch = Object.prototype.hasOwnProperty.call(patch, 'checkpointConfig');
         const mergedAutoReview = hasAutoReviewPatch
           ? {
               ...(repo.autoReview ?? { enabled: false, provider: 'gitlab', postInline: false }),
@@ -322,12 +324,30 @@ export class LocalAgentBoardApi implements AgentBoardApi {
             }
           }
         }).sentinelConfig;
+        const mergedCheckpointConfig = hasCheckpointConfigPatch
+          ? {
+              ...(repo.checkpointConfig ?? DEFAULT_REPO_CHECKPOINT_CONFIG),
+              ...patch.checkpointConfig,
+              contextNotes: {
+                ...(repo.checkpointConfig?.contextNotes ?? DEFAULT_REPO_CHECKPOINT_CONFIG.contextNotes),
+                ...(patch.checkpointConfig?.contextNotes ?? {})
+              },
+              reviewPrep: {
+                ...(repo.checkpointConfig?.reviewPrep ?? DEFAULT_REPO_CHECKPOINT_CONFIG.reviewPrep),
+                ...(patch.checkpointConfig?.reviewPrep ?? {})
+              }
+            }
+          : repo.checkpointConfig;
+        const normalizedCheckpointConfig = normalizeRepoCheckpointConfig({
+          checkpointConfig: mergedCheckpointConfig
+        }).checkpointConfig;
 
         updatedRepo = normalizeRepo({
           ...repo,
           ...patch,
           autoReview: mergedAutoReview,
           sentinelConfig: normalizedSentinelConfig,
+          checkpointConfig: normalizedCheckpointConfig,
           slug: patch.slug ?? patch.projectPath ?? repo.slug,
           projectPath: patch.projectPath ?? patch.slug ?? repo.projectPath,
           updatedAt: nowIso()

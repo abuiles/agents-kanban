@@ -8,6 +8,7 @@ import type {
   LlmAdapter,
   LlmReasoningEffort,
   Repo,
+  RepoCheckpointConfig,
   RepoSentinelConfig,
   SentinelEvent,
   SentinelRun,
@@ -38,6 +39,12 @@ export type RepoSentinelConfigInput = {
   reviewGate?: Partial<RepoSentinelConfig['reviewGate']>;
   mergePolicy?: Partial<RepoSentinelConfig['mergePolicy']>;
   conflictPolicy?: Partial<RepoSentinelConfig['conflictPolicy']>;
+};
+export type RepoCheckpointConfigInput = {
+  enabled?: boolean;
+  triggerMode?: RepoCheckpointConfig['triggerMode'];
+  contextNotes?: Partial<RepoCheckpointConfig['contextNotes']>;
+  reviewPrep?: Partial<RepoCheckpointConfig['reviewPrep']>;
 };
 
 export type RepoSentinelStartInput = {
@@ -82,6 +89,7 @@ export type CreateRepoInput = {
   enabled?: boolean;
   autoReview?: RepoAutoReviewInput;
   sentinelConfig?: RepoSentinelConfigInput;
+  checkpointConfig?: RepoCheckpointConfigInput;
   previewMode?: Repo['previewMode'];
   evidenceMode?: Repo['evidenceMode'];
   previewAdapter?: Repo['previewAdapter'];

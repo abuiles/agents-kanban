@@ -54,6 +54,9 @@ export type RunTransitionPatch = {
   reviewFindingsSummary?: AgentRun['reviewFindingsSummary'];
   reviewArtifacts?: AgentRun['reviewArtifacts'];
   reviewPostState?: AgentRun['reviewPostState'];
+  checkpoints?: AgentRun['checkpoints'];
+  resumedFromCheckpointId?: AgentRun['resumedFromCheckpointId'];
+  resumedFromCommitSha?: AgentRun['resumedFromCommitSha'];
   endedAt?: string;
   currentStepStartedAt?: string;
   appendTimelineNote?: string;
@@ -74,6 +77,9 @@ type CreateRealRunOptions = {
   baseRunId?: string;
   changeRequest?: AgentRun['changeRequest'];
   dependencyContext?: AgentRun['dependencyContext'];
+  checkpoints?: AgentRun['checkpoints'];
+  resumedFromCheckpointId?: AgentRun['resumedFromCheckpointId'];
+  resumedFromCommitSha?: AgentRun['resumedFromCommitSha'];
 };
 
 export function createRealRun(task: Task, runId: string, now = new Date(), options?: CreateRealRunOptions): AgentRun {
@@ -100,6 +106,9 @@ export function createRealRun(task: Task, runId: string, now = new Date(), optio
     landedOnDefaultBranch: options?.landedOnDefaultBranch,
     landedOnDefaultBranchAt: options?.landedOnDefaultBranchAt,
     dependencyContext: options?.dependencyContext,
+    checkpoints: options?.checkpoints,
+    resumedFromCheckpointId: options?.resumedFromCheckpointId,
+    resumedFromCommitSha: options?.resumedFromCommitSha,
     errors: [],
     startedAt: nowIso,
     timeline: [{ status: 'QUEUED', at: nowIso, note: 'Run queued for real sandbox execution.' }],

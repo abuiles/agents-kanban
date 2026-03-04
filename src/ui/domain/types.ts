@@ -94,6 +94,19 @@ export type RepoSentinelConfig = {
     maxAttempts: number;
   };
 };
+export type RepoCheckpointConfig = {
+  enabled: boolean;
+  triggerMode: 'phase_boundary';
+  contextNotes: {
+    enabled: boolean;
+    filePath: string;
+    cleanupBeforeReview: boolean;
+  };
+  reviewPrep: {
+    squashBeforeFirstReviewOpen: boolean;
+    rewriteOnChangeRequestRerun: boolean;
+  };
+};
 export type SentinelScopeType = 'group' | 'global';
 export type SentinelRunStatus = 'running' | 'paused' | 'stopped' | 'failed' | 'completed';
 export type SentinelEventLevel = 'info' | 'warn' | 'error';
@@ -299,6 +312,7 @@ export type Repo = {
   codexAuthBundleR2Key?: string;
   autoReview?: RepoAutoReview;
   sentinelConfig?: RepoSentinelConfig;
+  checkpointConfig?: RepoCheckpointConfig;
   createdAt: string;
   updatedAt: string;
 };
@@ -511,6 +525,18 @@ export type ScheduledSimulationEvent = {
   note?: string;
 };
 
+export type RunCheckpoint = {
+  checkpointId: string;
+  runId: string;
+  repoId: string;
+  taskId: string;
+  phase: 'bootstrap' | 'codex' | 'tests' | 'push';
+  commitSha: string;
+  commitMessage: string;
+  contextNotesPath?: string;
+  createdAt: string;
+};
+
 export type AgentRun = {
   tenantId?: string;
   runId: string;
@@ -578,6 +604,9 @@ export type AgentRun = {
   reviewPostState?: RunReviewPostState;
   artifacts?: string[];
   artifactManifest?: ArtifactManifest;
+  checkpoints?: RunCheckpoint[];
+  resumedFromCheckpointId?: string;
+  resumedFromCommitSha?: string;
   errors: RunError[];
   startedAt: string;
   endedAt?: string;
