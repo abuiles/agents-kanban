@@ -7,7 +7,8 @@
   "scripts": {
     "build": "vite build",
     "deploy": "vite build && wrangler deploy",
-    "dev": "vite",
+    "dev": "tsx scripts/dev.ts",
+    "dev:vite": "vite",
     "preview": "vite preview",
     "start": "vite",
     "cf-typegen": "wrangler types",

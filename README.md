@@ -189,6 +189,27 @@ npm run build
 npm run dev
 ```
 
+Dev tunnel behavior for `npm run dev`:
+
+- Automatic mode selection:
+  - Uses `external` when `AK_DEV_PUBLIC_URL` is set
+  - Else uses `auto` when `cloudflared` is installed (quick `trycloudflare` URL)
+  - Else falls back to `off` (local only)
+- Override with `AK_DEV_TUNNEL=off|auto|external`
+
+Quick examples:
+
+```bash
+# local only
+AK_DEV_TUNNEL=off npm run dev
+
+# auto Cloudflare quick tunnel
+AK_DEV_TUNNEL=auto npm run dev
+
+# your own public URL (named tunnel/ngrok/deployed host)
+AK_DEV_TUNNEL=external AK_DEV_PUBLIC_URL=https://my-host.example.com npm run dev
+```
+
 Default local app URL is `http://localhost:5173` with API under `http://localhost:5173/api`.
 
 ## Cloud Deploy Quick Start

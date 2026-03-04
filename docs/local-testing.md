@@ -155,6 +155,34 @@ npm run build
 npm run dev
 ```
 
+Tunnel behavior for `npm run dev` / `yarn dev`:
+
+- default (automatic):
+  - if `AK_DEV_PUBLIC_URL` is set, uses `external` mode
+  - else if `cloudflared` is installed, starts `auto` quick tunnel
+  - else falls back to `off` (local only)
+
+- default (no tunnel):
+  - `AK_DEV_TUNNEL=off`
+- auto-start Cloudflare quick tunnel:
+  - `AK_DEV_TUNNEL=auto`
+- bring your own tunnel/public URL:
+  - `AK_DEV_TUNNEL=external`
+  - `AK_DEV_PUBLIC_URL=https://<your-public-host>`
+
+Examples:
+
+```bash
+# no tunnel
+AK_DEV_TUNNEL=off yarn dev
+
+# auto Cloudflare tunnel (prints trycloudflare URL in logs)
+AK_DEV_TUNNEL=auto yarn dev
+
+# external tunnel URL (ngrok/cloudflared named tunnel/deployed host)
+AK_DEV_TUNNEL=external AK_DEV_PUBLIC_URL=https://my-host.example.com yarn dev
+```
+
 Base URL example:
 
 ```text
