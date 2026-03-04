@@ -283,6 +283,61 @@ describe('repo validation', () => {
       postInline: false
     });
     expect(parsed.sentinelConfig).toEqual({});
+    expect(parsed.checkpointConfig).toEqual({});
+  });
+
+  it('parses nested checkpoint config updates', () => {
+    const parsed = parseUpdateRepoInput({
+      checkpointConfig: {
+        enabled: false,
+        triggerMode: 'phase_boundary',
+        contextNotes: {
+          enabled: true,
+          filePath: '.agentskanban/context/run-context.md',
+          cleanupBeforeReview: false
+        },
+        reviewPrep: {
+          squashBeforeFirstReviewOpen: true,
+          rewriteOnChangeRequestRerun: false
+        }
+      }
+    });
+
+    expect(parsed.checkpointConfig).toEqual({
+      enabled: false,
+      triggerMode: 'phase_boundary',
+      contextNotes: {
+        enabled: true,
+        filePath: '.agentskanban/context/run-context.md',
+        cleanupBeforeReview: false
+      },
+      reviewPrep: {
+        squashBeforeFirstReviewOpen: true,
+        rewriteOnChangeRequestRerun: false
+      }
+    });
+  });
+
+  it('rejects invalid checkpoint trigger modes', () => {
+    expect(() =>
+      parseUpdateRepoInput({
+        checkpointConfig: {
+          triggerMode: 'manual'
+        }
+      })
+    ).toThrow('Invalid checkpointConfig.triggerMode.');
+  });
+
+  it('rejects invalid checkpoint context notes payloads', () => {
+    expect(() =>
+      parseCreateRepoInput({
+        slug: 'abuiles/minions',
+        baselineUrl: 'https://example.com',
+        checkpointConfig: {
+          contextNotes: 'invalid'
+        }
+      })
+    ).toThrow('Invalid checkpointConfig.contextNotes.');
   });
 
   it('parses nested sentinel config updates', () => {

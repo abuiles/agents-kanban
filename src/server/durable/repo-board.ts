@@ -1286,6 +1286,9 @@ function cloneRepoBoardState(state: RepoBoardState): RepoBoardState {
       reviewFindingsSummary: run.reviewFindingsSummary ? { ...run.reviewFindingsSummary } : undefined,
       reviewArtifacts: run.reviewArtifacts ? { ...run.reviewArtifacts } : undefined,
       reviewPostState: run.reviewPostState ? { ...run.reviewPostState, errors: [...(run.reviewPostState.errors ?? [])] } : undefined,
+      checkpoints: cloneRunCheckpoints(run.checkpoints),
+      resumedFromCheckpointId: run.resumedFromCheckpointId,
+      resumedFromCommitSha: run.resumedFromCommitSha,
       artifacts: run.artifacts ? [...run.artifacts] : undefined,
       latestCodexResumeCommand: (run.llmAdapter ?? run.operatorSession?.llmAdapter ?? 'codex') === 'codex'
         ? (run.latestCodexResumeCommand ?? run.llmResumeCommand)
@@ -1360,7 +1363,10 @@ function normalizeRepoBoardState(state?: Partial<RepoBoardState> | null): RepoBo
       })),
       reviewFindingsSummary: run.reviewFindingsSummary ? { ...run.reviewFindingsSummary } : undefined,
       reviewArtifacts: run.reviewArtifacts ? { ...run.reviewArtifacts } : undefined,
-      reviewPostState: run.reviewPostState ? { ...run.reviewPostState, errors: [...(run.reviewPostState.errors ?? [])] } : undefined
+      reviewPostState: run.reviewPostState ? { ...run.reviewPostState, errors: [...(run.reviewPostState.errors ?? [])] } : undefined,
+      checkpoints: cloneRunCheckpoints(run.checkpoints),
+      resumedFromCheckpointId: run.resumedFromCheckpointId,
+      resumedFromCommitSha: run.resumedFromCommitSha
     };
   });
   const runTenantIds = new Map(normalizedRuns.map((run) => [run.runId, run.tenantId]));
@@ -1446,4 +1452,13 @@ function normalizeTaskTags(tags: Task['tags']) {
     normalized.push(trimmed);
   }
   return normalized.length ? normalized : undefined;
+}
+
+function cloneRunCheckpoints(checkpoints: AgentRun['checkpoints']) {
+  if (!Array.isArray(checkpoints)) {
+    return undefined;
+  }
+  return checkpoints
+    .filter((checkpoint) => checkpoint && typeof checkpoint === 'object')
+    .map((checkpoint) => ({ ...checkpoint }));
 }
