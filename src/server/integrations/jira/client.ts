@@ -1,0 +1,313 @@
+import type { IntegrationIssueRef, IssueSourceIntegration } from '../interfaces';
+import { badRequest } from '../../http/errors';
+
+type HttpFetcher = (input: string, init?: RequestInit) => Promise<Response>;
+
+type JiraIssueSourceOptions = {
+  baseUrl: string;
+  authEmail?: string;
+  authToken?: string;
+  timeoutMs?: number;
+  maxAttempts?: number;
+  retryDelayMs?: number;
+};
+
+type NormalizedJiraIssueSourceOptions = {
+  baseUrl: string;
+  authEmail?: string;
+  authToken?: string;
+  timeoutMs: number;
+  maxAttempts: number;
+  retryDelayMs: number;
+  fetcher: HttpFetcher;
+};
+
+type JiraIssuePayload = {
+  key?: unknown;
+  self?: unknown;
+  fields?: {
+    description?: unknown;
+    summary?: unknown;
+    project?: { key?: unknown };
+  };
+};
+
+type TimeoutError = Error & { retryable?: boolean };
+
+const ISSUE_KEY_PATTERN = /^[A-Z][A-Z0-9_]*-\d+$/i;
+const DEFAULT_TIMEOUT_MS = 5_000;
+const DEFAULT_MAX_ATTEMPTS = 3;
+const DEFAULT_RETRY_DELAY_MS = 250;
+
+function readString(value: unknown): string | undefined {
+  if (typeof value === 'string' && value.trim()) {
+    return value.trim();
+  }
+  return undefined;
+}
+
+function readPositiveInt(value: unknown, fallback: number): number {
+  if (typeof value === 'number' && Number.isInteger(value) && value > 0) {
+    return value;
+  }
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    if (Number.isInteger(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+  return fallback;
+}
+
+function encodeBasicAuthToken(username: string, token: string) {
+  const credentials = `${username}:${token}`;
+  if (typeof btoa === 'function') {
+    return btoa(credentials);
+  }
+  if (typeof Buffer !== 'undefined') {
+    return Buffer.from(credentials, 'utf-8').toString('base64');
+  }
+  return '';
+}
+
+function buildIssueEndpoint(baseUrl: string, issueKey: string) {
+  const normalizedBase = baseUrl.replace(/\/$/, '');
+  const lowerBase = normalizedBase.toLowerCase();
+  const separator = lowerBase.includes('/rest/api/3') ? '/issue/' : '/rest/api/3/issue/';
+  return `${normalizedBase}${separator}${issueKey}`;
+}
+
+function normalizeJiraText(value: unknown): string {
+  if (typeof value === 'string') {
+    return value.trim();
+  }
+  if (!value || typeof value !== 'object') {
+    return '';
+  }
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => normalizeJiraText(item))
+      .filter((entry) => entry)
+      .join('\n');
+  }
+  const record = value as Record<string, unknown>;
+  if (typeof record.text === 'string') {
+    return record.text.trim();
+  }
+  if (typeof record.value === 'string') {
+    return record.value.trim();
+  }
+  if (Array.isArray(record.content)) {
+    return normalizeJiraText(record.content);
+  }
+  return '';
+}
+
+function toTimeoutError(message: string): TimeoutError {
+  const error = new Error(message) as TimeoutError;
+  error.retryable = true;
+  return error;
+}
+
+function isRetryableStatus(status: number) {
+  return status >= 500 || status === 429 || status === 408;
+}
+
+function buildIssueBrowseUrl(baseUrl: string, fallbackIssueKey: string, self?: string) {
+  if (self && self.includes('/browse/')) {
+    return self;
+  }
+
+  const normalizedSelf = readString(self);
+  if (normalizedSelf) {
+    const replacement = normalizedSelf.replace('/rest/api/3/issue/', '/browse/').replace('/rest/api/2/issue/', '/browse/');
+    if (replacement !== normalizedSelf && replacement.includes('/browse/')) {
+      return replacement;
+    }
+  }
+
+  const normalizedBase = readString(baseUrl)?.replace(/\/$/, '') ?? '';
+  if (!normalizedBase) {
+    return undefined;
+  }
+
+  const browserBase = normalizedBase.includes('/rest/api/')
+    ? normalizedBase.replace(/\/rest\/api\/.*/, '')
+    : normalizedBase;
+
+  return `${browserBase}/browse/${fallbackIssueKey}`;
+}
+
+function extractErrorMessage(payload: unknown): string | undefined {
+  if (!payload || typeof payload !== 'object') {
+    return undefined;
+  }
+  const record = payload as Record<string, unknown>;
+  return readString(record.message)
+    ?? readString(record.errorMessages)
+    ?? readString(record.error?.message);
+}
+
+function toIntegrationIssue(payload: unknown, fallbackIssueKey: string): IntegrationIssueRef {
+  const issue = payload as JiraIssuePayload;
+  const fields = issue.fields ?? {};
+  const title = readString(fields.summary) || fallbackIssueKey;
+  const body = normalizeJiraText(fields.description) || 'No description provided.';
+  return {
+    issueKey: readString(issue.key) || fallbackIssueKey,
+    title,
+    body,
+    url: buildIssueBrowseUrl(issue.self as string, readString(issue.key) || fallbackIssueKey)
+  };
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+export class RetryableRequestError extends Error {
+  readonly retryable = true;
+}
+
+export class JiraMcpIssueSourceIntegration implements IssueSourceIntegration {
+  readonly pluginKind: 'jira' = 'jira';
+  private readonly options: NormalizedJiraIssueSourceOptions;
+
+  constructor(input: JiraIssueSourceOptions, fetcher: HttpFetcher = fetch) {
+    const baseUrl = readString(input.baseUrl);
+    if (!baseUrl) {
+      throw badRequest('Jira integration requires a base URL.');
+    }
+
+    this.options = {
+      baseUrl,
+      authEmail: readString(input.authEmail),
+      authToken: readString(input.authToken),
+      timeoutMs: readPositiveInt(input.timeoutMs, DEFAULT_TIMEOUT_MS),
+      maxAttempts: readPositiveInt(input.maxAttempts, DEFAULT_MAX_ATTEMPTS),
+      retryDelayMs: readPositiveInt(input.retryDelayMs, DEFAULT_RETRY_DELAY_MS),
+      fetcher
+    };
+  }
+
+  async fetchIssue(issueRef: string, _tenantId: string): Promise<IntegrationIssueRef> {
+    const issueKey = readString(issueRef)?.toUpperCase();
+    if (!issueKey || !ISSUE_KEY_PATTERN.test(issueKey)) {
+      throw badRequest('Invalid Jira issue key.');
+    }
+
+    const response = await this.fetchWithRetry(buildIssueEndpoint(this.options.baseUrl, issueKey));
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const message = extractErrorMessage(payload);
+      const normalizedMessage = message ? `: ${message}` : '';
+
+      if (response.status === 404) {
+        throw badRequest(`Jira issue ${issueKey} not found${normalizedMessage}`);
+      }
+      if (response.status === 401 || response.status === 403) {
+        throw badRequest(`Jira authentication failed while loading ${issueKey}.`);
+      }
+      if (isRetryableStatus(response.status)) {
+        throw toTimeoutError(`Failed to load Jira issue ${issueKey} (${response.status}).`);
+      }
+      throw badRequest(`Failed to load Jira issue ${issueKey} (${response.status}).`);
+    }
+
+    return toIntegrationIssue(payload, issueKey);
+  }
+
+  private async fetchWithRetry(url: string): Promise<Response> {
+    let attempt = 0;
+    let lastRetryableError: Error | undefined;
+
+    while (attempt < this.options.maxAttempts) {
+      attempt += 1;
+      try {
+        const response = await this.fetchOnce(url);
+        if (response.ok) {
+          return response;
+        }
+
+        if (!isRetryableStatus(response.status)) {
+          return response;
+        }
+
+        if (attempt < this.options.maxAttempts) {
+          await sleep(this.options.retryDelayMs);
+          continue;
+        }
+
+        return response;
+      } catch (error) {
+        const typedError = error instanceof Error ? error : new Error('Unknown Jira request error.');
+        if ((typedError instanceof RetryableRequestError) || (typedError instanceof DOMException) || typedError.retryable) {
+          lastRetryableError = typedError;
+          if (attempt < this.options.maxAttempts) {
+            await sleep(this.options.retryDelayMs);
+            continue;
+          }
+        }
+
+        throw typedError;
+      }
+    }
+
+    throw lastRetryableError ?? new Error('Failed to fetch Jira issue.');
+  }
+
+  private async fetchOnce(url: string): Promise<Response> {
+    const headers: HeadersInit = {
+      Accept: 'application/json'
+    };
+    if (this.options.authToken && this.options.authEmail) {
+      headers.Authorization = `Basic ${encodeBasicAuthToken(this.options.authEmail, this.options.authToken)}`;
+    } else if (this.options.authToken) {
+      headers.Authorization = `Bearer ${this.options.authToken}`;
+    }
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => {
+      controller.abort();
+    }, this.options.timeoutMs);
+
+    try {
+      const response = await this.options.fetcher(url, { headers, signal: controller.signal }).catch((error) => {
+        throw error instanceof Error ? error : new Error('Unknown fetch error.');
+      });
+
+      if (!response.ok && (response.status >= 500 || response.status === 429 || response.status === 408)) {
+        throw new RetryableRequestError(`Retryable Jira response: ${response.status}`);
+      }
+
+      return response;
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        throw toTimeoutError('Jira read request timed out.');
+      }
+      if (error instanceof RetryableRequestError) {
+        throw error;
+      }
+      if (error instanceof Error && error.message.includes('timed out')) {
+        throw error;
+      }
+      throw new Error('Unable to reach Jira issue endpoint.');
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+}
+
+export function createJiraIssueSourceIntegrationFromEnv(env: Env, tenantId: string) {
+  const envValues = env as Record<string, string | undefined>;
+  return new JiraMcpIssueSourceIntegration({
+    baseUrl: envValues.JIRA_API_BASE_URL ?? envValues.JIRA_API_URL ?? ``,
+    authEmail: envValues.JIRA_EMAIL ?? envValues.JIRA_USER_EMAIL,
+    authToken: envValues.JIRA_API_TOKEN,
+    timeoutMs: readPositiveInt(envValues.JIRA_TIMEOUT_MS, DEFAULT_TIMEOUT_MS),
+    maxAttempts: readPositiveInt(envValues.JIRA_MAX_ATTEMPTS, DEFAULT_MAX_ATTEMPTS),
+    retryDelayMs: readPositiveInt(envValues.JIRA_RETRY_DELAY_MS, DEFAULT_RETRY_DELAY_MS)
+  });
+}
