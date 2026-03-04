@@ -12,6 +12,7 @@
 | SCM credentials | 2, 3.5 | ✅ Implemented | `GET /api/scm/credentials`; `POST /api/scm/credentials`; `GET /api/scm/credentials/:provider/:providerRepoName` | _none_ | Provider credential registry exists, including get/list/upsert. Supports GitHub and GitLab SCM providers. |
 | Tasks | 2, 3 | ✅ Implemented | `GET /api/tasks?repoId=all|<repoId>`; `POST /api/tasks`; `GET /api/tasks/:taskId`; `PATCH /api/tasks/:taskId`; `DELETE /api/tasks/:taskId` | _none_ | Full task lifecycle and mutation APIs are in place. |
 | Run execution | 3, 3.1, 3.5, 6 | ✅ Implemented | `POST /api/tasks/:taskId/run`; `GET /api/runs/:runId`; `POST /api/runs/:runId/retry`; `POST /api/runs/:runId/preview`; `POST /api/runs/:runId/evidence`; `POST /api/runs/:runId/request-changes`; `POST /api/runs/:runId/review` | `GET /api/runs/:runId/audit` *(Stage 5 target)* | Runtime includes auto review on review entry, manual review rerun endpoint, stable posting and retry metadata. |
+| Slack/Jira/GitLab integrations | P5 | ✅ Implemented (MVP) | `POST /api/integrations/slack/commands`; `POST /api/integrations/slack/events`; `POST /api/integrations/slack/interactions`; `POST /api/integrations/gitlab/webhook` | _none in MVP scope_ | Slack ingress uses signature verification + replay protection. GitLab webhook ingress uses token verification + delivery idempotency. Slack thread binding remains the primary operator surface across reruns. |
 | Logs and artifacts | 3, 4 | ✅ Implemented | `GET /api/runs/:runId/logs`; `GET /api/runs/:runId/artifacts` | _none_ | Includes tailing behavior for logs and artifact listing per run. |
 | Operator observe | 4 | ✅ Implemented | `GET /api/runs/:runId/events`; `GET /api/runs/:runId/commands` | _none_ | Runtime event and structured command history are exposed. |
 | Operator attach | 4 | ✅ Implemented | `GET /api/runs/:runId/terminal`; `GET /api/runs/:runId/ws` | _none_ | Websocket attach endpoint requires `Upgrade: websocket`. |
@@ -57,6 +58,34 @@
 - Enhanced request-changes input:
   - `reviewSelection.mode`: `all` / `include` / `exclude` / `freeform`.
   - Optional provider-reply stitching via `includeReplies`.
+
+## Slack/Jira/GitLab MVP flow states
+
+Decision-gated rerun loop for Slack-driven operation:
+
+1. `QUEUED -> RUNNING -> MR_OPEN -> REVIEW_PENDING -> DECISION_REQUIRED`
+2. On Slack approval: `DECISION_REQUIRED -> RERUN_QUEUED -> RUNNING`
+3. Terminal states: `PAUSED | DONE | FAILED`
+
+Operational notes:
+
+- `approve_rerun` is required to start a rerun from review feedback.
+- Multiple near-simultaneous approvals are deduped by loop-state transition guard.
+- Slack and GitLab ingress paths include delivery dedupe checks to reduce duplicate task/run starts and duplicate feedback posts.
+
+## Integration endpoint contract summary
+
+- `POST /api/integrations/slack/commands`
+  - Verified with Slack signing secret and replay window checks.
+  - Accepts `/kanvy fix <JIRA_KEY>`.
+  - Acknowledges immediately and continues Jira/repo/run processing asynchronously.
+- `POST /api/integrations/slack/interactions`
+  - Supports actions: `repo_disambiguation`, `approve_rerun`, `pause`, `close`.
+  - Uses thread binding context (`taskId`, `channelId`, `threadTs`, `currentRunId`, `latestReviewRound`) to keep decisions in one thread.
+- `POST /api/integrations/gitlab/webhook`
+  - Verified with GitLab webhook token.
+  - Normalizes MR and note webhooks into `REVIEW_PENDING` / `DECISION_REQUIRED` loop-state transitions.
+  - Dedupes deliveries and Slack thread feedback mirrors by idempotency key.
 
 ## Sync template
 

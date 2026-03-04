@@ -194,4 +194,28 @@ describe('gitlab webhook handler', () => {
 
     expect(response.status).toBe(401);
   });
+
+  it('returns BAD_REQUEST for malformed webhook json', async () => {
+    const kv = new KvStore();
+    kv.values.set('gitlab/webhook-secret', 'shared-token');
+    const env = {
+      ...buildEnv(kv, []),
+      REPO_BOARD: { getByName: () => createRepoBoardStub([]) }
+    } as unknown as Env;
+
+    const response = await handleGitlabWebhook(new Request('https://example.test/api/integrations/gitlab/webhook', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-gitlab-token': 'shared-token'
+      },
+      body: '{"object_kind":'
+    }), env);
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({
+      code: 'BAD_REQUEST',
+      message: 'Invalid GitLab webhook payload.'
+    });
+  });
 });

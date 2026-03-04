@@ -52,6 +52,14 @@ AgentsKanban helps you run AI-assisted software work the same way you already ma
 - Merge and remediation behavior follows repo policy (`reviewGate`, `mergePolicy`, `conflictPolicy`).
 - Script-based automation (`scripts/autopilot.sh`, `scripts/p5-sentinel.sh`) can be retired in favor of native sentinel controls.
 
+### Slack, Jira, and GitLab MVP Loop
+
+- Trigger task execution from Slack slash commands with a Jira issue key (`/kanvy fix ABC-123`).
+- Resolve Jira project -> repository mapping and start the first run from `main`.
+- Mirror GitLab MR lifecycle and review feedback into the same Slack thread.
+- Gate reruns behind explicit Slack approval (`approve rerun`) in-thread.
+- Keep one Slack thread binding per task across review rounds for day-to-day operator flow.
+
 ### Operator Controls
 
 - Watch live run events and command history
@@ -215,7 +223,7 @@ npx wrangler d1 migrations apply TENANT_DB --remote
 npm run bootstrap:single-tenant -- --input ./scripts/bootstrap-single-tenant.example.json --remote
 ```
 
-For deeper setup and troubleshooting, see [docs/local-testing.md](docs/local-testing.md), [docs/features-and-api.md](docs/features-and-api.md), [docs/integrations/auto-review-change-loop.md](docs/integrations/auto-review-change-loop.md), and [docs/integrations/sentinel-orchestration.md](docs/integrations/sentinel-orchestration.md).
+For deeper setup and troubleshooting, see [docs/local-testing.md](docs/local-testing.md), [docs/features-and-api.md](docs/features-and-api.md), [docs/integrations/slack-jira-gitlab-mvp.md](docs/integrations/slack-jira-gitlab-mvp.md), [docs/integrations/auto-review-change-loop.md](docs/integrations/auto-review-change-loop.md), and [docs/integrations/sentinel-orchestration.md](docs/integrations/sentinel-orchestration.md).
 
 ## Onboarding Prompts
 

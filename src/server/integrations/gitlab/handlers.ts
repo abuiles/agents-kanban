@@ -1,5 +1,6 @@
 import type { Repo } from '../../../ui/domain/types';
 import * as tenantAuthDb from '../../tenant-auth-db';
+import { badRequest } from '../../http/errors';
 import { json, handleError } from '../../http/response';
 import { buildIdempotencyKey } from '../idempotency';
 import { getRepoProjectPath, getRepoScmProvider, getRunReviewNumber } from '../../../shared/scm';
@@ -54,12 +55,20 @@ function readDeliveryId(request: Request, rawBody: string, normalizedProviderEve
   return `${normalizedProviderEventId}:${hashText(rawBody)}`;
 }
 
+function parseGitlabWebhookBody(rawBody: string): unknown {
+  try {
+    return JSON.parse(rawBody) as unknown;
+  } catch {
+    throw badRequest('Invalid GitLab webhook payload.');
+  }
+}
+
 export async function handleGitlabWebhook(request: Request, env: Env): Promise<Response> {
   try {
     const tenantId = await resolveTenantId(env);
     await verifyGitlabWebhookSecret(env, tenantId, request);
     const rawBody = await request.text();
-    const payload = JSON.parse(rawBody) as unknown;
+    const payload = parseGitlabWebhookBody(rawBody);
     const normalized = normalizeGitlabReviewEvent(payload);
     if (!normalized) {
       return json({ ok: true, status: 'ignored' });
