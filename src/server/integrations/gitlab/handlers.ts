@@ -99,7 +99,7 @@ export async function handleGitlabWebhook(request: Request, env: Env): Promise<R
     }
 
     await mirrorRunLifecycleMilestone(env, run, 'review_pending', `${deliveryId}:review_pending`);
-    const bindings = await listSlackThreadBindingsForTask(env, run.tenantId, run.taskId);
+    const bindings = await listSlackThreadBindingsForTask(env, tenantId, run.taskId);
     const message = buildGitlabFeedbackSlackMessage({
       reviewNumber: normalized.reviewNumber,
       authorUsername: normalized.authorUsername,
@@ -109,7 +109,7 @@ export async function handleGitlabWebhook(request: Request, env: Env): Promise<R
     await Promise.all(bindings.map(async (binding) => {
       const dedupeKey = buildIdempotencyKey({
         provider: 'gitlab',
-        tenantId: run.tenantId,
+        tenantId,
         eventType: 'review_feedback',
         providerEventId: `${deliveryId}:${normalized.providerEventId}`,
         subjectId: `${binding.channelId}:${binding.threadTs}`,
@@ -123,7 +123,7 @@ export async function handleGitlabWebhook(request: Request, env: Env): Promise<R
       }
 
       await postSlackThreadMessage(env, {
-        tenantId: run.tenantId,
+        tenantId,
         repoId: run.repoId,
         channelId: binding.channelId,
         threadTs: binding.threadTs,

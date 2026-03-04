@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildSlackSignature } from './verification';
-import { handleSlackCommands, handleSlackInteractions } from './handlers';
+import { handleSlackCommands, handleSlackEvents, handleSlackInteractions } from './handlers';
 
 const tenantAuthDbMocks = vi.hoisted(() => ({
   deleteSlackThreadBinding: vi.fn(),
@@ -82,7 +82,7 @@ function makeEnv(secret = 'secret', repoBoard = makeRepoBoard({ taskId: 'task_1'
     SECRETS_KV: createKv(secret),
     REPO_BOARD: { getByName: vi.fn(() => repoBoard) },
     BOARD_INDEX: boardIndex
-  };
+  } as unknown as Env;
 }
 
 describe('slack handlers', () => {
@@ -138,7 +138,7 @@ describe('slack handlers', () => {
     const waitUntil = vi.fn((task: Promise<unknown>) => {
       waitUntilTasks.push(task);
     });
-    const response = await handleSlackCommands(request, makeEnv('secret', repoBoard), { waitUntil } as ExecutionContext<unknown>);
+    const response = await handleSlackCommands(request, makeEnv('secret', repoBoard), { waitUntil } as unknown as ExecutionContext<unknown>);
     const body = await response.json() as { ok: boolean; text: string };
 
     expect(response.status).toBe(200);
@@ -152,25 +152,32 @@ describe('slack handlers', () => {
       codexModel: 'gpt-5.3-codex-spark',
       codexReasoningEffort: 'high'
     }));
-    expect(repoBoard.startRun).toHaveBeenCalledWith('task_single', { tenantId: 'tenant_local' });
+    expect(repoBoard.startRun).toHaveBeenCalledWith('task_single', { tenantId: 'team_one' });
     expect(repoBoard.transitionRun).toHaveBeenCalledWith('run_single', {
       workflowInstanceId: 'workflow_1',
       orchestrationMode: 'workflow'
     });
     expect(runOrchestratorMocks.scheduleRunJob).toHaveBeenCalledWith(
       expect.anything(),
+      expect.anything(),
       {
-        tenantId: 'tenant_local',
+        tenantId: 'team_one',
         repoId: 'repo_alpha',
         taskId: 'task_single',
         runId: 'run_single',
         mode: 'full_run'
-      },
-      expect.anything()
+      }
     );
-    expect(tenantAuthDbMocks.deleteSlackThreadBinding).toHaveBeenCalledWith('tenant_local', 'issue:ABC-100', 'C123');
-    expect(tenantAuthDbMocks.upsertSlackThreadBinding).toHaveBeenCalledWith({
-      tenantId: 'tenant_local',
+    expect(tenantAuthDbMocks.deleteSlackThreadBinding).toHaveBeenCalledWith(expect.anything(), 'team_one', 'issue:ABC-100', 'C123');
+    expect(tenantAuthDbMocks.upsertSlackThreadBinding).toHaveBeenCalledWith(expect.anything(), {
+      tenantId: 'team_one',
+      taskId: 'issue:ABC-100',
+      channelId: 'C123',
+      threadTs: '1672531200.1234',
+      latestReviewRound: 0
+    });
+    expect(tenantAuthDbMocks.upsertSlackThreadBinding).toHaveBeenCalledWith(expect.anything(), {
+      tenantId: 'team_one',
       taskId: 'task_single',
       channelId: 'C123',
       threadTs: '1672531200.1234',
@@ -205,7 +212,7 @@ describe('slack handlers', () => {
     const waitUntil = vi.fn((task: Promise<unknown>) => {
       waitUntilTasks.push(task);
     });
-    const response = await handleSlackCommands(request, makeEnv('secret'), { waitUntil } as ExecutionContext<unknown>);
+    const response = await handleSlackCommands(request, makeEnv('secret'), { waitUntil } as unknown as ExecutionContext<unknown>);
     const body = await response.json() as { ok: boolean; text: string };
 
     expect(body.ok).toBe(true);
@@ -243,7 +250,7 @@ describe('slack handlers', () => {
     const waitUntil = vi.fn((task: Promise<unknown>) => {
       waitUntilTasks.push(task);
     });
-    const response = await handleSlackCommands(request, makeEnv('secret', repoBoard, boardIndex), { waitUntil } as ExecutionContext<unknown>);
+    const response = await handleSlackCommands(request, makeEnv('secret', repoBoard, boardIndex), { waitUntil } as unknown as ExecutionContext<unknown>);
     const body = await response.json() as { ok: boolean; text: string };
 
     expect(body.ok).toBe(true);
@@ -282,7 +289,7 @@ describe('slack handlers', () => {
     const waitUntil = vi.fn((task: Promise<unknown>) => {
       waitUntilTasks.push(task);
     });
-    const response = await handleSlackCommands(request, makeEnv('secret', failingBoard), { waitUntil } as ExecutionContext<unknown>);
+    const response = await handleSlackCommands(request, makeEnv('secret', failingBoard), { waitUntil } as unknown as ExecutionContext<unknown>);
     const body = await response.json() as { ok: boolean; text: string };
 
     expect(body.ok).toBe(true);
@@ -324,7 +331,7 @@ describe('slack handlers', () => {
       headers: slackHeaders(timestamp, signature),
       body: rawBody
     });
-    const response = await handleSlackInteractions(request, makeEnv('secret', repoBoard), {} as ExecutionContext<unknown>);
+    const response = await handleSlackInteractions(request, makeEnv('secret', repoBoard), {} as unknown as ExecutionContext<unknown>);
     const responseBody = await response.json() as { ok: true; action: string; taskId: string; runId: string; repoId: string };
 
     expect(responseBody).toMatchObject({
@@ -341,16 +348,16 @@ describe('slack handlers', () => {
     expect(repoBoard.startRun).toHaveBeenCalledWith('task_interaction', { tenantId: 'tenant_local' });
     expect(runOrchestratorMocks.scheduleRunJob).toHaveBeenCalledWith(
       expect.anything(),
+      expect.anything(),
       {
         tenantId: 'tenant_local',
         repoId: 'repo_alpha',
         taskId: 'task_interaction',
         runId: 'run_interaction',
         mode: 'full_run'
-      },
-      expect.anything()
+      }
     );
-    expect(tenantAuthDbMocks.upsertSlackThreadBinding).toHaveBeenCalledWith({
+    expect(tenantAuthDbMocks.upsertSlackThreadBinding).toHaveBeenCalledWith(expect.anything(), {
       tenantId: 'tenant_local',
       taskId: 'task_interaction',
       channelId: 'C123',
@@ -421,7 +428,7 @@ describe('slack handlers', () => {
       headers: slackHeaders(nowTs, repoSig),
       body: repoBody
     });
-    const repoResponse = await handleSlackInteractions(repoRequest, makeEnv('secret'), {} as ExecutionContext<unknown>);
+    const repoResponse = await handleSlackInteractions(repoRequest, makeEnv('secret'), {} as unknown as ExecutionContext<unknown>);
     expect(await repoResponse.json()).toMatchObject({ ok: true, action: 'repo_disambiguation' });
 
     const approveBody = new URLSearchParams({ payload: JSON.stringify(approvePayload) }).toString();
@@ -431,9 +438,9 @@ describe('slack handlers', () => {
       headers: slackHeaders(nowTs, approveSig),
       body: approveBody
     });
-    const approveResponse = await handleSlackInteractions(approveRequest, makeEnv('secret'), {} as ExecutionContext<unknown>);
+    const approveResponse = await handleSlackInteractions(approveRequest, makeEnv('secret'), {} as unknown as ExecutionContext<unknown>);
     expect(await approveResponse.json()).toMatchObject({ ok: true, action: 'approve_rerun' });
-    expect(tenantAuthDbMocks.upsertSlackThreadBinding).toHaveBeenCalledWith({
+    expect(tenantAuthDbMocks.upsertSlackThreadBinding).toHaveBeenNthCalledWith(2, expect.anything(), {
       tenantId: 'tenant_local',
       taskId: 'task_1',
       channelId: 'C123',
@@ -449,13 +456,14 @@ describe('slack handlers', () => {
       headers: slackHeaders(nowTs, pauseSig),
       body: pauseBody
     });
-    const pauseResponse = await handleSlackInteractions(pauseRequest, makeEnv('secret'), {} as ExecutionContext<unknown>);
+    const pauseResponse = await handleSlackInteractions(pauseRequest, makeEnv('secret'), {} as unknown as ExecutionContext<unknown>);
     expect(await pauseResponse.json()).toMatchObject({ ok: true, action: 'pause' });
-    expect(tenantAuthDbMocks.upsertSlackThreadBinding).toHaveBeenCalledWith({
+    expect(tenantAuthDbMocks.upsertSlackThreadBinding).toHaveBeenNthCalledWith(3, expect.anything(), {
       tenantId: 'tenant_local',
       taskId: 'task_1',
       channelId: 'C123',
       threadTs: '1672531200.1234',
+      currentRunId: undefined,
       latestReviewRound: 3
     });
   });
@@ -485,9 +493,9 @@ describe('slack handlers', () => {
       body: rawBody
     });
 
-    const response = await handleSlackInteractions(request, makeEnv('secret'), {} as ExecutionContext<unknown>);
+    const response = await handleSlackInteractions(request, makeEnv('secret'), {} as unknown as ExecutionContext<unknown>);
     expect(await response.json()).toMatchObject({ ok: true, action: 'close' });
-    expect(tenantAuthDbMocks.deleteSlackThreadBinding).toHaveBeenCalledWith('tenant_local', 'task_1', 'C123');
+    expect(tenantAuthDbMocks.deleteSlackThreadBinding).toHaveBeenCalledWith(expect.anything(), 'tenant_local', 'task_1', 'C123');
   });
 
   it('acknowledges event verification challenge', async () => {

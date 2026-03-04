@@ -79,7 +79,12 @@ export async function mirrorRunLifecycleMilestone(
   milestone: SlackLifecycleMilestone,
   eventId: string
 ) {
-  const bindings = await listSlackThreadBindingsForTask(env, run.tenantId, run.taskId);
+  const tenantId = run.tenantId;
+  if (!tenantId) {
+    return;
+  }
+
+  const bindings = await listSlackThreadBindingsForTask(env, tenantId, run.taskId);
   if (bindings.length === 0) {
     return;
   }
@@ -88,7 +93,7 @@ export async function mirrorRunLifecycleMilestone(
   await Promise.all(bindings.map(async (binding) => {
     const dedupeKey = buildIdempotencyKey({
       provider: 'slack',
-      tenantId: run.tenantId,
+      tenantId,
       eventType: `timeline.${milestone}`,
       providerEventId: eventId,
       subjectId: `${binding.channelId}:${binding.threadTs}`,
@@ -103,7 +108,7 @@ export async function mirrorRunLifecycleMilestone(
     }
 
     await postSlackThreadMessage(env, {
-      tenantId: run.tenantId,
+      tenantId,
       repoId: run.repoId,
       channelId: binding.channelId,
       threadTs: binding.threadTs,

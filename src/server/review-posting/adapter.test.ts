@@ -79,14 +79,16 @@ describe('GitLab review posting adapter', () => {
   it('posts inline findings when location is available and reuses existing notes by marker', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(
+        new Response(JSON.stringify([{
+          id: 'd1',
+          notes: [{ id: '100', body: 'ignore me' }]
+        }]), { status: 200 })
+      )
+      .mockResolvedValueOnce(
         new Response(JSON.stringify({
           diff_refs: { base_sha: 'base', head_sha: 'head', start_sha: 'start' }
         }), { status: 200 })
       )
-      .mockResolvedValueOnce(new Response(JSON.stringify([{
-        id: 'd1',
-        notes: [{ id: '100', body: 'ignore me' }]
-      }]), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify({
         id: 900,
         notes: [{ id: '200', body: 'inline marker', url: 'https://gitlab.example.com/note/200' }]
@@ -126,12 +128,12 @@ describe('GitLab review posting adapter', () => {
     const summaryMarker = buildReviewSummaryMarker('run_demo');
 
     const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify([]), { status: 200 }))
       .mockResolvedValueOnce(
         new Response(JSON.stringify({
           diff_refs: { base_sha: 'base', head_sha: 'head', start_sha: 'start' }
         }), { status: 200 })
       )
-      .mockResolvedValueOnce(new Response(JSON.stringify([]), { status: 200 }))
       .mockResolvedValueOnce(new Response('bad request', { status: 400 }))
       .mockResolvedValueOnce(new Response(JSON.stringify({
         id: 1000,
@@ -248,7 +250,7 @@ describe('Jira review posting adapter', () => {
       credential: { token: 'jira_token' }
     });
 
-    expect(context.rf_1).toEqual(['LGTM']);
-    expect(context.rf_2).toEqual(['needs follow up']);
+    expect(context.rf_1).toEqual([`${markerA} LGTM`]);
+    expect(context.rf_2).toBeUndefined();
   });
 });

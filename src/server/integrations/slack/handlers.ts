@@ -1,4 +1,5 @@
 import type { IntegrationIssueRef } from '../interfaces';
+import type { CreateTaskInput } from '../../../ui/domain/api';
 import { badRequest } from '../../http/errors';
 import { handleError, json } from '../../http/response';
 import * as tenantAuthDb from '../../tenant-auth-db';
@@ -17,9 +18,9 @@ const DEFAULT_TASK_ID_PREFIX = 'issue';
 const DEFAULT_REVIEW_ROUND = 0;
 const BOARD_OBJECT_NAME = 'agentboard';
 const SOURCE_REF = 'main';
-const JIRA_LLM_ADAPTER = 'codex';
-const JIRA_LLM_MODEL = 'gpt-5.3-codex-spark';
-const JIRA_LLM_REASONING_EFFORT = 'high';
+const JIRA_LLM_ADAPTER: CreateTaskInput['llmAdapter'] = 'codex';
+const JIRA_LLM_MODEL: CreateTaskInput['codexModel'] = 'gpt-5.3-codex-spark';
+const JIRA_LLM_REASONING_EFFORT: CreateTaskInput['codexReasoningEffort'] = 'high';
 const FALLBACK_DISAMBIGUATION_WARNING = 'No matching repository was auto-selected for this issue.';
 const DISAMBIGUATION_MULTIPLE_MAPPINGS_MESSAGE = 'Multiple repositories are mapped for Jira project';
 const DISAMBIGUATION_NO_MAPPING_MESSAGE = 'No active mapping exists for project';
@@ -47,7 +48,7 @@ function issueProjectKeyFromIssue(issueKey: string) {
 }
 
 function executionContextOrNoop(ctx?: ExecutionContext<unknown>): ExecutionContext<unknown> {
-  return ctx ?? ({ waitUntil: () => {} } as ExecutionContext<unknown>);
+  return ctx ?? ({ waitUntil: () => {} } as unknown as ExecutionContext<unknown>);
 }
 
 function toReadableErrorMessage(error: unknown) {
@@ -61,7 +62,7 @@ function buildTaskPromptFromIssue(issue: IntegrationIssueRef) {
   return `Fix Jira issue ${issue.issueKey}: ${issue.title}\n\n${issue.body}`.trim();
 }
 
-function buildTaskPayloadFromIssue(issue: IntegrationIssueRef, repoId: string) {
+function buildTaskPayloadFromIssue(issue: IntegrationIssueRef, repoId: string): CreateTaskInput {
   return {
     repoId,
     title: `[${issue.issueKey}] ${issue.title}`.trim(),

@@ -39,7 +39,7 @@ describe('slack verification', () => {
       },
       body: rawBody
     });
-    const result = await verifySlackRequest({ SECRETS_KV: kv as unknown as KVNamespace }, request, rawBody);
+    const result = await verifySlackRequest({ SECRETS_KV: kv as unknown as KVNamespace } as unknown as Env, request, rawBody);
     expect(result.teamId).toBe('team_one');
     expect(result.timestamp).toBe(timestamp);
     expect(kv.values.size).toBeGreaterThan(1);
@@ -60,7 +60,7 @@ describe('slack verification', () => {
     });
 
     await expect(
-      verifySlackRequest({ SECRETS_KV: kv as unknown as KVNamespace }, request, rawBody)
+      verifySlackRequest({ SECRETS_KV: kv as unknown as KVNamespace } as unknown as Env, request, rawBody)
     ).rejects.toMatchObject({ status: 401 });
   });
 
@@ -89,9 +89,11 @@ describe('slack verification', () => {
       body: rawBody
     });
 
-    await expect(verifySlackRequest({ SECRETS_KV: kv as unknown as KVNamespace }, requestA, rawBody)).resolves.toBeDefined();
     await expect(
-      verifySlackRequest({ SECRETS_KV: kv as unknown as KVNamespace }, requestB, rawBody)
+      verifySlackRequest({ SECRETS_KV: kv as unknown as KVNamespace } as unknown as Env, requestA, rawBody)
+    ).resolves.toBeDefined();
+    await expect(
+      verifySlackRequest({ SECRETS_KV: kv as unknown as KVNamespace } as unknown as Env, requestB, rawBody)
     ).rejects.toMatchObject({ status: 401 });
   });
 });

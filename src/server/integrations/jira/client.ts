@@ -143,21 +143,32 @@ function extractErrorMessage(payload: unknown): string | undefined {
     return undefined;
   }
   const record = payload as Record<string, unknown>;
+  const nestedError = record.error;
+  const nestedErrorMessage = nestedError && typeof nestedError === 'object'
+    ? readString((nestedError as Record<string, unknown>).message)
+    : undefined;
+  const errorMessages = Array.isArray(record.errorMessages)
+    ? record.errorMessages
+      .filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0)
+      .map((entry) => entry.trim())
+      .join('; ')
+    : undefined;
   return readString(record.message)
-    ?? readString(record.errorMessages)
-    ?? readString(record.error?.message);
+    ?? (errorMessages && errorMessages.length > 0 ? errorMessages : undefined)
+    ?? nestedErrorMessage;
 }
 
-function toIntegrationIssue(payload: unknown, fallbackIssueKey: string): IntegrationIssueRef {
+function toIntegrationIssue(payload: unknown, fallbackIssueKey: string, baseUrl: string): IntegrationIssueRef {
   const issue = payload as JiraIssuePayload;
   const fields = issue.fields ?? {};
   const title = readString(fields.summary) || fallbackIssueKey;
   const body = normalizeJiraText(fields.description) || 'No description provided.';
+  const resolvedIssueKey = readString(issue.key) || fallbackIssueKey;
   return {
-    issueKey: readString(issue.key) || fallbackIssueKey,
+    issueKey: resolvedIssueKey,
     title,
     body,
-    url: buildIssueBrowseUrl(issue.self as string, readString(issue.key) || fallbackIssueKey)
+    url: buildIssueBrowseUrl(baseUrl, resolvedIssueKey, readString(issue.self))
   };
 }
 
@@ -203,9 +214,12 @@ export class JiraMcpIssueSourceIntegration implements IssueSourceIntegration {
     if (!response.ok) {
       const message = extractErrorMessage(payload);
       const normalizedMessage = message ? `: ${message}` : '';
+      const normalizedMessageWithPeriod = message
+        ? `: ${message.endsWith('.') ? message : `${message}.`}`
+        : '.';
 
       if (response.status === 404) {
-        throw badRequest(`Jira issue ${issueKey} not found${normalizedMessage}`);
+        throw badRequest(`Jira issue ${issueKey} not found${normalizedMessageWithPeriod}`);
       }
       if (response.status === 401 || response.status === 403) {
         throw badRequest(`Jira authentication failed while loading ${issueKey}.`);
@@ -216,7 +230,7 @@ export class JiraMcpIssueSourceIntegration implements IssueSourceIntegration {
       throw badRequest(`Failed to load Jira issue ${issueKey} (${response.status}).`);
     }
 
-    return toIntegrationIssue(payload, issueKey);
+    return toIntegrationIssue(payload, issueKey, this.options.baseUrl);
   }
 
   private async fetchWithRetry(url: string): Promise<Response> {
@@ -242,7 +256,7 @@ export class JiraMcpIssueSourceIntegration implements IssueSourceIntegration {
 
         return response;
       } catch (error) {
-        const typedError = error instanceof Error ? error : new Error('Unknown Jira request error.');
+        const typedError = (error instanceof Error ? error : new Error('Unknown Jira request error.')) as TimeoutError;
         if ((typedError instanceof RetryableRequestError) || (typedError instanceof DOMException) || typedError.retryable) {
           lastRetryableError = typedError;
           if (attempt < this.options.maxAttempts) {
@@ -278,10 +292,6 @@ export class JiraMcpIssueSourceIntegration implements IssueSourceIntegration {
         throw error instanceof Error ? error : new Error('Unknown fetch error.');
       });
 
-      if (!response.ok && (response.status >= 500 || response.status === 429 || response.status === 408)) {
-        throw new RetryableRequestError(`Retryable Jira response: ${response.status}`);
-      }
-
       return response;
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') {
@@ -301,7 +311,7 @@ export class JiraMcpIssueSourceIntegration implements IssueSourceIntegration {
 }
 
 export function createJiraIssueSourceIntegrationFromEnv(env: Env, tenantId: string) {
-  const envValues = env as Record<string, string | undefined>;
+  const envValues = env as unknown as Record<string, string | undefined>;
   return new JiraMcpIssueSourceIntegration({
     baseUrl: envValues.JIRA_API_BASE_URL ?? envValues.JIRA_API_URL ?? ``,
     authEmail: envValues.JIRA_EMAIL ?? envValues.JIRA_USER_EMAIL,
