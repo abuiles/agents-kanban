@@ -8,6 +8,8 @@ const tenantAuthDbMocks = vi.hoisted(() => ({
   createSentinelRun: vi.fn(),
   updateSentinelRun: vi.fn(),
   claimSentinelRunTask: vi.fn(),
+  acquireSentinelRunLease: vi.fn(),
+  releaseSentinelRunLease: vi.fn(),
   appendSentinelEvent: vi.fn(),
   upsertRepoSentinelConfig: vi.fn(),
   resolveApiToken: vi.fn(),
@@ -125,25 +127,42 @@ describe('repo sentinel router handlers', () => {
       startedAt: '2026-01-01T00:00:00.000Z',
       updatedAt: '2026-01-01T00:00:00.000Z'
     }));
+    tenantAuthDbMocks.acquireSentinelRunLease.mockImplementation(async (_env: Env, _tenantId: string, runId: string) => ({
+      id: runId,
+      tenantId: _tenantId,
+      repoId: 'repo_1',
+      scopeType: 'global',
+      status: 'running',
+      attemptCount: 0,
+      startedAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z'
+    }));
+    tenantAuthDbMocks.releaseSentinelRunLease.mockResolvedValue(undefined);
   });
 
   it('returns repo sentinel status', async () => {
     tenantAuthDbMocks.listSentinelRuns.mockResolvedValue([
       { id: 'sentinel_run_1', repoId: 'repo_1', tenantId: 'tenant_local', scopeType: 'global', status: 'running', attemptCount: 0, startedAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' }
     ]);
-    tenantAuthDbMocks.listSentinelEvents.mockResolvedValue([{ id: 'event_1' }]);
+    tenantAuthDbMocks.listSentinelEvents.mockResolvedValue([{ id: 'event_1', level: 'error', message: 'merge failed' }]);
 
     const response = await handleGetRepoSentinel(
       new Request('https://minions.example.test/api/repos/repo_1/sentinel', { headers: authHeaders() }),
       createEnv(),
       { repoId: 'repo_1' }
     );
-    const body = await response.json() as { repoId: string; run?: { id: string }; events: Array<{ id: string }> };
+    const body = await response.json() as {
+      repoId: string;
+      run?: { id: string };
+      events: Array<{ id: string }>;
+      diagnostics?: { latestErrorEvent?: { message: string } };
+    };
 
     expect(response.status).toBe(200);
     expect(body.repoId).toBe('repo_1');
     expect(body.run?.id).toBe('sentinel_run_1');
     expect(body.events[0]?.id).toBe('event_1');
+    expect(body.diagnostics?.latestErrorEvent?.message).toBe('merge failed');
   });
 
   it('updates sentinel config via API and repo model', async () => {
@@ -261,5 +280,22 @@ describe('repo sentinel router handlers', () => {
     const body = await response.json() as { code: string };
     expect(response.status).toBe(403);
     expect(body.code).toBe('FORBIDDEN');
+  });
+
+  it('rejects start when sentinel is disabled for a repo', async () => {
+    tenantAuthDbMocks.listSentinelRuns.mockResolvedValue([]);
+    const response = await handleStartRepoSentinel(
+      new Request('https://minions.example.test/api/repos/repo_1/sentinel/start', {
+        method: 'POST',
+        headers: { ...authHeaders(), 'content-type': 'application/json' },
+        body: JSON.stringify({})
+      }),
+      createEnv({ sentinelConfig: { enabled: false } }),
+      { repoId: 'repo_1' }
+    );
+    const body = await response.json() as { code: string; message: string };
+    expect(response.status).toBe(400);
+    expect(body.code).toBe('BAD_REQUEST');
+    expect(body.message).toContain('Sentinel is disabled');
   });
 });

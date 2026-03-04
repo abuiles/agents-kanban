@@ -420,7 +420,7 @@ describe('slack handlers', () => {
     });
     const response = await handleSlackInteractions(
       request,
-      makeEnv('secret', repoBoard, makeBoardIndex([], new Map([['run_1', 'repo_alpha']])),
+      makeEnv('secret', repoBoard, makeBoardIndex([], new Map([['run_1', 'repo_alpha']]))),
       {} as unknown as ExecutionContext<unknown>
     );
     expect(await response.json()).toMatchObject({ ok: true, action: 'approve_rerun' });
@@ -495,7 +495,7 @@ describe('slack handlers', () => {
     });
     const response = await handleSlackInteractions(
       request,
-      makeEnv('secret', repoBoard, makeBoardIndex([], new Map([['run_1', 'repo_alpha']])),
+      makeEnv('secret', repoBoard, makeBoardIndex([], new Map([['run_1', 'repo_alpha']]))),
       {} as unknown as ExecutionContext<unknown>
     );
     expect(await response.json()).toMatchObject({ ok: true, action: 'approve_rerun' });
@@ -533,7 +533,7 @@ describe('slack handlers', () => {
     });
     const response = await handleSlackInteractions(
       request,
-      makeEnv('secret', repoBoard, makeBoardIndex([], new Map([['run_1', 'repo_alpha']])),
+      makeEnv('secret', repoBoard, makeBoardIndex([], new Map([['run_1', 'repo_alpha']]))),
       {} as unknown as ExecutionContext<unknown>
     );
     expect(await response.json()).toMatchObject({ ok: true, action: 'pause' });

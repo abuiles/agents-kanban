@@ -511,9 +511,17 @@ async function buildRepoSentinelState(env: Env, tenantId: string, repoId: string
     getLatestRepoSentinelRun(env, tenantId, repoId),
     tenantAuthDb.listSentinelEvents(env, tenantId, { repoId, limit: 20 })
   ]);
+  const latestEvent = events[0];
+  const latestErrorEvent = events.find((event) => event.level === 'error');
+  const latestWarningEvent = events.find((event) => event.level === 'warn');
   return {
     run,
-    events
+    events,
+    diagnostics: {
+      latestEvent,
+      latestErrorEvent,
+      latestWarningEvent
+    }
   };
 }
 
@@ -656,6 +664,11 @@ async function progressRepoSentinel(
   if (!run || run.status !== 'running') {
     return run;
   }
+  const leaseToken = `sentinel_lease_${crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2, 10)}`;
+  const leasedRun = await tenantAuthDb.acquireSentinelRunLease(env, tenantId, run.id, { leaseToken, ttlSeconds: 30 });
+  if (!leasedRun) {
+    return run;
+  }
   const board = env.REPO_BOARD.getByName(repoId);
   const controller = new SentinelController({
     env,
@@ -663,7 +676,7 @@ async function progressRepoSentinel(
     repo: repo as Repo,
     repoId,
     scmAdapter: getScmAdapter(repo),
-    run,
+    run: leasedRun,
     board: {
       listTasks: async (tenantIdOverride?: string, options?: { tags?: string[] }) => {
         return board.listTasks(tenantIdOverride, options);
@@ -683,8 +696,12 @@ async function progressRepoSentinel(
     },
     executionContext: ctx
   });
-  const progressed = await controller.progress();
-  return progressed.run;
+  try {
+    const progressed = await controller.progress();
+    return progressed.run;
+  } finally {
+    await tenantAuthDb.releaseSentinelRunLease(env, tenantId, leasedRun.id, leaseToken);
+  }
 }
 
 export async function handleStartRepoSentinel(
@@ -698,6 +715,9 @@ export async function handleStartRepoSentinel(
     const requestContext = await resolveRequestTenantContext(env, board, request, { requireSession: true });
     const repoId = parsePathParam(params.repoId);
     const repo = await assertRepoAccess(env, board, requestContext, repoId);
+    if (!repo.sentinelConfig?.enabled) {
+      throw badRequest('Sentinel is disabled for this repo. Enable repo sentinel config first.');
+    }
     const body = await readJson(request).catch(() => ({}));
     const input = parseStartRepoSentinelInput(body);
     const scopeType = input.scopeType ?? (repo.sentinelConfig?.globalMode ? 'global' : 'group');
@@ -744,6 +764,9 @@ export async function handleResumeRepoSentinel(
     const requestContext = await resolveRequestTenantContext(env, board, request, { requireSession: true });
     const repoId = parsePathParam(params.repoId);
     const repo = await assertRepoAccess(env, board, requestContext, repoId);
+    if (!repo.sentinelConfig?.enabled) {
+      throw badRequest('Sentinel is disabled for this repo. Enable repo sentinel config first.');
+    }
     const transition = await transitionRepoSentinelRun(env, requestContext.activeTenantId, repoId, 'resume');
     await progressRepoSentinel(env, requestContext.activeTenantId, repoId, transition.run, ctx, repo);
     const state = await buildRepoSentinelState(env, requestContext.activeTenantId, repoId);

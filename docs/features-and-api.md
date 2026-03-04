@@ -8,6 +8,7 @@
 | --- | --- | --- | --- | --- | --- |
 | Board and live state | 2, 4 | ✅ Implemented | `GET /api/board?repoId=all|<repoId>`; `GET /api/board/ws` | _none_ | Core board snapshot and websocket state stream are live. |
 | Repositories | 2 | ✅ Implemented | `GET /api/repos`; `POST /api/repos`; `PATCH /api/repos/:repoId` | _none_ | Repo edit and listing are in place. |
+| Native sentinel orchestration | P7/S2-S6 | ✅ Implemented | `GET /api/repos/:repoId/sentinel`; `PATCH /api/repos/:repoId/sentinel/config`; `POST /api/repos/:repoId/sentinel/start`; `POST /api/repos/:repoId/sentinel/pause`; `POST /api/repos/:repoId/sentinel/resume`; `POST /api/repos/:repoId/sentinel/stop`; `GET /api/repos/:repoId/sentinel/events` | `POST /api/repos/:repoId/sentinel/retry-merge` *(optional follow-up)* | Event timeline + diagnostics are available from status/events responses; progression is lease/idempotency hardened to avoid duplicate processing. |
 | SCM credentials | 2, 3.5 | ✅ Implemented | `GET /api/scm/credentials`; `POST /api/scm/credentials`; `GET /api/scm/credentials/:provider/:providerRepoName` | _none_ | Provider credential registry exists, including get/list/upsert. Supports GitHub and GitLab SCM providers. |
 | Tasks | 2, 3 | ✅ Implemented | `GET /api/tasks?repoId=all|<repoId>`; `POST /api/tasks`; `GET /api/tasks/:taskId`; `PATCH /api/tasks/:taskId`; `DELETE /api/tasks/:taskId` | _none_ | Full task lifecycle and mutation APIs are in place. |
 | Run execution | 3, 3.1, 3.5, 6 | ✅ Implemented | `POST /api/tasks/:taskId/run`; `GET /api/runs/:runId`; `POST /api/runs/:runId/retry`; `POST /api/runs/:runId/preview`; `POST /api/runs/:runId/evidence`; `POST /api/runs/:runId/request-changes`; `POST /api/runs/:runId/review` | `GET /api/runs/:runId/audit` *(Stage 5 target)* | Runtime includes auto review on review entry, manual review rerun endpoint, stable posting and retry metadata. |
@@ -42,6 +43,7 @@
 - Active plans index: `docs/plans/current/README.md`
 - Historical Stage 4.6 doc: `docs/plans/archive/stage_4_6.md`
 - Auto-review + selective change-loop runbook: `docs/integrations/auto-review-change-loop.md`
+- Native sentinel orchestration runbook: `docs/integrations/sentinel-orchestration.md`
 
 ## Stage 6 surface notes
 

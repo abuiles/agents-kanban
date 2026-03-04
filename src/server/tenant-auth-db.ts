@@ -125,6 +125,11 @@ type SentinelRunInput = {
   updatedAt?: string;
 };
 type SentinelRunPatch = Partial<Pick<SentinelRun, 'status' | 'currentTaskId' | 'currentRunId' | 'attemptCount' | 'updatedAt'>>;
+type SentinelRunLeaseInput = {
+  leaseToken: string;
+  ttlSeconds?: number;
+  now?: string;
+};
 type SentinelEventInput = {
   id?: string;
   sentinelRunId: string;
@@ -1177,23 +1182,46 @@ export async function createSentinelRun(env: Env, input: SentinelRunInput): Prom
   const db = getDb(env);
   await ensureSchema(db);
   const normalized = normalizeSentinelRunInput(input);
-  await db.prepare(
-    `INSERT INTO sentinel_runs
-     (external_id, tenant_id, repo_id, scope_type, scope_value, status, current_task_id, current_run_id, attempt_count, started_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).bind(
-    normalized.id,
-    normalized.tenantId,
-    normalized.repoId,
-    normalized.scopeType,
-    normalized.scopeValue ?? null,
-    normalized.status,
-    normalized.currentTaskId ?? null,
-    normalized.currentRunId ?? null,
-    normalized.attemptCount,
-    normalized.startedAt,
-    normalized.updatedAt
-  ).run();
+  try {
+    await db.prepare(
+      `INSERT INTO sentinel_runs
+       (external_id, tenant_id, repo_id, scope_type, scope_value, status, current_task_id, current_run_id, attempt_count, started_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).bind(
+      normalized.id,
+      normalized.tenantId,
+      normalized.repoId,
+      normalized.scopeType,
+      normalized.scopeValue ?? null,
+      normalized.status,
+      normalized.currentTaskId ?? null,
+      normalized.currentRunId ?? null,
+      normalized.attemptCount,
+      normalized.startedAt,
+      normalized.updatedAt
+    ).run();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const duplicateRunningRepo = (
+      normalized.status === 'running'
+      && message.includes('UNIQUE constraint failed')
+      && (
+        (message.includes('sentinel_runs.tenant_id') && message.includes('sentinel_runs.repo_id'))
+        || message.includes('idx_sentinel_runs_single_running_repo')
+      )
+    );
+    if (!duplicateRunningRepo) {
+      throw error;
+    }
+    const running = await listSentinelRuns(env, normalized.tenantId, {
+      repoId: normalized.repoId,
+      status: 'running'
+    });
+    if (running[0]) {
+      return running[0];
+    }
+    throw conflict(`Sentinel run for repo ${normalized.repoId} is already running.`);
+  }
   return getSentinelRun(env, normalized.tenantId, normalized.id);
 }
 
@@ -1243,9 +1271,11 @@ export async function updateSentinelRun(env: Env, tenantId: string, runId: strin
   const db = getDb(env);
   await ensureSchema(db);
   const existing = await getSentinelRun(env, tenantId, runId);
+  const nextStatus = patch.status ? parseSentinelRunStatus(patch.status) : existing.status;
+  const shouldClearLease = nextStatus !== 'running';
   const updated: SentinelRun = {
     ...existing,
-    status: patch.status ? parseSentinelRunStatus(patch.status) : existing.status,
+    status: nextStatus,
     currentTaskId: patch.currentTaskId?.trim() || (Object.prototype.hasOwnProperty.call(patch, 'currentTaskId') ? undefined : existing.currentTaskId),
     currentRunId: patch.currentRunId?.trim() || (Object.prototype.hasOwnProperty.call(patch, 'currentRunId') ? undefined : existing.currentRunId),
     attemptCount: Number.isInteger(patch.attemptCount) && Number(patch.attemptCount) >= 0
@@ -1255,7 +1285,9 @@ export async function updateSentinelRun(env: Env, tenantId: string, runId: strin
   };
   await db.prepare(
     `UPDATE sentinel_runs
-     SET status = ?, current_task_id = ?, current_run_id = ?, attempt_count = ?, updated_at = ?
+     SET status = ?, current_task_id = ?, current_run_id = ?, attempt_count = ?, updated_at = ?,
+         controller_lease_token = CASE WHEN ? THEN NULL ELSE controller_lease_token END,
+         controller_lease_expires_at = CASE WHEN ? THEN NULL ELSE controller_lease_expires_at END
      WHERE tenant_id = ? AND external_id = ?`
   ).bind(
     updated.status,
@@ -1263,10 +1295,79 @@ export async function updateSentinelRun(env: Env, tenantId: string, runId: strin
     updated.currentRunId ?? null,
     updated.attemptCount,
     updated.updatedAt,
+    shouldClearLease ? 1 : 0,
+    shouldClearLease ? 1 : 0,
     tenantId,
     runId
   ).run();
   return getSentinelRun(env, tenantId, runId);
+}
+
+export async function acquireSentinelRunLease(
+  env: Env,
+  tenantId: string,
+  runId: string,
+  input: SentinelRunLeaseInput
+): Promise<SentinelRun | null> {
+  const db = getDb(env);
+  await ensureSchema(db);
+  const now = input.now ?? new Date().toISOString();
+  const ttlSeconds = Number.isInteger(input.ttlSeconds) && Number(input.ttlSeconds) > 0
+    ? Number(input.ttlSeconds)
+    : 30;
+  const leaseExpiresAt = new Date(Date.parse(now) + (ttlSeconds * 1000)).toISOString();
+  const leaseToken = input.leaseToken.trim();
+  if (!leaseToken) {
+    throw badRequest('Sentinel lease token is required.');
+  }
+
+  await db.prepare(
+    `UPDATE sentinel_runs
+     SET controller_lease_token = ?, controller_lease_expires_at = ?, updated_at = ?
+     WHERE tenant_id = ? AND external_id = ? AND status = 'running'
+       AND (
+         controller_lease_token IS NULL
+         OR controller_lease_token = ?
+         OR controller_lease_expires_at IS NULL
+         OR controller_lease_expires_at <= ?
+       )`
+  ).bind(
+    leaseToken,
+    leaseExpiresAt,
+    now,
+    tenantId,
+    runId,
+    leaseToken,
+    now
+  ).run();
+
+  const owned = await db.prepare(
+    `SELECT * FROM sentinel_runs
+     WHERE tenant_id = ? AND external_id = ? AND status = 'running'
+       AND controller_lease_token = ? AND controller_lease_expires_at > ?
+     LIMIT 1`
+  ).bind(tenantId, runId, leaseToken, now).first<Record<string, unknown>>();
+  return owned ? mapSentinelRun(owned) : null;
+}
+
+export async function releaseSentinelRunLease(
+  env: Env,
+  tenantId: string,
+  runId: string,
+  leaseToken: string,
+  now = new Date().toISOString()
+): Promise<void> {
+  const db = getDb(env);
+  await ensureSchema(db);
+  const token = leaseToken.trim();
+  if (!token) {
+    return;
+  }
+  await db.prepare(
+    `UPDATE sentinel_runs
+     SET controller_lease_token = NULL, controller_lease_expires_at = NULL, updated_at = ?
+     WHERE tenant_id = ? AND external_id = ? AND controller_lease_token = ?`
+  ).bind(now, tenantId, runId, token).run();
 }
 
 export async function listSentinelRuns(env: Env, tenantId: string, filters?: { repoId?: string; status?: SentinelRun['status'] }): Promise<SentinelRun[]> {

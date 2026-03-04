@@ -720,14 +720,37 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
               </div>
               {repoSentinelError ? <div className="mt-2 text-sm text-rose-300">{repoSentinelError}</div> : null}
               <div className="mt-3 max-h-52 space-y-2 overflow-auto">
+                {repoSentinelStatus?.diagnostics?.latestErrorEvent ? (
+                  <div className="rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
+                    <div className="font-semibold">Latest error</div>
+                    <div className="mt-1">{repoSentinelStatus.diagnostics.latestErrorEvent.message}</div>
+                  </div>
+                ) : null}
                 {(repoSentinelStatus?.events ?? []).length ? (
                   repoSentinelStatus?.events.map((event) => (
                     <div key={event.id} className="rounded-lg border border-slate-800 bg-slate-950/70 px-3 py-2 text-xs text-slate-300">
                       <div className="flex items-center justify-between gap-2">
-                        <span>{event.type}</span>
+                        <div className="flex items-center gap-2">
+                          <span className={
+                            event.level === 'error'
+                              ? 'rounded bg-rose-500/20 px-1.5 py-0.5 text-[10px] uppercase text-rose-200'
+                              : event.level === 'warn'
+                                ? 'rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] uppercase text-amber-200'
+                                : 'rounded bg-cyan-500/20 px-1.5 py-0.5 text-[10px] uppercase text-cyan-200'
+                          }
+                          >
+                            {event.level}
+                          </span>
+                          <span>{event.type}</span>
+                        </div>
                         <span className="text-slate-500">{new Date(event.at).toLocaleString()}</span>
                       </div>
                       <div className="mt-1 text-slate-400">{event.message}</div>
+                      {event.metadata && Object.keys(event.metadata).length ? (
+                        <div className="mt-1 text-[11px] text-slate-500">
+                          {Object.entries(event.metadata).map(([key, value]) => `${key}=${String(value)}`).join(' · ')}
+                        </div>
+                      ) : null}
                     </div>
                   ))
                 ) : (
