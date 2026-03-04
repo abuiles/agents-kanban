@@ -31,7 +31,7 @@ export const REVIEW_FINDINGS_OUTPUT_SCHEMA = {
       items: {
         type: 'object',
         additionalProperties: false,
-        required: ['severity', 'title', 'description'],
+        required: ['severity', 'title', 'description', 'filePath', 'lineStart', 'lineEnd', 'providerThreadId', 'status', 'replyContext'],
         properties: {
           severity: {
             type: 'string',
@@ -46,28 +46,63 @@ export const REVIEW_FINDINGS_OUTPUT_SCHEMA = {
             minLength: 1
           },
           filePath: {
-            type: 'string',
-            minLength: 1
+            anyOf: [
+              {
+                type: 'string',
+                minLength: 1
+              },
+              {
+                type: 'null'
+              }
+            ]
           },
           lineStart: {
-            type: 'number',
-            minimum: 1
+            anyOf: [
+              {
+                type: 'number',
+                minimum: 1
+              },
+              {
+                type: 'null'
+              }
+            ]
           },
           lineEnd: {
-            type: 'number',
-            minimum: 1
+            anyOf: [
+              {
+                type: 'number',
+                minimum: 1
+              },
+              {
+                type: 'null'
+              }
+            ]
           },
           providerThreadId: {
-            type: 'string',
-            minLength: 1
+            anyOf: [
+              {
+                type: 'string',
+                minLength: 1
+              },
+              {
+                type: 'null'
+              }
+            ]
           },
           status: {
             type: 'string',
             enum: [...REVIEW_FINDING_STATUSES]
           },
           replyContext: {
-            type: 'array',
-            items: { type: 'string', minLength: 1 }
+            anyOf: [
+              {
+                type: 'array',
+                items: { type: 'string', minLength: 1 }
+              },
+              {
+                type: 'null'
+              }
+            ]
           }
         }
       }
@@ -420,7 +455,7 @@ function normalizeLineNumber(
   field: string,
   errors: string[]
 ): number | undefined {
-  if (value === undefined) {
+  if (value === undefined || value === null) {
     return undefined;
   }
   if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0 || !Number.isInteger(value)) {
