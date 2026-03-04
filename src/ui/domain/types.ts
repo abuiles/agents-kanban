@@ -19,7 +19,9 @@ export type CodexReasoningEffort = 'low' | 'medium' | 'high';
 export type LlmAdapter = 'codex' | 'cursor_cli';
 export type LlmReasoningEffort = 'low' | 'medium' | 'high';
 export type ScmProvider = 'github' | 'gitlab';
+export type AutoReviewProvider = 'gitlab' | 'jira';
 export type ReviewProvider = ScmProvider;
+export type AutoReviewMode = 'inherit' | 'on' | 'off';
 export type PreviewAdapterKind = 'cloudflare_checks' | 'prompt_recipe';
 export type IntegrationScopeType = 'tenant' | 'repo' | 'channel';
 export type IntegrationPluginKind = 'slack' | 'jira' | 'gitlab';
@@ -66,6 +68,12 @@ export type RepoCommitConfig = {
   messageTemplate?: string;
   messageRegex?: string;
   messageExamples?: string[];
+};
+export type RepoAutoReview = {
+  enabled: boolean;
+  prompt?: string;
+  provider: AutoReviewProvider;
+  postInline: boolean;
 };
 export type PreviewResolutionStatus = 'ready' | 'pending' | 'failed' | 'timed_out';
 export type PreviewDiagnostic = {
@@ -169,6 +177,7 @@ export type Repo = {
   previewUrlPattern?: string;
   // Compatibility alias during migration to generic LLM executor fields.
   codexAuthBundleR2Key?: string;
+  autoReview?: RepoAutoReview;
   createdAt: string;
   updatedAt: string;
 };
@@ -238,6 +247,8 @@ export type TaskUiMeta = {
   llmReasoningEffort?: LlmReasoningEffort;
   codexModel?: CodexModel;
   codexReasoningEffort?: CodexReasoningEffort;
+  autoReviewMode?: AutoReviewMode;
+  autoReviewPrompt?: string;
 };
 
 export type Task = {

@@ -134,6 +134,8 @@ export class RepoBoardDO extends DurableObject<Env> {
       updatedAt: now,
       uiMeta: normalizeTaskUiMeta({
         simulationProfile: input.simulationProfile ?? 'happy_path',
+        autoReviewMode: input.autoReviewMode,
+        autoReviewPrompt: input.autoReviewPrompt,
         llmAdapter: input.llmAdapter,
         llmModel: input.llmModel,
         llmReasoningEffort: input.llmReasoningEffort,
@@ -188,6 +190,8 @@ export class RepoBoardDO extends DurableObject<Env> {
       acceptanceCriteria: patch.acceptanceCriteria ?? existing.acceptanceCriteria,
       uiMeta: normalizeTaskUiMeta({
         simulationProfile: patch.simulationProfile ?? existing.uiMeta?.simulationProfile ?? 'happy_path',
+        autoReviewMode: patch.autoReviewMode ?? existing.uiMeta?.autoReviewMode ?? 'inherit',
+        autoReviewPrompt: patch.autoReviewPrompt ?? existing.uiMeta?.autoReviewPrompt,
         llmAdapter: patch.llmAdapter ?? existing.uiMeta?.llmAdapter,
         llmModel: patch.llmModel ?? existing.uiMeta?.llmModel,
         llmReasoningEffort: patch.llmReasoningEffort ?? existing.uiMeta?.llmReasoningEffort,

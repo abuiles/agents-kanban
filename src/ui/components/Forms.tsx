@@ -1,6 +1,18 @@
 import { useEffect, useState } from 'react';
 import type { CreateRepoInput, CreateTaskInput } from '../domain/api';
-import type { CodexModel, LlmAdapter, LlmReasoningEffort, PreviewAdapterKind, Repo, ScmProvider, TaskContextLink, TaskDependency, TaskStatus } from '../domain/types';
+import type {
+  AutoReviewMode,
+  AutoReviewProvider,
+  CodexModel,
+  LlmAdapter,
+  LlmReasoningEffort,
+  PreviewAdapterKind,
+  Repo,
+  ScmProvider,
+  TaskContextLink,
+  TaskDependency,
+  TaskStatus
+} from '../domain/types';
 import { normalizeRepoPreviewConfig } from '../../shared/preview';
 
 const DEFAULT_SCM_BASE_URLS: Record<ScmProvider, string> = {
@@ -72,6 +84,10 @@ export function RepoForm({
     previewProvider: initialValues?.previewProvider,
     previewCheckName: initialValues?.previewCheckName
   });
+  const initialAutoReviewEnabled = initialValues?.autoReview?.enabled ?? false;
+  const initialAutoReviewProvider = initialValues?.autoReview?.provider ?? 'gitlab';
+  const initialAutoReviewPostInline = initialValues?.autoReview?.postInline ?? false;
+  const initialAutoReviewPrompt = initialValues?.autoReview?.prompt ?? '';
   const initialPreviewMode = initialValues?.previewMode ?? 'auto';
   const initialEvidenceMode = initialValues?.evidenceMode ?? 'auto';
   const initialPreviewAdapter = normalizedPreview.previewAdapter ?? 'cloudflare_checks';
@@ -95,6 +111,10 @@ export function RepoForm({
   const [llmProfileId, setLlmProfileId] = useState(initialLlmProfileId);
   const [llmAuthBundleR2Key, setLlmAuthBundleR2Key] = useState(initialLlmAuthBundleR2Key);
   const [promptRecipe, setPromptRecipe] = useState(initialPromptRecipe);
+  const [autoReviewEnabled, setAutoReviewEnabled] = useState(initialAutoReviewEnabled);
+  const [autoReviewProvider, setAutoReviewProvider] = useState<AutoReviewProvider>(initialAutoReviewProvider);
+  const [autoReviewPostInline, setAutoReviewPostInline] = useState(initialAutoReviewPostInline);
+  const [autoReviewPrompt, setAutoReviewPrompt] = useState(initialAutoReviewPrompt);
   const [codexAuthBundleR2Key, setCodexAuthBundleR2Key] = useState(initialCodexAuthBundleR2Key);
   const [commitMessageTemplate, setCommitMessageTemplate] = useState(initialCommitMessageTemplate);
   const [commitMessageRegex, setCommitMessageRegex] = useState(initialCommitMessageRegex);
@@ -114,6 +134,10 @@ export function RepoForm({
     setLlmProfileId(initialLlmProfileId);
     setLlmAuthBundleR2Key(initialLlmAuthBundleR2Key);
     setPromptRecipe(initialPromptRecipe);
+    setAutoReviewEnabled(initialAutoReviewEnabled);
+    setAutoReviewProvider(initialAutoReviewProvider);
+    setAutoReviewPostInline(initialAutoReviewPostInline);
+    setAutoReviewPrompt(initialAutoReviewPrompt);
     setCodexAuthBundleR2Key(initialCodexAuthBundleR2Key);
     setCommitMessageTemplate(initialCommitMessageTemplate);
     setCommitMessageRegex(initialCommitMessageRegex);
@@ -124,6 +148,10 @@ export function RepoForm({
     initialProjectPath,
     initialDefaultBranch,
     initialBaselineUrl,
+    initialAutoReviewEnabled,
+    initialAutoReviewProvider,
+    initialAutoReviewPostInline,
+    initialAutoReviewPrompt,
     initialPreviewMode,
     initialEvidenceMode,
     initialPreviewAdapter,
@@ -180,6 +208,12 @@ export function RepoForm({
           defaultBranch,
           baselineUrl,
           enabled: true,
+          autoReview: {
+            enabled: autoReviewEnabled,
+            provider: autoReviewProvider,
+            postInline: autoReviewPostInline,
+            ...(autoReviewPrompt.trim() ? { prompt: autoReviewPrompt.trim() } : {})
+          },
           previewMode,
           evidenceMode,
           previewAdapter,
@@ -201,6 +235,10 @@ export function RepoForm({
         setLlmProfileId('');
         setLlmAuthBundleR2Key('');
         setPromptRecipe('');
+        setAutoReviewEnabled(false);
+        setAutoReviewProvider('gitlab');
+        setAutoReviewPostInline(false);
+        setAutoReviewPrompt('');
         setCodexAuthBundleR2Key('');
         setCommitMessageTemplate('');
         setCommitMessageRegex('');
@@ -295,6 +333,45 @@ export function RepoForm({
           />
         </FieldShell>
       ) : null}
+      <div className="grid gap-4 md:grid-cols-3">
+        <FieldShell label="Auto-review enabled" hint="Enable automatic review runs for this repo by default.">
+          <div className="flex h-11 items-center gap-3 rounded-xl border border-slate-700 bg-slate-900/90 px-3 text-sm text-slate-100">
+            <input
+              type="checkbox"
+              checked={autoReviewEnabled}
+              onChange={(event) => setAutoReviewEnabled(event.target.checked)}
+              className="h-4 w-4 rounded border-slate-600 bg-slate-950 text-cyan-400 focus:ring-cyan-400/30"
+            />
+            <span>{autoReviewEnabled ? 'Enabled' : 'Disabled'}</span>
+          </div>
+        </FieldShell>
+        <FieldShell label="Auto-review provider" hint="Which integration should handle review automation.">
+          <select className={inputClass()} value={autoReviewProvider} onChange={(event) => setAutoReviewProvider(event.target.value as AutoReviewProvider)}>
+            <option value="gitlab">GitLab</option>
+            <option value="jira">Jira</option>
+          </select>
+        </FieldShell>
+        <FieldShell label="Post inline comments" hint="Add findings directly in review comments when supported.">
+          <div className="flex h-11 items-center gap-3 rounded-xl border border-slate-700 bg-slate-900/90 px-3 text-sm text-slate-100">
+            <input
+              type="checkbox"
+              checked={autoReviewPostInline}
+              onChange={(event) => setAutoReviewPostInline(event.target.checked)}
+              className="h-4 w-4 rounded border-slate-600 bg-slate-950 text-cyan-400 focus:ring-cyan-400/30"
+            />
+            <span>{autoReviewPostInline ? 'Enabled' : 'Disabled'}</span>
+          </div>
+        </FieldShell>
+      </div>
+      <FieldShell label="Auto-review prompt" hint="Optional override prompt used when auto-review is enabled.">
+        <textarea
+          className={textareaClass()}
+          value={autoReviewPrompt}
+          onChange={(event) => setAutoReviewPrompt(event.target.value)}
+          rows={4}
+          placeholder="Prioritize API contract stability and security findings."
+        />
+      </FieldShell>
       <div className="grid gap-4 md:grid-cols-3">
         <FieldShell label="LLM adapter">
           <select className={inputClass()} value={llmAdapter} onChange={(event) => setLlmAdapter(event.target.value as LlmAdapter)}>
@@ -422,6 +499,8 @@ export function TaskForm({
   const initialLlmAdapter = initialValues?.llmAdapter ?? 'codex';
   const initialLlmModel = initialValues?.llmModel ?? initialValues?.codexModel ?? DEFAULT_LLM_MODELS[initialLlmAdapter];
   const initialLlmReasoningEffort = initialValues?.llmReasoningEffort ?? initialValues?.codexReasoningEffort ?? 'medium';
+  const initialAutoReviewMode = initialValues?.autoReviewMode ?? 'inherit';
+  const initialAutoReviewPrompt = initialValues?.autoReviewPrompt ?? '';
 
   const [repoId, setRepoId] = useState(initialRepoId);
   const [title, setTitle] = useState(initialTitle);
@@ -435,6 +514,8 @@ export function TaskForm({
   const [status, setStatus] = useState<TaskStatus>(initialTaskStatus);
   const [baselineUrlOverride, setBaselineUrlOverride] = useState(initialBaselineUrlOverride);
   const [autoStartEligible, setAutoStartEligible] = useState(initialAutoStartEligible);
+  const [autoReviewMode, setAutoReviewMode] = useState<NonNullable<AutoReviewMode>>(initialAutoReviewMode);
+  const [autoReviewPrompt, setAutoReviewPrompt] = useState(initialAutoReviewPrompt);
   const [llmAdapter, setLlmAdapter] = useState<LlmAdapter>(initialLlmAdapter);
   const [llmModel, setLlmModel] = useState(initialLlmModel);
   const [llmReasoningEffort, setLlmReasoningEffort] = useState<LlmReasoningEffort>(initialLlmReasoningEffort);
@@ -463,11 +544,15 @@ export function TaskForm({
     setStatus(initialTaskStatus);
     setBaselineUrlOverride(initialBaselineUrlOverride);
     setAutoStartEligible(initialAutoStartEligible);
+    setAutoReviewMode(initialAutoReviewMode);
+    setAutoReviewPrompt(initialAutoReviewPrompt);
     setLlmAdapter(initialLlmAdapter);
     setLlmModel(initialLlmModel);
     setLlmReasoningEffort(initialLlmReasoningEffort);
   }, [
     initialAutoStartEligible,
+    initialAutoReviewMode,
+    initialAutoReviewPrompt,
     initialBaselineUrlOverride,
     initialLlmAdapter,
     initialLlmModel,
@@ -507,6 +592,8 @@ export function TaskForm({
           context: { links: parseLinks(links), notes },
           status,
           baselineUrlOverride: baselineUrlOverride || undefined,
+          autoReviewMode,
+          autoReviewPrompt: autoReviewPrompt.trim() || undefined,
           simulationProfile: 'happy_path',
           llmAdapter,
           llmModel: llmModel || undefined,
@@ -525,6 +612,8 @@ export function TaskForm({
         setStatus(initialStatus);
         setBaselineUrlOverride('');
         setAutoStartEligible(false);
+        setAutoReviewMode('inherit');
+        setAutoReviewPrompt('');
         setLlmAdapter('codex');
         setLlmModel('gpt-5.1-codex-mini');
         setLlmReasoningEffort('medium');
@@ -611,6 +700,24 @@ export function TaskForm({
             />
             <span>{autoStartEligible ? 'Eligible' : 'Not eligible'}</span>
           </div>
+        </FieldShell>
+      </div>
+      <div className="grid gap-4 xl:grid-cols-2">
+        <FieldShell label="Auto-review mode" hint="inherit uses repo setting; on/off force behavior for this task.">
+          <select className={inputClass()} value={autoReviewMode} onChange={(event) => setAutoReviewMode(event.target.value as CreateTaskInput['autoReviewMode'])}>
+            <option value="inherit">Inherit</option>
+            <option value="on">On</option>
+            <option value="off">Off</option>
+          </select>
+        </FieldShell>
+        <FieldShell label="Auto-review prompt" hint="Optional override prompt for this task.">
+          <textarea
+            className={textareaClass()}
+            value={autoReviewPrompt}
+            onChange={(event) => setAutoReviewPrompt(event.target.value)}
+            rows={4}
+            placeholder="Inspect for security and performance regressions."
+          />
         </FieldShell>
       </div>
       <div className="grid gap-4 md:grid-cols-2">

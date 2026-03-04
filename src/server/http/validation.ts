@@ -1,10 +1,20 @@
-import type { CreateRepoInput, CreateTaskInput, UpdateRepoInput, UpdateTaskInput, UpsertScmCredentialInput } from '../../ui/domain/api';
+import type {
+  CreateRepoInput,
+  CreateTaskInput,
+  RequestRunChangesInput,
+  UpdateRepoInput,
+  UpdateTaskInput,
+  UpsertScmCredentialInput
+} from '../../ui/domain/api';
 import { badRequest } from './errors';
 import { SCM_PROVIDERS } from '../../shared/scm';
 
 const CODEX_MODELS = new Set(['gpt-5.1-codex-mini', 'gpt-5.3-codex', 'gpt-5.3-codex-spark'] as const);
 const CODEX_REASONING_EFFORTS = new Set(['low', 'medium', 'high'] as const);
 const LLM_ADAPTERS = new Set(['codex', 'cursor_cli'] as const);
+const AUTO_REVIEW_PROVIDERS = new Set(['gitlab', 'jira'] as const);
+const AUTO_REVIEW_MODES = new Set(['inherit', 'on', 'off'] as const);
+const AUTO_REVIEW_SELECTION_MODES = new Set(['all', 'include', 'exclude', 'freeform'] as const);
 const PREVIEW_ADAPTERS = new Set(['cloudflare_checks', 'prompt_recipe'] as const);
 const TENANT_MEMBER_ROLES = new Set(['owner', 'member'] as const);
 const TENANT_SEAT_STATES = new Set(['active', 'invited', 'revoked'] as const);
@@ -357,6 +367,52 @@ function readCommitConfig(value: unknown, field: string, required = true): Creat
   };
 }
 
+function readAutoReviewConfig(value: unknown, field: string, required = true): NonNullable<CreateRepoInput['autoReview']> | undefined {
+  if (!required && typeof value === 'undefined') {
+    return undefined;
+  }
+
+  if (!isRecord(value)) {
+    throw badRequest(`Invalid ${field}.`);
+  }
+
+  const enabled = readBoolean(value.enabled, `${field}.enabled`, false);
+  const prompt = readTrimmedString(value.prompt, `${field}.prompt`, false);
+  const provider = readEnumValue(value.provider, `${field}.provider`, AUTO_REVIEW_PROVIDERS, false);
+  const postInline = readBoolean(value.postInline, `${field}.postInline`, false);
+
+  return {
+    ...(typeof enabled === 'boolean' ? { enabled } : {}),
+    ...(provider ? { provider } : {}),
+    ...(typeof postInline === 'boolean' ? { postInline } : {}),
+    ...(prompt ? { prompt } : {}),
+  };
+}
+
+function readRequestRunChangesSelection(value: unknown, field = 'reviewSelection', required = false): RequestRunChangesInput['reviewSelection'] {
+  if (!required && typeof value === 'undefined') {
+    return undefined as unknown as RequestRunChangesInput['reviewSelection'];
+  }
+
+  if (!isRecord(value)) {
+    throw badRequest(`Invalid ${field}.`);
+  }
+
+  const mode = readEnumValue(value.mode, `${field}.mode`, AUTO_REVIEW_SELECTION_MODES, true);
+  const findingIds = readStringArray(value.findingIds, `${field}.findingIds`, false)
+    ?.map((findingId) => findingId.trim())
+    .filter(Boolean);
+  const instruction = readTrimmedString(value.instruction, `${field}.instruction`, false);
+  const includeReplies = readBoolean(value.includeReplies, `${field}.includeReplies`, false);
+
+  return {
+    mode,
+    ...(findingIds?.length ? { findingIds } : {}),
+    ...(instruction ? { instruction } : {}),
+    ...(typeof includeReplies === 'boolean' ? { includeReplies } : {})
+  };
+}
+
 function normalizeRepoPreviewFields<T extends {
   previewMode?: CreateRepoInput['previewMode'];
   previewAdapter?: CreateRepoInput['previewAdapter'];
@@ -429,6 +485,9 @@ export function parseCreateRepoInput(body: unknown): CreateRepoInput {
       ?? readTrimmedString(body.codexAuthBundleR2Key, 'codexAuthBundleR2Key', false),
     defaultBranch: readTrimmedString(body.defaultBranch, 'defaultBranch', false),
     baselineUrl: readTrimmedString(body.baselineUrl, 'baselineUrl')!,
+    autoReview: hasOwn(body, 'autoReview')
+      ? readAutoReviewConfig(body.autoReview, 'autoReview')
+      : { enabled: false, provider: 'gitlab', postInline: false },
     enabled: readBoolean(body.enabled, 'enabled', false),
     previewMode: readEnumValue(body.previewMode, 'previewMode', new Set(['auto', 'skip'] as const), false),
     evidenceMode: readEnumValue(body.evidenceMode, 'evidenceMode', new Set(['auto', 'skip'] as const), false),
@@ -472,6 +531,7 @@ export function parseUpdateRepoInput(body: unknown): UpdateRepoInput {
   if (hasOwn(body, 'commitConfig')) patch.commitConfig = readCommitConfig(body.commitConfig, 'commitConfig', false);
   if (hasOwn(body, 'previewProvider')) patch.previewProvider = readEnumValue(body.previewProvider, 'previewProvider', new Set(['cloudflare'] as const), false);
   if (hasOwn(body, 'previewCheckName')) patch.previewCheckName = readTrimmedString(body.previewCheckName, 'previewCheckName', false);
+  if (hasOwn(body, 'autoReview')) patch.autoReview = readAutoReviewConfig(body.autoReview, 'autoReview', false);
   if (hasOwn(body, 'codexAuthBundleR2Key')) patch.codexAuthBundleR2Key = readTrimmedString(body.codexAuthBundleR2Key, 'codexAuthBundleR2Key', false);
 
   if (hasOwn(body, 'previewAdapter') || hasOwn(body, 'previewConfig') || hasOwn(body, 'previewProvider') || hasOwn(body, 'previewCheckName')) {
@@ -526,6 +586,8 @@ export function parseCreateTaskInput(body: unknown): CreateTaskInput {
     context: readContext(body.context)!,
     baselineUrlOverride: readString(body.baselineUrlOverride, 'baselineUrlOverride', false),
     status: readString(body.status, 'status', false) as CreateTaskInput['status'],
+    autoReviewMode: readEnumValue(body.autoReviewMode, 'autoReviewMode', AUTO_REVIEW_MODES, false) ?? 'inherit',
+    autoReviewPrompt: readTrimmedString(body.autoReviewPrompt, 'autoReviewPrompt', false),
     simulationProfile: readString(body.simulationProfile, 'simulationProfile', false) as CreateTaskInput['simulationProfile'],
     ...llmFields
   };
@@ -551,6 +613,8 @@ export function parseUpdateTaskInput(body: unknown): UpdateTaskInput {
   if (hasOwn(body, 'context')) patch.context = readContext(body.context, false);
   if (hasOwn(body, 'baselineUrlOverride')) patch.baselineUrlOverride = readString(body.baselineUrlOverride, 'baselineUrlOverride', false);
   if (hasOwn(body, 'status')) patch.status = readString(body.status, 'status', false) as UpdateTaskInput['status'];
+  if (hasOwn(body, 'autoReviewMode')) patch.autoReviewMode = readEnumValue(body.autoReviewMode, 'autoReviewMode', AUTO_REVIEW_MODES, false);
+  if (hasOwn(body, 'autoReviewPrompt')) patch.autoReviewPrompt = readTrimmedString(body.autoReviewPrompt, 'autoReviewPrompt', false);
   if (hasOwn(body, 'simulationProfile')) patch.simulationProfile = readString(body.simulationProfile, 'simulationProfile', false) as UpdateTaskInput['simulationProfile'];
   if (hasOwn(body, 'llmAdapter') || hasOwn(body, 'codexModel') || hasOwn(body, 'codexReasoningEffort')) patch.llmAdapter = llmFields.llmAdapter;
   if (hasOwn(body, 'llmModel') || hasOwn(body, 'codexModel')) {
@@ -563,6 +627,22 @@ export function parseUpdateTaskInput(body: unknown): UpdateTaskInput {
   }
   if (hasOwn(body, 'runId')) patch.runId = readString(body.runId, 'runId', false);
   return patch;
+}
+
+export function parseRequestRunChangesInput(body: unknown): RequestRunChangesInput {
+  if (!isRecord(body)) {
+    throw badRequest('Invalid request changes payload.');
+  }
+
+  const prompt = readTrimmedString(body.prompt, 'prompt');
+  if (!prompt) {
+    throw badRequest('Invalid request changes payload.');
+  }
+
+  return {
+    prompt,
+    reviewSelection: readRequestRunChangesSelection(body.reviewSelection, 'reviewSelection')
+  };
 }
 
 export type CreateTenantInput = {

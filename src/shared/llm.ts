@@ -1,8 +1,9 @@
-import type { AgentRun, CodexModel, CodexReasoningEffort, LlmAdapter, LlmReasoningEffort, OperatorSession, TaskUiMeta } from '../ui/domain/types';
+import type { AutoReviewMode, AgentRun, CodexModel, CodexReasoningEffort, LlmAdapter, LlmReasoningEffort, OperatorSession, TaskUiMeta } from '../ui/domain/types';
 
 export const DEFAULT_LLM_ADAPTER: LlmAdapter = 'codex';
 export const DEFAULT_CODEX_MODEL: CodexModel = 'gpt-5.1-codex-mini';
 export const DEFAULT_REASONING_EFFORT: CodexReasoningEffort = 'medium';
+export const DEFAULT_AUTO_REVIEW_MODE: AutoReviewMode = 'inherit';
 export const DEFAULT_SUPPORTS_RESUME_BY_ADAPTER: Record<LlmAdapter, boolean> = {
   codex: true,
   cursor_cli: false
@@ -18,12 +19,14 @@ export function normalizeTaskUiMeta(uiMeta?: TaskUiMeta): TaskUiMeta | undefined
   const llmReasoningEffort = uiMeta.llmReasoningEffort
     ?? uiMeta.codexReasoningEffort
     ?? (llmAdapter === 'codex' ? DEFAULT_REASONING_EFFORT : undefined);
+  const autoReviewMode = uiMeta.autoReviewMode ?? DEFAULT_AUTO_REVIEW_MODE;
 
   return {
     ...uiMeta,
     llmAdapter,
     llmModel,
     llmReasoningEffort,
+    autoReviewMode,
     codexModel: llmAdapter === 'codex' ? (uiMeta.codexModel ?? llmModel as CodexModel | undefined) : uiMeta.codexModel,
     codexReasoningEffort: llmAdapter === 'codex'
       ? (uiMeta.codexReasoningEffort ?? llmReasoningEffort as CodexReasoningEffort | undefined)

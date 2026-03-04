@@ -209,6 +209,7 @@ export class LocalAgentBoardApi implements AgentBoardApi {
       slug: input.slug ?? input.projectPath ?? '',
       scmProvider: input.scmProvider,
       scmBaseUrl: input.scmBaseUrl,
+      autoReview: input.autoReview,
       projectPath: input.projectPath,
       llmAdapter: input.llmAdapter,
       llmProfileId: input.llmProfileId,
@@ -245,8 +246,17 @@ export class LocalAgentBoardApi implements AgentBoardApi {
           return repo;
         }
 
+        const hasAutoReviewPatch = Object.prototype.hasOwnProperty.call(patch, 'autoReview');
+        const mergedAutoReview = hasAutoReviewPatch
+          ? {
+              ...(repo.autoReview ?? { enabled: false, provider: 'gitlab', postInline: false }),
+              ...patch.autoReview
+            }
+          : repo.autoReview;
+
         updatedRepo = normalizeRepo({
           ...repo,
+          autoReview: mergedAutoReview,
           ...patch,
           slug: patch.slug ?? patch.projectPath ?? repo.slug,
           projectPath: patch.projectPath ?? patch.slug ?? repo.projectPath,
@@ -319,6 +329,8 @@ export class LocalAgentBoardApi implements AgentBoardApi {
       updatedAt: timestamp,
       uiMeta: normalizeTaskUiMeta({
         simulationProfile: input.simulationProfile ?? 'happy_path',
+        autoReviewMode: input.autoReviewMode,
+        autoReviewPrompt: input.autoReviewPrompt,
         llmAdapter: input.llmAdapter,
         llmModel: input.llmModel,
         llmReasoningEffort: input.llmReasoningEffort,
@@ -366,6 +378,8 @@ export class LocalAgentBoardApi implements AgentBoardApi {
           acceptanceCriteria: patch.acceptanceCriteria ?? task.acceptanceCriteria,
           uiMeta: normalizeTaskUiMeta({
             simulationProfile: patch.simulationProfile ?? task.uiMeta?.simulationProfile ?? 'happy_path',
+            autoReviewMode: patch.autoReviewMode ?? task.uiMeta?.autoReviewMode ?? 'inherit',
+            autoReviewPrompt: patch.autoReviewPrompt ?? task.uiMeta?.autoReviewPrompt,
             llmAdapter: patch.llmAdapter ?? task.uiMeta?.llmAdapter,
             llmModel: patch.llmModel ?? task.uiMeta?.llmModel,
             llmReasoningEffort: patch.llmReasoningEffort ?? task.uiMeta?.llmReasoningEffort,

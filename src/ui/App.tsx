@@ -574,7 +574,8 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
               llmAdapter: repoToEdit.llmAdapter,
               llmProfileId: repoToEdit.llmProfileId,
               llmAuthBundleR2Key: repoToEdit.llmAuthBundleR2Key,
-              codexAuthBundleR2Key: repoToEdit.codexAuthBundleR2Key
+              codexAuthBundleR2Key: repoToEdit.codexAuthBundleR2Key,
+              autoReview: repoToEdit.autoReview
             }}
             submitLabel="Save repo"
             onSubmit={async (input) => {
@@ -621,6 +622,8 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
               context: taskToEdit.context,
               status: taskToEdit.status,
               baselineUrlOverride: taskToEdit.baselineUrlOverride,
+              autoReviewMode: taskToEdit.uiMeta?.autoReviewMode,
+              autoReviewPrompt: taskToEdit.uiMeta?.autoReviewPrompt,
               llmAdapter: taskToEdit.uiMeta?.llmAdapter,
               llmModel: taskToEdit.uiMeta?.llmModel,
               llmReasoningEffort: taskToEdit.uiMeta?.llmReasoningEffort,

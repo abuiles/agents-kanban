@@ -19,6 +19,7 @@ import {
   parsePlatformAuthLoginInput,
   parsePlatformSupportAssumeTenantInput,
   parseSetActiveTenantInput,
+  parseRequestRunChangesInput,
   parseUpdateRepoInput,
   parseUpdateTaskInput,
   parseUpdateTenantMemberInput,
@@ -635,19 +636,10 @@ export async function handleRequestChanges(request: Request, env: Env, params: R
     const board = getBoard(env);
     const requestContext = await resolveRequestTenantContext(env, board, request, { requireSession: true });
     const runId = parsePathParam(params.runId);
-    const body = await readJson(request);
-    if (
-      typeof body !== 'object'
-      || !body
-      || !('prompt' in body)
-      || typeof body.prompt !== 'string'
-      || !body.prompt.trim()
-    ) {
-      throw badRequest('Invalid request changes payload.');
-    }
+    const body = parseRequestRunChangesInput(await readJson(request));
     const repoId = await resolveRepoIdForRun(board, runId);
     await assertRepoAccess(env, board, requestContext, repoId);
-    const run = await env.REPO_BOARD.getByName(repoId).requestRunChanges(runId, body.prompt.trim(), requestContext.activeTenantId);
+    const run = await env.REPO_BOARD.getByName(repoId).requestRunChanges(body.prompt, requestContext.activeTenantId);
     const workflow = await scheduleRunJob(env, ctx as unknown as ExecutionContext, {
       tenantId: requestContext.activeTenantId,
       repoId,
