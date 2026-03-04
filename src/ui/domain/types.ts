@@ -153,6 +153,7 @@ export type SentinelEvent = {
 export type ReviewFindingSeverity = 'critical' | 'high' | 'medium' | 'low' | 'info';
 export type ReviewFindingStatus = 'open' | 'addressed' | 'ignored';
 export type ReviewPromptSource = 'task' | 'repo' | 'native';
+export type SandboxRole = 'main' | 'review';
 export type ReviewExecutionTrigger = 'auto_on_review' | 'manual_rerun';
 export type ReviewExecutionStatus = 'not_started' | 'running' | 'completed' | 'failed';
 export type ReviewFinding = {
@@ -452,6 +453,7 @@ export type OperatorSession = {
   tenantId?: string;
   id: string;
   runId: string;
+  sandboxRole?: SandboxRole;
   sandboxId: string;
   sessionName: string;
   startedAt: string;
@@ -474,6 +476,9 @@ export type TerminalBootstrap = {
   runId: string;
   repoId: string;
   taskId: string;
+  sandboxRole?: SandboxRole;
+  requestedSandboxId?: string;
+  resolvedSandboxId?: string;
   sandboxId: string;
   sessionName: string;
   status: RunStatus;
@@ -572,6 +577,7 @@ export type AgentRun = {
   workflowInstanceId?: string;
   orchestrationMode?: 'workflow' | 'local_alarm';
   sandboxId?: string;
+  reviewSandboxId?: string;
   evidenceSandboxId?: string;
   commitSha?: string;
   commitMessage?: string;

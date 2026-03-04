@@ -457,7 +457,7 @@ describe('executeRunJob LLM adapter coverage', () => {
       findingsCount: 1,
       errors: []
     });
-    expect(harness.getRun().timeline.some((entry) => entry.note?.includes('Posting via github succeeded.'))).toBe(true);
+    expect(harness.getRun().timeline.some((entry) => entry.note?.includes('Posting via github/platform succeeded.'))).toBe(true);
     expect(fetchMock.mock.calls.some((call) => String(call[0]).includes('/pulls/17/comments'))).toBe(true);
   });
 
@@ -540,7 +540,7 @@ describe('executeRunJob LLM adapter coverage', () => {
       findingsCount: 1,
       errors: ['Missing GITHUB_TOKEN: set this secret to enable github auto-review posting.']
     });
-    expect(harness.getRun().timeline.some((entry) => entry.note?.includes('Posting via github failed: Missing GITHUB_TOKEN'))).toBe(true);
+    expect(harness.getRun().timeline.some((entry) => entry.note?.includes('Posting via github/platform failed: Missing GITHUB_TOKEN'))).toBe(true);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -641,6 +641,130 @@ describe('executeRunJob LLM adapter coverage', () => {
     });
     expect(harness.getRun().timeline.some((entry) => entry.note?.includes('Manual review started (round 2).'))).toBe(true);
     expect(harness.getRun().timeline.some((entry) => entry.note?.includes('Review completed (round 2;'))).toBe(true);
+  });
+
+  it('falls back to native adapter review mode when no custom review prompt is configured', async () => {
+    const task = buildTask({
+      uiMeta: {
+        llmAdapter: 'codex',
+        llmModel: 'gpt-5.3-codex',
+        llmReasoningEffort: 'medium'
+      }
+    });
+    const repo = buildRepo({
+      autoReview: {
+        enabled: true,
+        provider: 'jira',
+        postInline: false,
+        postingMode: 'agent'
+      }
+    });
+    const harness = createHarness(task, repo);
+    const sandbox = buildSandbox([
+      { type: 'stdout', data: 'Applied fix.\n' },
+      { type: 'exit', exitCode: 0 }
+    ]);
+    const baseExec = sandbox.exec.bind(sandbox);
+    const promptCommands: string[] = [];
+    let promptCall = 0;
+    sandbox.exec = async (command) => {
+      if (command.includes('codex exec') && command.includes('/workspace/prompt.txt')) {
+        promptCommands.push(command);
+      }
+      if (command.includes('/workspace/prompt-last-message.txt')) {
+        promptCall += 1;
+        return {
+          success: true,
+          exitCode: 0,
+          stdout: promptCall === 1
+            ? '\n===CODEX_LAST_MESSAGE===\nFound one issue: missing null guard in src/index.ts line 12.\n'
+            : '\n===CODEX_LAST_MESSAGE===\n{"findings":[{"severity":"high","title":"Missing null guard","description":"Guard undefined payload before property access.","filePath":"src/index.ts","lineStart":12}]}\n'
+        };
+      }
+      return baseExec(command);
+    };
+    sandboxState.current = sandbox;
+
+    await executeRunJob(
+      harness.env,
+      {
+        tenantId: 'tenant_legacy',
+        repoId: repo.repoId,
+        taskId: task.taskId,
+        runId: 'run_1',
+        mode: 'review_only'
+      },
+      async () => {}
+    );
+
+    expect(harness.getRun().reviewExecution).toMatchObject({
+      enabled: true,
+      trigger: 'manual_rerun',
+      promptSource: 'native',
+      status: 'completed',
+      round: 1
+    });
+    expect(harness.getRun().reviewFindingsSummary).toMatchObject({ total: 1, open: 1, posted: 0, provider: 'jira' });
+    expect(promptCommands).toHaveLength(2);
+    expect(promptCommands[0]).not.toContain('--output-schema /workspace/prompt-output-schema.json');
+    expect(promptCommands[1]).toContain('--output-schema /workspace/prompt-output-schema.json');
+  });
+
+  it('recovers review checkout when /workspace/repo already exists before clone on rerun', async () => {
+    const task = buildTask({
+      uiMeta: {
+        llmAdapter: 'codex',
+        llmModel: 'gpt-5.3-codex',
+        llmReasoningEffort: 'medium',
+        autoReviewPrompt: 'Return structured findings only.'
+      }
+    });
+    const repo = buildRepo({
+      autoReview: {
+        enabled: true,
+        provider: 'jira',
+        postInline: false,
+        postingMode: 'agent'
+      }
+    });
+    const harness = createHarness(task, repo);
+    const sandbox = buildSandbox([
+      { type: 'stdout', data: 'Applied fix.\n' },
+      { type: 'exit', exitCode: 0 }
+    ]);
+    const gitCheckout = vi.fn()
+      .mockRejectedValueOnce(new Error("destination path '/workspace/repo' already exists and is not an empty directory"))
+      .mockResolvedValue(undefined);
+    sandbox.gitCheckout = gitCheckout;
+    const baseExec = sandbox.exec.bind(sandbox);
+    sandbox.exec = async (command) => {
+      if (command.includes('/workspace/prompt-last-message.txt')) {
+        return {
+          success: true,
+          exitCode: 0,
+          stdout: '\n===CODEX_LAST_MESSAGE===\n{"findings":[]}\n'
+        };
+      }
+      return baseExec(command);
+    };
+    sandboxState.current = sandbox;
+
+    await executeRunJob(
+      harness.env,
+      {
+        tenantId: 'tenant_legacy',
+        repoId: repo.repoId,
+        taskId: task.taskId,
+        runId: 'run_1',
+        mode: 'review_only'
+      },
+      async () => {}
+    );
+
+    expect(gitCheckout).toHaveBeenCalledTimes(2);
+    expect(harness.commands.some((command) => command.command === 'rm -rf /workspace/repo')).toBe(true);
+    expect(harness.getRun().reviewExecution).toMatchObject({ status: 'completed', round: 1, trigger: 'manual_rerun' });
+    expect(harness.getRun().reviewSandboxId).toMatch(/^sbx-review-/);
   });
 
   it('skips auto-review when effective setting is disabled', async () => {

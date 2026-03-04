@@ -15,13 +15,14 @@ import type {
   CreateUserApiTokenResult,
   InviteRecord,
   RequestRunChangesInput,
+  TakeOverRunInput,
   RetryRunInput,
   UpdateRepoInput,
   UpdateTaskInput,
   UserApiTokenRecord,
   UpsertScmCredentialInput
 } from '../domain/api';
-import type { AgentRun, Repo, RunCheckpoint, RunCommand, RunEvent, RunLogEntry, ScmCredential, Task, TaskDetail, TenantMember, TerminalBootstrap, User } from '../domain/types';
+import type { AgentRun, Repo, RunCheckpoint, RunCommand, RunEvent, RunLogEntry, SandboxRole, ScmCredential, Task, TaskDetail, TenantMember, TerminalBootstrap, User } from '../domain/types';
 import { getTaskDetail, getTasksForRepo } from '../domain/selectors';
 import { LocalBoardStore } from '../store/local-board-store';
 import { parseImportedBoard } from '../store/import-export';
@@ -779,7 +780,7 @@ export class LocalAgentBoardApi implements AgentBoardApi {
     return this.simulator.retryEvidence(runId);
   }
 
-  async takeOverRun(runId: string): Promise<AgentRun> {
+  async takeOverRun(runId: string, _input?: TakeOverRunInput): Promise<AgentRun> {
     let updatedRun: AgentRun | undefined;
     const updatedAt = nowIso();
     this.store.update((snapshot) => ({
@@ -846,7 +847,7 @@ export class LocalAgentBoardApi implements AgentBoardApi {
     return this.store.getSnapshot().commands.filter((command) => command.runId === runId);
   }
 
-  async getTerminalBootstrap(runId: string): Promise<TerminalBootstrap> {
+  async getTerminalBootstrap(runId: string, _sandboxRole?: SandboxRole): Promise<TerminalBootstrap> {
     const run = await this.getRun(runId);
     if (!run.sandboxId || ['DONE', 'FAILED'].includes(run.status)) {
       return {

@@ -689,10 +689,13 @@ async function executeRunReview(
     const llmReasoningEffort = task.uiMeta?.llmReasoningEffort ?? task.uiMeta?.codexReasoningEffort ?? 'medium';
     const scmAdapter = getScmAdapter(repo);
     const scmCredential = await getScmCredential(env, repo, scmAdapter);
-    const reviewSandbox = getSandbox(env.Sandbox, buildSandboxId(runId, 'review'));
+    const reviewSandboxId = buildSandboxId(runId, 'review');
+    const reviewSandbox = getSandbox(env.Sandbox, reviewSandboxId);
     const llmContext = { env, sandbox: reviewSandbox, repoBoard, runId };
+    await repoBoard.transitionRun(runId, { reviewSandboxId });
 
     await configureSandboxRuntimeSecrets(reviewSandbox, env);
+    const cloneUrl = scmAdapter.buildCloneUrl(repo, scmCredential);
     const repoState = await emitCommandLifecycle(
       repoBoard,
       runId,
@@ -744,9 +747,12 @@ fi`)}`
         }
       }
 
-      await reviewSandbox.gitCheckout(scmAdapter.buildCloneUrl(repo, scmCredential), {
-        branch: repo.defaultBranch,
-        targetDir: '/workspace/repo'
+      await checkoutReviewWorkspace({
+        repoBoard,
+        reviewSandbox,
+        runId,
+        cloneUrl,
+        defaultBranch: repo.defaultBranch
       });
     }
     const checkout = await emitCommandLifecycle(
@@ -760,32 +766,29 @@ fi`)}`
       throw new Error(checkout.stderr || `Failed to prepare review branch ${run.branchName}.`);
     }
 
-    const promptResult = await executePromptWithLlmAdapter(
-      llmAdapter,
-      llmContext,
-      {
+    const parsed = autoReview.promptSource === 'native'
+      ? await runNativeReviewAndNormalize({
+        llmAdapter,
+        llmContext,
         repo,
         task,
         run,
-        cwd: '/workspace/repo',
-        prompt: buildReviewPrompt(task, repo, run, autoReview),
         model: llmModel,
         reasoningEffort: llmReasoningEffort,
-        timeoutMs: 180_000,
-        outputSchema: REVIEW_FINDINGS_OUTPUT_SCHEMA,
-        phase: 'pr'
-      },
-      sleepFn
-    );
-    if (promptResult.status !== 'success') {
-      throw new Error(
-        promptResult.status === 'timed_out'
-          ? `Review prompt timed out after ${promptResult.timeoutMs}ms.`
-          : promptResult.message
-      );
-    }
-
-    const parsed = parseReviewFindings(promptResult.rawOutput);
+        sleepFn,
+        autoReview
+      })
+      : await runStructuredReview({
+        llmAdapter,
+        llmContext,
+        repo,
+        task,
+        run,
+        model: llmModel,
+        reasoningEffort: llmReasoningEffort,
+        sleepFn,
+        autoReview
+      });
     if (!parsed.ok) {
       throw new Error(`${parsed.code}: ${parsed.message}`);
     }
@@ -1028,6 +1031,208 @@ function buildReviewPrompt(
     '{ "findings": [ { "severity": "critical|high|medium|low|info", "title": "string", "description": "string", "filePath": "string|null?", "lineStart": "number|null?", "lineEnd": "number|null?", "providerThreadId": "string|null?" } ] }',
     'If there are no issues, return {"findings":[]}.'
   ].filter(Boolean).join('\n');
+}
+
+async function runStructuredReview({
+  llmAdapter,
+  llmContext,
+  repo,
+  task,
+  run,
+  model,
+  reasoningEffort,
+  sleepFn,
+  autoReview
+}: {
+  llmAdapter: ReturnType<typeof getLlmAdapter>;
+  llmContext: { env: Env; sandbox: ReturnType<typeof getSandbox>; repoBoard: DurableObjectStub<RepoBoardDO>; runId: string };
+  repo: Repo;
+  task: Task;
+  run: Awaited<ReturnType<RepoBoardDO['getRun']>>;
+  model: string;
+  reasoningEffort: LlmReasoningEffort;
+  sleepFn: SleepFn;
+  autoReview: { prompt?: string; provider: AutoReviewProvider; postingMode: 'platform' | 'agent'; postInline: boolean };
+}) {
+  const promptResult = await executePromptWithLlmAdapter(
+    llmAdapter,
+    llmContext,
+    {
+      repo,
+      task,
+      run,
+      cwd: '/workspace/repo',
+      prompt: buildReviewPrompt(task, repo, run, autoReview),
+      model,
+      reasoningEffort,
+      timeoutMs: 180_000,
+      outputSchema: REVIEW_FINDINGS_OUTPUT_SCHEMA,
+      phase: 'pr'
+    },
+    sleepFn
+  );
+  if (promptResult.status !== 'success') {
+    throw new Error(
+      promptResult.status === 'timed_out'
+        ? `Review prompt timed out after ${promptResult.timeoutMs}ms.`
+        : promptResult.message
+    );
+  }
+  return parseReviewFindings(promptResult.rawOutput);
+}
+
+async function runNativeReviewAndNormalize({
+  llmAdapter,
+  llmContext,
+  repo,
+  task,
+  run,
+  model,
+  reasoningEffort,
+  sleepFn,
+  autoReview
+}: {
+  llmAdapter: ReturnType<typeof getLlmAdapter>;
+  llmContext: { env: Env; sandbox: ReturnType<typeof getSandbox>; repoBoard: DurableObjectStub<RepoBoardDO>; runId: string };
+  repo: Repo;
+  task: Task;
+  run: Awaited<ReturnType<RepoBoardDO['getRun']>>;
+  model: string;
+  reasoningEffort: LlmReasoningEffort;
+  sleepFn: SleepFn;
+  autoReview: { prompt?: string; provider: AutoReviewProvider; postingMode: 'platform' | 'agent'; postInline: boolean };
+}) {
+  const nativeReviewResult = await executePromptWithLlmAdapter(
+    llmAdapter,
+    llmContext,
+    {
+      repo,
+      task,
+      run,
+      cwd: '/workspace/repo',
+      prompt: buildNativeReviewPrompt(task, repo, run),
+      model,
+      reasoningEffort,
+      timeoutMs: 180_000,
+      phase: 'pr'
+    },
+    sleepFn
+  );
+
+  if (nativeReviewResult.status !== 'success') {
+    throw new Error(
+      nativeReviewResult.status === 'timed_out'
+        ? `Native review command timed out after ${nativeReviewResult.timeoutMs}ms.`
+        : nativeReviewResult.message
+    );
+  }
+
+  const normalizeResult = await executePromptWithLlmAdapter(
+    llmAdapter,
+    llmContext,
+    {
+      repo,
+      task,
+      run,
+      cwd: '/workspace/repo',
+      prompt: buildReviewNormalizationPrompt(nativeReviewResult.rawOutput, autoReview),
+      model,
+      reasoningEffort,
+      timeoutMs: 60_000,
+      outputSchema: REVIEW_FINDINGS_OUTPUT_SCHEMA,
+      phase: 'pr'
+    },
+    sleepFn
+  );
+
+  if (normalizeResult.status !== 'success') {
+    throw new Error(
+      normalizeResult.status === 'timed_out'
+        ? `Review findings normalization timed out after ${normalizeResult.timeoutMs}ms.`
+        : normalizeResult.message
+    );
+  }
+  return parseReviewFindings(normalizeResult.rawOutput);
+}
+
+function buildNativeReviewPrompt(task: Task, repo: Repo, run: Awaited<ReturnType<RepoBoardDO['getRun']>>) {
+  return [
+    `You are reviewing code changes for ${repo.slug}.`,
+    `Run: ${run.runId}`,
+    `Branch: ${run.branchName}`,
+    '',
+    `Task: ${task.title}`,
+    task.description ? `Task description: ${task.description}` : undefined,
+    '',
+    'Acceptance criteria:',
+    ...task.acceptanceCriteria.map((item) => `- ${item}`),
+    '',
+    'Run /review on the current branch diff and return a concise narrative review.',
+    'Focus on correctness, regressions, security risks, and missing tests.'
+  ].filter(Boolean).join('\n');
+}
+
+function buildReviewNormalizationPrompt(
+  rawReviewOutput: string,
+  autoReview: { provider: AutoReviewProvider; postingMode: 'platform' | 'agent' }
+) {
+  const trimmed = rawReviewOutput.trim();
+  const summary = trimmed.length > 20_000 ? `${trimmed.slice(0, 20_000)}\n\n[truncated]` : trimmed;
+  return [
+    'Convert the following review output into strict findings JSON.',
+    'Return JSON only using this exact schema shape:',
+    '{ "findings": [ { "severity": "critical|high|medium|low|info", "title": "string", "description": "string", "filePath": "string|null?", "lineStart": "number|null?", "lineEnd": "number|null?", "providerThreadId": "string|null?" } ] }',
+    'If there are no actionable issues, return {"findings":[]}.',
+    autoReview.postingMode === 'agent'
+      ? `If the review output includes posted ${autoReview.provider} thread/comment IDs, include them in providerThreadId.`
+      : 'Set providerThreadId to null unless an explicit thread/comment id is present in the review output.',
+    '',
+    'Review output:',
+    summary || '(empty)'
+  ].join('\n');
+}
+
+async function checkoutReviewWorkspace({
+  repoBoard,
+  reviewSandbox,
+  runId,
+  cloneUrl,
+  defaultBranch
+}: {
+  repoBoard: DurableObjectStub<RepoBoardDO>;
+  reviewSandbox: ReturnType<typeof getSandbox>;
+  runId: string;
+  cloneUrl: string;
+  defaultBranch: string;
+}) {
+  try {
+    await reviewSandbox.gitCheckout(cloneUrl, {
+      branch: defaultBranch,
+      targetDir: '/workspace/repo'
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const likelyExistingDir = /already exists|not an empty directory/i.test(message);
+    if (!likelyExistingDir) {
+      throw error;
+    }
+
+    const cleanupWorkspace = await emitCommandLifecycle(
+      repoBoard,
+      runId,
+      'pr',
+      'rm -rf /workspace/repo',
+      () => reviewSandbox.exec('rm -rf /workspace/repo')
+    );
+    if (!cleanupWorkspace.success) {
+      throw new Error(cleanupWorkspace.stderr || 'Failed to clean review workspace after checkout collision.');
+    }
+
+    await reviewSandbox.gitCheckout(cloneUrl, {
+      branch: defaultBranch,
+      targetDir: '/workspace/repo'
+    });
+  }
 }
 
 async function waitForPreview(

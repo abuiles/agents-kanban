@@ -8,6 +8,7 @@ import {
   parseCreateUserApiTokenInput,
   parseStartRepoSentinelInput,
   parseRetryRunInput,
+  parseTakeOverRunInput,
   parseRequestRunChangesInput,
   parseUpdateRepoSentinelConfigInput,
   parseUpdateRepoInput,
@@ -281,7 +282,8 @@ describe('repo validation', () => {
     expect(parsed.autoReview).toEqual({
       enabled: false,
       provider: 'gitlab',
-      postInline: false
+      postInline: false,
+      postingMode: 'platform'
     });
     expect(parsed.sentinelConfig).toEqual({});
     expect(parsed.checkpointConfig).toEqual({});
@@ -432,7 +434,8 @@ describe('repo validation', () => {
       enabled: true,
       provider: 'gitlab',
       postInline: true,
-      prompt: 'Check all security findings first.'
+      prompt: 'Check all security findings first.',
+      postingMode: 'platform'
     });
   });
 
@@ -450,7 +453,8 @@ describe('repo validation', () => {
     expect(parsed.autoReview).toEqual({
       enabled: true,
       provider: 'github',
-      postInline: true
+      postInline: true,
+      postingMode: 'platform'
     });
   });
 
@@ -468,7 +472,8 @@ describe('repo validation', () => {
     expect(parsed.autoReview).toEqual({
       enabled: true,
       provider: 'github',
-      postInline: false
+      postInline: false,
+      postingMode: 'platform'
     });
   });
 
@@ -486,7 +491,8 @@ describe('repo validation', () => {
     expect(parsed.autoReview).toEqual({
       enabled: true,
       provider: 'gitlab',
-      postInline: false
+      postInline: false,
+      postingMode: 'platform'
     });
   });
 
@@ -716,6 +722,17 @@ describe('request run validation', () => {
         checkpointId: 'run_1:cp:002:codex'
       })
     ).toThrow('checkpointId cannot be provided when recoveryMode is fresh.');
+  });
+
+  it('parses takeover payload sandbox role when provided', () => {
+    expect(parseTakeOverRunInput({ sandboxRole: 'review' })).toEqual({ sandboxRole: 'review' });
+    expect(parseTakeOverRunInput({})).toEqual({});
+  });
+
+  it('rejects invalid takeover sandbox role', () => {
+    expect(() =>
+      parseTakeOverRunInput({ sandboxRole: 'preview' })
+    ).toThrow('Invalid sandboxRole.');
   });
 });
 

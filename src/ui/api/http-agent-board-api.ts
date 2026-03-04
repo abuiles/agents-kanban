@@ -15,13 +15,14 @@ import type {
   CreateUserApiTokenResult,
   InviteRecord,
   RequestRunChangesInput,
+  TakeOverRunInput,
   RetryRunInput,
   UpdateRepoInput,
   UpdateTaskInput,
   UserApiTokenRecord,
   UpsertScmCredentialInput
 } from '../domain/api';
-import type { AgentRun, BoardSnapshotV1, OperatorSession, Repo, RunCheckpoint, RunCommand, RunEvent, RunLogEntry, ScmCredential, Task, TaskDetail, TerminalBootstrap } from '../domain/types';
+import type { AgentRun, BoardSnapshotV1, OperatorSession, Repo, RunCheckpoint, RunCommand, RunEvent, RunLogEntry, SandboxRole, ScmCredential, Task, TaskDetail, TerminalBootstrap } from '../domain/types';
 import { getTaskDetail } from '../domain/selectors';
 import { parseBoardSnapshot } from '../store/board-snapshot';
 import { UiPreferencesStore } from '../store/ui-preferences-store';
@@ -315,8 +316,11 @@ export class HttpAgentBoardApi implements AgentBoardApi {
     return run;
   }
 
-  async takeOverRun(runId: string) {
-    const run = await this.request<AgentRun>(`/api/runs/${encodeURIComponent(runId)}/takeover`, { method: 'POST' });
+  async takeOverRun(runId: string, input?: TakeOverRunInput) {
+    const run = await this.request<AgentRun>(`/api/runs/${encodeURIComponent(runId)}/takeover`, {
+      method: 'POST',
+      body: JSON.stringify(input ?? {})
+    });
     await this.refresh();
     return run;
   }
@@ -352,8 +356,9 @@ export class HttpAgentBoardApi implements AgentBoardApi {
     return commands;
   }
 
-  async getTerminalBootstrap(runId: string) {
-    return this.request<TerminalBootstrap>(`/api/runs/${encodeURIComponent(runId)}/terminal`);
+  async getTerminalBootstrap(runId: string, sandboxRole?: SandboxRole) {
+    const search = sandboxRole ? `?sandboxRole=${encodeURIComponent(sandboxRole)}` : '';
+    return this.request<TerminalBootstrap>(`/api/runs/${encodeURIComponent(runId)}/terminal${search}`);
   }
 
   exportState() {
