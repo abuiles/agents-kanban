@@ -15,7 +15,7 @@ import {
 } from './payload';
 import { resolveThreadTenant, verifySlackRequest } from './verification';
 import { mirrorRunLifecycleMilestone } from './timeline';
-import { postSlackThreadMessage } from './client';
+import { postSlackChannelMessage, postSlackThreadMessage } from './client';
 import { resolveIntegrationConfig } from '../config-resolution';
 import {
   parseSlackIntentWithLlm,
@@ -42,6 +42,10 @@ const KANVY_HELP_TEXT = [
 ].join('\n');
 const SESSION_EXPIRY_MS = 24 * 60 * 60 * 1000;
 const AUTO_CREATE_CONFIDENCE_THRESHOLD = 0.8;
+const DEFAULT_JIRA_API_PATH_PREFIX = '/rest/api/3/issue';
+const MAX_LOG_MESSAGE_CHARS = 300;
+
+type SlackLifecycleCheckpoint = 'received' | 'deduped' | 'jira_fetch_started' | 'jira_fetch_failed' | 'task_started';
 
 type RepoDisambiguationChoice = {
   repoId: string;
@@ -74,6 +78,99 @@ function toReadableErrorMessage(error: unknown) {
     return error.message;
   }
   return 'Unknown error.';
+}
+
+function sanitizeErrorMessageForLog(message: string | undefined) {
+  if (!message) {
+    return 'Unknown error.';
+  }
+  return message
+    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [REDACTED]')
+    .replace(/Basic\s+[A-Za-z0-9._~+/=-]+/gi, 'Basic [REDACTED]')
+    .replace(/token=[^&\s]+/gi, 'token=[REDACTED]')
+    .slice(0, MAX_LOG_MESSAGE_CHARS);
+}
+
+function parseJiraFailureCategory(error: unknown): { category: 'network' | 'timeout' | 'http_status' | 'bad_request' | 'unknown'; status?: number } {
+  const message = error instanceof Error ? error.message : String(error);
+  if (message.includes('Unable to reach Jira issue endpoint')) {
+    return { category: 'network' };
+  }
+  if (message.toLowerCase().includes('timed out')) {
+    return { category: 'timeout' };
+  }
+  const statusMatch = message.match(/\((\d{3})\)/);
+  if (statusMatch) {
+    const status = Number.parseInt(statusMatch[1]!, 10);
+    if (Number.isFinite(status)) {
+      return { category: 'http_status', status };
+    }
+  }
+  if (message.startsWith('Invalid Jira issue key') || message.startsWith('Jira issue')) {
+    return { category: 'bad_request' };
+  }
+  return { category: 'unknown' };
+}
+
+function resolveJiraRequestTarget(env: Env, issueKey: string): { host: string; path: string } {
+  const envValues = env as unknown as Record<string, string | undefined>;
+  const rawBase = envValues.JIRA_API_BASE_URL ?? envValues.JIRA_API_URL ?? '';
+  const fallbackPath = `${DEFAULT_JIRA_API_PATH_PREFIX}/${issueKey}`;
+  if (!rawBase.trim()) {
+    return { host: 'unknown', path: fallbackPath };
+  }
+  try {
+    const parsed = new URL(rawBase);
+    const normalizedBasePath = parsed.pathname.replace(/\/$/, '');
+    const pathPrefix = normalizedBasePath.toLowerCase().includes('/rest/api/3')
+      ? normalizedBasePath
+      : `${normalizedBasePath}${DEFAULT_JIRA_API_PATH_PREFIX}`;
+    return {
+      host: parsed.host,
+      path: `${pathPrefix}/${issueKey}`
+    };
+  } catch {
+    return { host: 'invalid_jira_base_url', path: fallbackPath };
+  }
+}
+
+function logSlackCommandLifecycle(input: {
+  checkpoint: SlackLifecycleCheckpoint;
+  tenantId: string;
+  channelId: string;
+  issueKey?: string;
+  threadTs?: string;
+  dedupeKey?: string;
+  deduped?: boolean;
+  taskId?: string;
+  runId?: string;
+  jiraHost?: string;
+  jiraPath?: string;
+  jiraFailureCategory?: string;
+  jiraStatus?: number;
+  message?: string;
+}) {
+  console.info(JSON.stringify({
+    event: 'slack_command_lifecycle',
+    checkpoint: input.checkpoint,
+    tenant_id: input.tenantId,
+    channel_id: input.channelId,
+    thread_ts: input.threadTs ?? null,
+    issue_key: input.issueKey ?? null,
+    dedupe_key: input.dedupeKey ?? null,
+    deduped: input.deduped ?? null,
+    task_id: input.taskId ?? null,
+    run_id: input.runId ?? null,
+    jira_host: input.jiraHost ?? null,
+    jira_path: input.jiraPath ?? null,
+    jira_failure_category: input.jiraFailureCategory ?? null,
+    jira_status: input.jiraStatus ?? null,
+    message: input.message ? sanitizeErrorMessageForLog(input.message) : null
+  }));
+}
+
+function formatSlackThreadLink(channelId: string, threadTs: string) {
+  return `https://slack.com/app_redirect?channel=${encodeURIComponent(channelId)}&message_ts=${encodeURIComponent(threadTs)}`;
 }
 
 function buildTaskPromptFromIssue(issue: IntegrationIssueRef) {
@@ -542,14 +639,14 @@ async function processJiraIssueFlow(
   },
   responseUrl: string | undefined,
   llmModel: CreateTaskInput['codexModel'] = DEFAULT_TASK_LLM_MODEL
-) {
+): Promise<RunKickoff | undefined> {
   const issueProjectKey = issueProjectKeyFromIssue(issue.issueKey);
   const mappings = await tenantAuthDb.listJiraProjectRepoMappingsByProject(env, tenantId, issueProjectKey, true);
   if (mappings.length === 0) {
     const candidates = await resolveRepoCandidates(env, tenantId, issueProjectKey, []);
     if (candidates.length === 0) {
       await postSlackResponse(responseUrl, buildNoMappingResponse(issue, issueProjectKey));
-      return;
+      return undefined;
     }
     await postSlackResponse(responseUrl, buildDisambiguationResponse(
       issue,
@@ -559,14 +656,14 @@ async function processJiraIssueFlow(
       true,
       { taskId: bindings.taskId, channelId: bindings.channelId, threadTs: bindings.threadTs ?? '' }
     ));
-    return;
+    return undefined;
   }
 
   const candidates = await resolveRepoCandidates(env, tenantId, issueProjectKey, mappings);
   if (mappings.length > 1) {
     if (candidates.length === 0) {
       await postSlackResponse(responseUrl, buildNoMappingResponse(issue, issueProjectKey));
-      return;
+      return undefined;
     }
     await postSlackResponse(responseUrl, buildDisambiguationResponse(
       issue,
@@ -576,12 +673,12 @@ async function processJiraIssueFlow(
       false,
       { taskId: bindings.taskId, channelId: bindings.channelId, threadTs: bindings.threadTs ?? '' }
     ));
-    return;
+    return undefined;
   }
 
   if (candidates.length !== 1) {
     await postSlackResponse(responseUrl, buildNoMappingResponse(issue, issueProjectKey));
-    return;
+    return undefined;
   }
 
   const repoId = candidates[0]!.repoId;
@@ -601,6 +698,7 @@ async function processJiraIssueFlow(
       response_type: 'ephemeral',
       text: `Started ${issue.issueKey} in repo ${repoId} (task ${started.taskId}, run ${started.runId}).`
     });
+    return started;
   } catch (error) {
     await postSlackResponse(responseUrl, {
       response_type: 'ephemeral',
@@ -674,7 +772,7 @@ async function runIntentIntake(
     text: string;
     responseUrl?: string;
   }
-) {
+): Promise<RunKickoff | undefined> {
   const existing = await tenantAuthDb.getSlackIntakeSession(env, input.tenantId, input.channelId, input.threadTs);
   const expired = existing ? isSessionExpired(existing.lastActivityAt) : false;
   if (existing && expired && existing.status === 'active') {
@@ -748,7 +846,7 @@ async function runIntentIntake(
         text: completionText
       });
     }
-    return;
+    return started;
   }
 
   const nextTurn = currentTurn + 1;
@@ -790,12 +888,12 @@ async function runIntentIntake(
         text: handoff
       });
     }
-    return;
+    return undefined;
   }
 
   if (input.responseUrl) {
     await postSlackResponse(input.responseUrl, { response_type: 'ephemeral', text: question });
-    return;
+    return undefined;
   }
   await postThreadPrompt(env, {
     tenantId: input.tenantId,
@@ -803,6 +901,33 @@ async function runIntentIntake(
     threadTs: input.threadTs,
     text: question
   });
+  return undefined;
+}
+
+async function ensureThreadForChannelIntake(env: Env, input: {
+  tenantId: string;
+  channelId: string;
+  userId: string;
+  responseUrl?: string;
+}): Promise<string | undefined> {
+  const kickoff = await postSlackChannelMessage(env, {
+    tenantId: input.tenantId,
+    channelId: input.channelId,
+    text: `Starting /kanvy intake for <@${input.userId}>. Continue in this thread.`
+  });
+  if (!kickoff.delivered || !kickoff.ts) {
+    await postSlackResponse(input.responseUrl, {
+      response_type: 'ephemeral',
+      text: 'Unable to create a thread for intake continuation. Please retry in a thread.'
+    });
+    return undefined;
+  }
+
+  await postSlackResponse(input.responseUrl, {
+    response_type: 'ephemeral',
+    text: `Continuing in thread: ${formatSlackThreadLink(input.channelId, kickoff.ts)}`
+  });
+  return kickoff.ts;
 }
 
 async function runSlackCommandAsync(
@@ -810,6 +935,16 @@ async function runSlackCommandAsync(
   payload: ReturnType<typeof parseSlackSlashCommandBody>,
   ctx?: ExecutionContext<unknown>
 ) {
+  const tenantId = await resolveThreadTenantId(env, payload.teamId);
+  const issueKey = parseJiraFastPathIssueKey(payload.text);
+  logSlackCommandLifecycle({
+    checkpoint: 'received',
+    tenantId,
+    channelId: payload.channelId,
+    threadTs: payload.threadTs,
+    issueKey: issueKey ?? undefined
+  });
+
   if (payload.text.trim().toLowerCase() === 'help') {
     await postSlackResponse(payload.responseUrl, {
       response_type: 'ephemeral',
@@ -818,8 +953,6 @@ async function runSlackCommandAsync(
     return;
   }
 
-  const tenantId = await resolveThreadTenantId(env, payload.teamId);
-  const issueKey = parseJiraFastPathIssueKey(payload.text);
   const dedupeSubject = issueKey ?? (payload.text.trim() || 'empty');
   const slashDedupeKey = buildIdempotencyKey({
     provider: 'slack',
@@ -833,6 +966,15 @@ async function runSlackCommandAsync(
     }
   });
   if (!(await markIngressDeliveryIfNew(env, slashDedupeKey))) {
+    logSlackCommandLifecycle({
+      checkpoint: 'deduped',
+      tenantId,
+      channelId: payload.channelId,
+      threadTs: payload.threadTs,
+      issueKey: issueKey ?? undefined,
+      dedupeKey: slashDedupeKey,
+      deduped: true
+    });
     await postSlackResponse(payload.responseUrl, {
       response_type: 'ephemeral',
       text: issueKey
@@ -841,6 +983,15 @@ async function runSlackCommandAsync(
     });
     return;
   }
+  logSlackCommandLifecycle({
+    checkpoint: 'deduped',
+    tenantId,
+    channelId: payload.channelId,
+    threadTs: payload.threadTs,
+    issueKey: issueKey ?? undefined,
+    dedupeKey: slashDedupeKey,
+    deduped: false
+  });
 
   if (!payload.text.trim()) {
     await postSlackResponse(payload.responseUrl, {
@@ -851,21 +1002,32 @@ async function runSlackCommandAsync(
   }
 
   if (!issueKey) {
-    if (!payload.threadTs) {
-      await postSlackResponse(payload.responseUrl, {
-        response_type: 'ephemeral',
-        text: 'For free-text intake, run `/kanvy ...` from a thread so clarification can continue in-thread.'
-      });
-      return;
-    }
-    try {
-      await runIntentIntake(env, ctx, {
+    const threadTs = payload.threadTs
+      ?? await ensureThreadForChannelIntake(env, {
         tenantId,
         channelId: payload.channelId,
-        threadTs: payload.threadTs,
-        text: payload.text,
+        userId: payload.userId,
         responseUrl: payload.responseUrl
       });
+    if (!threadTs) return;
+    try {
+      const started = await runIntentIntake(env, ctx, {
+        tenantId,
+        channelId: payload.channelId,
+        threadTs,
+        text: payload.text,
+        responseUrl: payload.threadTs ? payload.responseUrl : undefined
+      });
+      if (started) {
+        logSlackCommandLifecycle({
+          checkpoint: 'task_started',
+          tenantId,
+          channelId: payload.channelId,
+          threadTs,
+          taskId: started.taskId,
+          runId: started.runId
+        });
+      }
     } catch (error) {
       await postSlackResponse(payload.responseUrl, {
         response_type: 'ephemeral',
@@ -880,17 +1042,49 @@ async function runSlackCommandAsync(
     : buildTaskIdFromIssue(issueKey);
 
   try {
+    const jiraTarget = resolveJiraRequestTarget(env, issueKey);
+    logSlackCommandLifecycle({
+      checkpoint: 'jira_fetch_started',
+      tenantId,
+      channelId: payload.channelId,
+      threadTs: payload.threadTs,
+      issueKey,
+      jiraHost: jiraTarget.host,
+      jiraPath: jiraTarget.path
+    });
     const issue = await resolveTenantAndJiraIssue(env, tenantId, issueKey);
     const { settings } = await resolveSlackIntentScopeConfig(env, tenantId, {
       channelId: payload.channelId
     });
-    await processJiraIssueFlow(env, ctx, tenantId, issue, {
+    const started = await processJiraIssueFlow(env, ctx, tenantId, issue, {
       taskId: bindingTaskId,
       channelId: payload.channelId,
       threadTs: payload.threadTs,
       latestReviewRound: DEFAULT_REVIEW_ROUND
     }, payload.responseUrl, toSupportedCodexModel(settings.intentModel));
+    if (started) {
+      logSlackCommandLifecycle({
+        checkpoint: 'task_started',
+        tenantId,
+        channelId: payload.channelId,
+        threadTs: payload.threadTs,
+        issueKey,
+        taskId: started.taskId,
+        runId: started.runId
+      });
+    }
   } catch (error) {
+    const jiraFailure = parseJiraFailureCategory(error);
+    logSlackCommandLifecycle({
+      checkpoint: 'jira_fetch_failed',
+      tenantId,
+      channelId: payload.channelId,
+      threadTs: payload.threadTs,
+      issueKey,
+      jiraFailureCategory: jiraFailure.category,
+      jiraStatus: jiraFailure.status,
+      message: toReadableErrorMessage(error)
+    });
     await postSlackResponse(payload.responseUrl, {
       response_type: 'ephemeral',
       text: `Failed to process /kanvy command for ${issueKey}: ${toReadableErrorMessage(error)}`

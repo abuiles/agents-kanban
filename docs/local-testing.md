@@ -285,6 +285,7 @@ Use this when validating day-to-day operator flow without dashboard actions.
    - run start confirmation
    - repo disambiguation buttons
    - failure message (for example Jira read failure)
+   - thread handoff link + kickoff message when `/kanvy <free-text>` is invoked outside a thread
    - usage instructions with examples for Jira fast-path and free-text flow (for `/kanvy help`)
 5. Confirm run thread binding stores:
    - `taskId`, `channelId`, `threadTs`, `currentRunId`, `latestReviewRound`
@@ -300,6 +301,7 @@ Ingress/idempotency checks to verify in local logs:
 - Duplicate slash command deliveries are ignored for the same command response envelope.
 - Duplicate interaction deliveries are ignored to prevent duplicate task/run starts.
 - GitLab duplicate deliveries are ignored.
+- `slack_command_lifecycle` checkpoints appear for slash processing (`received`, `deduped`, `jira_fetch_started`, `jira_fetch_failed`, `task_started`) with sanitized Jira diagnostics.
 
 ## 9) Slack/GitLab failure-path checks
 

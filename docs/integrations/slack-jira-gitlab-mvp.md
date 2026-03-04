@@ -40,13 +40,14 @@ Out of scope (this phase):
 
 ## Operator day-to-day flow (no dashboard required)
 
-1. In Slack, run `/kanvy fix ABC-123` for deterministic Jira flow, or `/kanvy <free-text request>` from a thread.
-2. For free-text flow, answer clarifying questions in the same thread (max 4 turns before structured handoff prompt).
-3. For usage guidance, run `/kanvy help`.
-4. If multiple repo mappings are available, click a repo disambiguation button (Jira flow) or reply with repo id (free-text flow).
-5. Monitor status and MR feedback in the same Slack thread.
-6. When feedback arrives and run enters `DECISION_REQUIRED`, click `Approve rerun`.
-7. Continue the thread loop until `DONE`, `PAUSED`, or `FAILED`.
+1. In Slack, run `/kanvy fix ABC-123` for deterministic Jira flow, or `/kanvy <free-text request>` from channel or thread.
+2. If free-text starts in channel (non-thread), the system posts a thread kickoff and sends an ephemeral handoff link; continue clarification in that thread.
+3. For free-text flow, answer clarifying questions in the same thread (max 4 turns before structured handoff prompt).
+4. For usage guidance, run `/kanvy help`.
+5. If multiple repo mappings are available, click a repo disambiguation button (Jira flow) or reply with repo id (free-text flow).
+6. Monitor status and MR feedback in the same Slack thread.
+7. When feedback arrives and run enters `DECISION_REQUIRED`, click `Approve rerun`.
+8. Continue the thread loop until `DONE`, `PAUSED`, or `FAILED`.
 
 ## Reliability and hardening behavior
 
@@ -79,6 +80,7 @@ State and idempotency checks:
 1. Jira lookup failure
    - Symptom: slash command ack succeeds but follow-up reports Jira fetch failure.
    - Operator action: verify `JIRA_TOKEN`, issue key, Jira reachability.
+   - Logs: inspect structured `slack_command_lifecycle` checkpoints (`jira_fetch_started`, `jira_fetch_failed`) including Jira host/path, category, and sanitized message.
 2. Missing repo mapping
    - Symptom: disambiguation or no-mapping message in Slack.
    - Operator action: add/enable Jira project -> repo mapping.

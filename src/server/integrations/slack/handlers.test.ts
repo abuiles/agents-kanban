@@ -20,6 +20,7 @@ const runOrchestratorMocks = vi.hoisted(() => ({
   scheduleRunJob: vi.fn()
 }));
 const fetchSpy = vi.spyOn(globalThis, 'fetch');
+const consoleInfoSpy = vi.spyOn(console, 'info').mockImplementation(() => {});
 
 vi.mock('../../tenant-auth-db', () => tenantAuthDbMocks);
 vi.mock('../jira/client', () => jiraClientMocks);
@@ -121,6 +122,7 @@ describe('slack handlers', () => {
     vi.clearAllMocks();
     fetchSpy.mockReset();
     fetchSpy.mockResolvedValue(new Response('{}', { status: 200 }));
+    consoleInfoSpy.mockClear();
     tenantAuthDbMocks.getPrimaryTenantId.mockResolvedValue('tenant_local');
     tenantAuthDbMocks.upsertSlackThreadBinding.mockImplementation(async (input: {
       taskId: string;
@@ -322,6 +324,72 @@ describe('slack handlers', () => {
     }));
   });
 
+  it('auto-creates a thread handoff for non-thread free-text slash commands', async () => {
+    const repoBoard = makeRepoBoard({ taskId: 'task_handoff', runId: 'run_handoff' });
+    fetchSpy.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('https://slack.com/api/chat.postMessage')) {
+        const payload = JSON.parse(String(init?.body ?? '{}')) as { thread_ts?: string };
+        if (payload.thread_ts) {
+          return new Response(JSON.stringify({ ok: true, ts: payload.thread_ts }), { status: 200 });
+        }
+        return new Response(JSON.stringify({ ok: true, ts: '1672531200.9999' }), { status: 200 });
+      }
+      if (url.includes('/v1/chat/completions')) {
+        return new Response(JSON.stringify({
+          choices: [{
+            message: {
+              content: JSON.stringify({
+                intent: 'create_task',
+                confidence: 0.4,
+                acceptanceCriteria: [],
+                missingFields: ['repo'],
+                clarifyingQuestion: 'Which repo should I use?'
+              })
+            }
+          }]
+        }), { status: 200 });
+      }
+      return new Response('{}', { status: 200 });
+    });
+
+    const rawBody = new URLSearchParams({
+      command: '/kanvy',
+      text: 'investigate flaky tests',
+      channel_id: 'C123',
+      team_id: 'team_one',
+      user_id: 'U1',
+      response_url: 'https://hooks.slack.com/commands/handoff'
+    }).toString();
+    const signature = await buildSlackSignature('secret', nowTs, rawBody);
+    const request = new Request('https://example.test/api/integrations/slack/commands', {
+      method: 'POST',
+      headers: slackHeaders(nowTs, signature),
+      body: rawBody
+    });
+    const waitUntilTasks: Array<Promise<unknown>> = [];
+    const waitUntil = vi.fn((task: Promise<unknown>) => waitUntilTasks.push(task));
+    const env = makeEnv('secret', repoBoard);
+    await env.SECRETS_KV.put('slack/bot-token', 'xoxb-test');
+
+    const response = await handleSlackCommands(request, env, { waitUntil } as unknown as ExecutionContext<unknown>);
+    expect(response.status).toBe(200);
+    await waitUntilTasks[0];
+
+    const calls = vi.mocked(global.fetch).mock.calls as Array<[RequestInfo | URL, RequestInit]>;
+    const channelKickoff = calls.find((entry) => String(entry[0]).includes('https://slack.com/api/chat.postMessage')
+      && !String(entry[1].body).includes('"thread_ts"'));
+    const threadPrompt = calls.find((entry) => String(entry[0]).includes('https://slack.com/api/chat.postMessage')
+      && String(entry[1].body).includes('"thread_ts":"1672531200.9999"'));
+    const responseAck = calls.find((entry) => String(entry[0]).includes('https://hooks.slack.com/commands/handoff'));
+
+    expect(channelKickoff).toBeTruthy();
+    expect(threadPrompt).toBeTruthy();
+    expect(responseAck?.[1].body).toContain('Continuing in thread:');
+    expect(responseAck?.[1].body).toContain('message_ts=1672531200.9999');
+    expect(repoBoard.createTask).not.toHaveBeenCalled();
+  });
+
   it('asks for repo disambiguation when multiple mappings exist', async () => {
     tenantAuthDbMocks.listJiraProjectRepoMappingsByProject.mockResolvedValue([
       { jiraProjectKey: 'ABC', repoId: 'repo_alpha', priority: 0, active: true, id: 'm1', tenantId: 'tenant_local', createdAt: '', updatedAt: '' },
@@ -434,6 +502,14 @@ describe('slack handlers', () => {
     const calledPayload = JSON.parse(((vi.mocked(global.fetch).mock.calls[0] as [string, RequestInit])[1].body as string));
     expect(calledPayload.text).toContain('Failed to process /kanvy command for ABC-100');
     expect(calledPayload.text).toContain('temporary outage');
+    const lifecycleLogs = consoleInfoSpy.mock.calls
+      .map((entry) => String(entry[0]))
+      .filter((line) => line.includes('"event":"slack_command_lifecycle"'));
+    expect(lifecycleLogs.some((line) => line.includes('"checkpoint":"received"'))).toBe(true);
+    expect(lifecycleLogs.some((line) => line.includes('"checkpoint":"jira_fetch_started"'))).toBe(true);
+    expect(lifecycleLogs.some((line) => line.includes('"checkpoint":"jira_fetch_failed"'))).toBe(true);
+    expect(lifecycleLogs.some((line) => line.includes('"jira_failure_category":"unknown"'))).toBe(true);
+    expect(lifecycleLogs.some((line) => line.includes('"issue_key":"ABC-100"'))).toBe(true);
     expect(failingBoard.createTask).not.toHaveBeenCalled();
   });
 
