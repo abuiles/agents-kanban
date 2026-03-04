@@ -933,11 +933,13 @@ fi`)}`
 }
 
 function buildReviewPrompt(task: Task, repo: Repo, run: Awaited<ReturnType<RepoBoardDO['getRun']>>, customPrompt?: string) {
+  const useNativeReview = !customPrompt?.trim();
   const reviewIntent = customPrompt?.trim()
     ? `Review instructions:\n${customPrompt.trim()}`
     : [
         'Review instructions:',
-        'Perform a code review focused on correctness, regressions, security risks, and missing tests.',
+        '/review',
+        'Use native review mode focused on correctness, regressions, security risks, and missing tests.',
         'Only report actionable findings that should block merge.'
       ].join('\n');
 
@@ -953,6 +955,12 @@ function buildReviewPrompt(task: Task, repo: Repo, run: Awaited<ReturnType<RepoB
     ...task.acceptanceCriteria.map((item) => `- ${item}`),
     '',
     reviewIntent,
+    ...(useNativeReview
+      ? [
+          '',
+          'If native review mode emits narrative output first, convert it into the structured findings JSON below.'
+        ]
+      : []),
     '',
     'Return JSON only using this exact schema shape:',
     '{ "findings": [ { "severity": "critical|high|medium|low|info", "title": "string", "description": "string", "filePath": "string?", "lineStart": "number?", "lineEnd": "number?" } ] }',
