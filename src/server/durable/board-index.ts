@@ -756,9 +756,18 @@ export class BoardIndexDO extends DurableObject<Env> {
   async updateRepo(repoId: string, patch: UpdateRepoInput) {
     await this.ready;
     const existing = await this.getRepo(repoId);
+    const hasAutoReviewPatch = Object.prototype.hasOwnProperty.call(patch, 'autoReview');
+    const mergedAutoReview = hasAutoReviewPatch
+      ? {
+          ...(existing.autoReview ?? { enabled: false, provider: 'gitlab', postInline: false }),
+          ...patch.autoReview
+        }
+      : existing.autoReview;
+
     const updated = buildRepoRecord({
       ...existing,
       ...patch,
+      autoReview: mergedAutoReview,
       slug: patch.slug ?? patch.projectPath ?? existing.slug,
       projectPath: patch.projectPath ?? patch.slug ?? existing.projectPath,
       repoId: existing.repoId,
@@ -1163,12 +1172,20 @@ export class BoardIndexDO extends DurableObject<Env> {
 }
 
 function buildRepoRecord(input: CreateRepoInput | Repo): Repo {
+  const normalizedAutoReview = {
+    enabled: input.autoReview?.enabled ?? false,
+    provider: input.autoReview?.provider ?? 'gitlab',
+    postInline: input.autoReview?.postInline ?? false,
+    ...(input.autoReview?.prompt ? { prompt: input.autoReview.prompt.trim() } : {})
+  };
+
   const normalized = normalizeRepo({
     ...input,
     repoId: 'repoId' in input ? input.repoId : '',
     defaultBranch: input.defaultBranch ?? 'main',
     baselineUrl: input.baselineUrl,
     enabled: input.enabled ?? true,
+    autoReview: normalizedAutoReview,
     llmAdapter: input.llmAdapter,
     llmProfileId: input.llmProfileId,
     githubAuthMode: 'githubAuthMode' in input ? input.githubAuthMode : undefined,

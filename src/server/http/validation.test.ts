@@ -6,6 +6,7 @@ import {
   parseCreateRepoInput,
   parseCreateTaskInput,
   parseCreateUserApiTokenInput,
+  parseRequestRunChangesInput,
   parseUpdateRepoInput,
   parseUpdateTaskInput,
   parseUpsertScmCredentialInput
@@ -162,6 +163,37 @@ describe('task validation', () => {
       })
     ).toThrow('Invalid LLM payload: codex compatibility fields require llmAdapter "codex".');
   });
+
+  it('defaults task auto-review mode to inherit for create payloads', () => {
+    const parsed = parseCreateTaskInput(
+      createTaskPayload()
+    );
+
+    expect(parsed.autoReviewMode).toBe('inherit');
+    expect(parsed.autoReviewPrompt).toBeUndefined();
+  });
+
+  it('parses task auto-review overrides', () => {
+    const parsed = parseCreateTaskInput(
+      createTaskPayload({
+        autoReviewMode: 'on',
+        autoReviewPrompt: 'Keep reviews tight'
+      })
+    );
+
+    expect(parsed.autoReviewMode).toBe('on');
+    expect(parsed.autoReviewPrompt).toBe('Keep reviews tight');
+  });
+
+  it('rejects invalid task auto-review mode', () => {
+    expect(() =>
+      parseCreateTaskInput(
+        createTaskPayload({
+          autoReviewMode: 'sometimes'
+        })
+      )
+    ).toThrow('Invalid autoReviewMode.');
+  });
 });
 
 describe('repo validation', () => {
@@ -220,6 +252,50 @@ describe('repo validation', () => {
 
     expect(parsed.previewAdapter).toBe('cloudflare_checks');
     expect(parsed.previewConfig).toEqual({ checkName: 'Workers Builds: minions' });
+  });
+
+  it('defaults autoReview on payload omission', () => {
+    const parsed = parseCreateRepoInput({
+      slug: 'abuiles/minions',
+      baselineUrl: 'https://example.com'
+    });
+
+    expect(parsed.autoReview).toEqual({
+      enabled: false,
+      provider: 'gitlab',
+      postInline: false
+    });
+  });
+
+  it('defaults repo auto-review provider and includes prompt when enabled', () => {
+    const parsed = parseCreateRepoInput({
+      slug: 'abuiles/minions',
+      baselineUrl: 'https://example.com',
+      autoReview: {
+        enabled: true,
+        postInline: true,
+        prompt: 'Check all security findings first.'
+      }
+    });
+
+    expect(parsed.autoReview).toEqual({
+      enabled: true,
+      provider: 'gitlab',
+      postInline: true,
+      prompt: 'Check all security findings first.'
+    });
+  });
+
+  it('parses partial repo auto-review update patches without injecting create defaults', () => {
+    const parsed = parseUpdateRepoInput({
+      autoReview: {
+        postInline: true
+      }
+    });
+
+    expect(parsed.autoReview).toEqual({
+      postInline: true
+    });
   });
 
   it('rejects invalid repo execution policy values', () => {
@@ -338,6 +414,38 @@ describe('repo validation', () => {
     })).toMatchObject({
       llmAuthBundleR2Key: 'auth/llm.tgz',
       codexAuthBundleR2Key: 'auth/llm.tgz'
+    });
+  });
+});
+
+describe('request run validation', () => {
+  it('accepts legacy payloads containing only prompt', () => {
+    const parsed = parseRequestRunChangesInput({
+      prompt: 'Please rerun with extra test coverage.'
+    });
+
+    expect(parsed).toEqual({
+      prompt: 'Please rerun with extra test coverage.',
+      reviewSelection: undefined
+    });
+  });
+
+  it('parses request selection payloads with include mode', () => {
+    const parsed = parseRequestRunChangesInput({
+      prompt: 'Please rerun with extra test coverage.',
+      reviewSelection: {
+        mode: 'include',
+        findingIds: ['f1', 'f2'],
+        instruction: 'Focus on these failures.',
+        includeReplies: true
+      }
+    });
+
+    expect(parsed.reviewSelection).toEqual({
+      mode: 'include',
+      findingIds: ['f1', 'f2'],
+      instruction: 'Focus on these failures.',
+      includeReplies: true
     });
   });
 });

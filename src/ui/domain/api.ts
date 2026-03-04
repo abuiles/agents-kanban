@@ -1,8 +1,10 @@
 import type {
   AgentRun,
   BoardSnapshotV1,
+  AutoReviewMode,
   CodexModel,
   CodexReasoningEffort,
+  AutoReviewProvider,
   LlmAdapter,
   LlmReasoningEffort,
   Repo,
@@ -20,6 +22,20 @@ import type {
   User
 } from './types';
 
+export type RepoAutoReviewInput = {
+  enabled?: boolean;
+  prompt?: string;
+  provider?: AutoReviewProvider;
+  postInline?: boolean;
+};
+
+export type RequestRunChangesSelection = {
+  mode: 'all' | 'include' | 'exclude' | 'freeform';
+  findingIds?: string[];
+  instruction?: string;
+  includeReplies?: boolean;
+};
+
 export type CreateRepoInput = {
   tenantId?: string;
   slug?: string;
@@ -32,6 +48,7 @@ export type CreateRepoInput = {
   defaultBranch?: string;
   baselineUrl: string;
   enabled?: boolean;
+  autoReview?: RepoAutoReviewInput;
   previewMode?: Repo['previewMode'];
   evidenceMode?: Repo['evidenceMode'];
   previewAdapter?: Repo['previewAdapter'];
@@ -66,6 +83,8 @@ export type CreateTaskInput = {
   context: Task['context'];
   baselineUrlOverride?: string;
   status?: TaskStatus;
+  autoReviewMode?: AutoReviewMode;
+  autoReviewPrompt?: string;
   simulationProfile?: SimulationProfile;
   llmAdapter?: LlmAdapter;
   llmModel?: string;
@@ -82,6 +101,7 @@ export type UpdateTaskInput = Partial<Omit<CreateTaskInput, 'repoId'>> & {
 
 export type RequestRunChangesInput = {
   prompt: string;
+  reviewSelection?: RequestRunChangesSelection;
 };
 
 export type AuthSession = {
