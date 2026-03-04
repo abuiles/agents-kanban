@@ -588,7 +588,11 @@ export class RepoBoardDO extends DurableObject<Env> {
     const manifest = buildArtifactManifest(run, task, repo, this.ctx.id.toString());
     return this.transitionRun(runId, {
       artifactManifest: manifest,
-      artifacts: [manifest.logs.key, manifest.before?.key, manifest.after?.key, manifest.trace?.key, manifest.video?.key].filter(Boolean) as string[]
+      artifacts: [
+        ...[manifest.logs.key, manifest.before?.key, manifest.after?.key, manifest.trace?.key, manifest.video?.key].filter(Boolean),
+        manifest.reviewFindingsJson?.key,
+        manifest.reviewMarkdown?.key
+      ].filter(Boolean) as string[]
     }, tenantId);
   }
 
@@ -1155,6 +1159,8 @@ function cloneRepoBoardState(state: RepoBoardState): RepoBoardState {
             after: run.artifactManifest.after ? { ...run.artifactManifest.after } : undefined,
             trace: run.artifactManifest.trace ? { ...run.artifactManifest.trace } : undefined,
             video: run.artifactManifest.video ? { ...run.artifactManifest.video } : undefined,
+            reviewFindingsJson: run.artifactManifest.reviewFindingsJson ? { ...run.artifactManifest.reviewFindingsJson } : undefined,
+            reviewMarkdown: run.artifactManifest.reviewMarkdown ? { ...run.artifactManifest.reviewMarkdown } : undefined,
             metadata: { ...run.artifactManifest.metadata }
           }
         : undefined
