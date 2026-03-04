@@ -5,6 +5,7 @@ import { handleError, json } from '../../http/response';
 import * as tenantAuthDb from '../../tenant-auth-db';
 import { createJiraIssueSourceIntegrationFromEnv } from '../jira/client';
 import { scheduleRunJob } from '../../run-orchestrator';
+import { buildIdempotencyKey } from '../idempotency';
 import {
   parseSlackEventBody,
   parseSlackInteractionBody,
@@ -24,6 +25,7 @@ const JIRA_LLM_REASONING_EFFORT: CreateTaskInput['codexReasoningEffort'] = 'high
 const FALLBACK_DISAMBIGUATION_WARNING = 'No matching repository was auto-selected for this issue.';
 const DISAMBIGUATION_MULTIPLE_MAPPINGS_MESSAGE = 'Multiple repositories are mapped for Jira project';
 const DISAMBIGUATION_NO_MAPPING_MESSAGE = 'No active mapping exists for project';
+const INGRESS_DEDUPE_TTL_SECONDS = 10 * 60;
 
 type RepoDisambiguationChoice = {
   repoId: string;
@@ -200,6 +202,15 @@ function normalizeJiraIssueFromInteraction(values: {
     body: values.issueBody || 'No description provided.',
     url: values.issueUrl
   };
+}
+
+async function markIngressDeliveryIfNew(env: Env, dedupeKey: string) {
+  const existing = await env.SECRETS_KV.get(dedupeKey);
+  if (existing) {
+    return false;
+  }
+  await env.SECRETS_KV.put(dedupeKey, '1', { expirationTtl: INGRESS_DEDUPE_TTL_SECONDS });
+  return true;
 }
 
 async function resolveRepoCandidates(
@@ -503,6 +514,24 @@ async function runSlackCommandAsync(
   ctx?: ExecutionContext<unknown>
 ) {
   const tenantId = await resolveThreadTenantId(env, payload.teamId);
+  const slashDedupeKey = buildIdempotencyKey({
+    provider: 'slack',
+    tenantId,
+    eventType: 'slash_command.fix',
+    providerEventId: payload.responseUrl ?? `${payload.teamId ?? 'team:default'}:${payload.channelId}:${payload.issueKey}`,
+    subjectId: `${payload.channelId}:${payload.threadTs ?? 'root'}`,
+    metadata: {
+      issueKey: payload.issueKey,
+      userId: payload.userId
+    }
+  });
+  if (!(await markIngressDeliveryIfNew(env, slashDedupeKey))) {
+    await postSlackResponse(payload.responseUrl, {
+      response_type: 'ephemeral',
+      text: `Duplicate /kanvy command ignored for ${payload.issueKey}.`
+    });
+    return;
+  }
   const bindingTaskId = payload.threadTs
     ? await createThreadBindingForSlashCommand(env, tenantId, payload.issueKey, payload.channelId, payload.threadTs)
     : buildTaskIdFromIssue(payload.issueKey);
@@ -615,6 +644,26 @@ export async function handleSlackInteractions(
     await verifySlackRequest(env, request, rawBody);
     const interaction = parseSlackInteractionBody(rawBody);
     const tenantId = await resolveThreadTenantId(env, interaction.tenantId || interaction.teamId);
+    const interactionDedupeKey = buildIdempotencyKey({
+      provider: 'slack',
+      tenantId,
+      eventType: `interaction.${interaction.actionId}`,
+      providerEventId: `${interaction.actionId}:${interaction.currentRunId ?? interaction.issueKey ?? interaction.taskId}`,
+      subjectId: `${interaction.channelId}:${interaction.threadTs || 'root'}`,
+      metadata: {
+        taskId: interaction.taskId,
+        repoId: interaction.repoId ?? null,
+        latestReviewRound: interaction.latestReviewRound ?? -1
+      }
+    });
+    if (!(await markIngressDeliveryIfNew(env, interactionDedupeKey))) {
+      return json({
+        ok: true,
+        status: 'duplicate_interaction_ignored',
+        action: interaction.actionId,
+        taskId: interaction.taskId
+      });
+    }
     if (interaction.actionId === 'repo_disambiguation') {
       return handleRepoDisambiguationAction(env, ctx, tenantId, interaction);
     }

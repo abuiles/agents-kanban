@@ -319,6 +319,63 @@ describe('slack handlers', () => {
     expect(failingBoard.createTask).not.toHaveBeenCalled();
   });
 
+  it('dedupes duplicate slash command deliveries for the same response url', async () => {
+    const repoBoard = makeRepoBoard({ taskId: 'task_dedupe', runId: 'run_dedupe' });
+    tenantAuthDbMocks.listJiraProjectRepoMappingsByProject.mockResolvedValue([
+      { jiraProjectKey: 'ABC', repoId: 'repo_alpha', priority: 0, active: true, id: 'm1', tenantId: 'tenant_local', createdAt: '', updatedAt: '' }
+    ]);
+
+    const rawBody = new URLSearchParams({
+      command: '/kanvy',
+      text: 'fix ABC-100',
+      channel_id: 'C123',
+      thread_ts: '1672531200.1234',
+      team_id: 'team_one',
+      user_id: 'U1',
+      response_url: 'https://hooks.slack.com/commands/response-dup'
+    }).toString();
+    const firstTimestamp = Math.floor(Date.now() / 1000).toString();
+    const secondTimestamp = (Number(firstTimestamp) + 1).toString();
+    const firstSignature = await buildSlackSignature('secret', firstTimestamp, rawBody);
+    const secondSignature = await buildSlackSignature('secret', secondTimestamp, rawBody);
+
+    const firstRequest = new Request('https://example.test/api/integrations/slack/commands', {
+      method: 'POST',
+      headers: slackHeaders(firstTimestamp, firstSignature),
+      body: rawBody
+    });
+    const secondRequest = new Request('https://example.test/api/integrations/slack/commands', {
+      method: 'POST',
+      headers: slackHeaders(secondTimestamp, secondSignature),
+      body: rawBody
+    });
+
+    const firstWaitUntilTasks: Array<Promise<unknown>> = [];
+    const secondWaitUntilTasks: Array<Promise<unknown>> = [];
+    const firstWaitUntil = vi.fn((task: Promise<unknown>) => {
+      firstWaitUntilTasks.push(task);
+    });
+    const secondWaitUntil = vi.fn((task: Promise<unknown>) => {
+      secondWaitUntilTasks.push(task);
+    });
+
+    const env = makeEnv('secret', repoBoard);
+    const firstResponse = await handleSlackCommands(firstRequest, env, { waitUntil: firstWaitUntil } as unknown as ExecutionContext<unknown>);
+    const secondResponse = await handleSlackCommands(secondRequest, env, { waitUntil: secondWaitUntil } as unknown as ExecutionContext<unknown>);
+
+    expect(firstResponse.status).toBe(200);
+    expect(secondResponse.status).toBe(200);
+    expect(firstWaitUntil).toHaveBeenCalledTimes(1);
+    expect(secondWaitUntil).toHaveBeenCalledTimes(1);
+    await firstWaitUntilTasks[0];
+    await secondWaitUntilTasks[0];
+
+    expect(repoBoard.createTask).toHaveBeenCalledTimes(1);
+    expect(repoBoard.startRun).toHaveBeenCalledTimes(1);
+    const duplicateReply = JSON.parse(((vi.mocked(global.fetch).mock.calls[1] as [string, RequestInit])[1].body as string));
+    expect(duplicateReply.text).toContain('Duplicate /kanvy command ignored');
+  });
+
   it('starts task/run from repo_disambiguation interaction', async () => {
     const repoBoard = makeRepoBoard({ taskId: 'task_interaction', runId: 'run_interaction' });
     const payload = {
@@ -383,6 +440,64 @@ describe('slack handlers', () => {
       currentRunId: 'run_interaction',
       latestReviewRound: 0
     });
+  });
+
+  it('dedupes repeated repo_disambiguation interaction payloads', async () => {
+    const repoBoard = makeRepoBoard({ taskId: 'task_interaction_dedupe', runId: 'run_interaction_dedupe' });
+    const payload = {
+      type: 'block_actions',
+      container: { channel_id: 'C123', thread_ts: '1672531200.1234' },
+      actions: [
+        {
+          action_id: 'repo_disambiguation',
+          value: JSON.stringify({
+            tenantId: 'tenant_local',
+            taskId: 'issue:ABC-100',
+            channelId: 'C123',
+            threadTs: '1672531200.1234',
+            issueKey: 'ABC-100',
+            issueTitle: 'Cannot login',
+            issueBody: 'Button fails',
+            issueUrl: 'https://jira.test.com/browse/ABC-100',
+            repoId: 'repo_alpha'
+          })
+        }
+      ]
+    };
+    const rawBody = new URLSearchParams({ payload: JSON.stringify(payload) }).toString();
+    const firstTimestamp = Math.floor(Date.now() / 1000).toString();
+    const secondTimestamp = (Number(firstTimestamp) + 1).toString();
+    const firstSignature = await buildSlackSignature('secret', firstTimestamp, rawBody);
+    const secondSignature = await buildSlackSignature('secret', secondTimestamp, rawBody);
+    const firstRequest = new Request('https://example.test/api/integrations/slack/interactions', {
+      method: 'POST',
+      headers: slackHeaders(firstTimestamp, firstSignature),
+      body: rawBody
+    });
+    const secondRequest = new Request('https://example.test/api/integrations/slack/interactions', {
+      method: 'POST',
+      headers: slackHeaders(secondTimestamp, secondSignature),
+      body: rawBody
+    });
+
+    const env = makeEnv('secret', repoBoard);
+    const firstResponse = await handleSlackInteractions(firstRequest, env, {} as unknown as ExecutionContext<unknown>);
+    const secondResponse = await handleSlackInteractions(secondRequest, env, {} as unknown as ExecutionContext<unknown>);
+
+    expect(await firstResponse.json()).toMatchObject({
+      ok: true,
+      action: 'repo_disambiguation',
+      taskId: 'task_interaction_dedupe',
+      runId: 'run_interaction_dedupe'
+    });
+    expect(await secondResponse.json()).toMatchObject({
+      ok: true,
+      status: 'duplicate_interaction_ignored',
+      action: 'repo_disambiguation',
+      taskId: 'issue:ABC-100'
+    });
+    expect(repoBoard.createTask).toHaveBeenCalledTimes(1);
+    expect(repoBoard.startRun).toHaveBeenCalledTimes(1);
   });
 
   it('starts a rerun when approve_rerun is clicked in decision-required state', async () => {

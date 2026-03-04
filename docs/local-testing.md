@@ -215,7 +215,49 @@ You can continue to use `npx wrangler dev` for Worker-only execution on the lega
 3. Confirm attach and takeover:
    - `POST /api/runs/:runId/takeover`
 
-## 8) Troubleshooting matrix
+## 8) Slack -> Jira -> GitLab MVP local loop
+
+Use this when validating day-to-day operator flow without dashboard actions.
+
+1. Configure Slack and GitLab webhook secrets in Worker secrets KV:
+   - `slack/signing-secret`
+   - `gitlab/webhook-secret`
+2. Configure Jira project -> repo mapping for the tenant.
+3. Trigger slash command:
+   - `/kanvy fix ABC-123`
+4. Confirm slash command ack is immediate and async processing posts one of:
+   - run start confirmation
+   - repo disambiguation buttons
+   - failure message (for example Jira read failure)
+5. Confirm run thread binding stores:
+   - `taskId`, `channelId`, `threadTs`, `currentRunId`, `latestReviewRound`
+6. Simulate or receive GitLab webhook events:
+   - MR open/update -> `REVIEW_PENDING`
+   - MR note feedback -> `DECISION_REQUIRED`
+7. Click `Approve rerun` in the same Slack thread.
+8. Confirm exactly one rerun is queued and thread binding updates to the new `currentRunId`.
+
+Ingress/idempotency checks to verify in local logs:
+
+- Slack signature + replay protection rejects forged/replayed requests.
+- Duplicate slash command deliveries are ignored for the same command response envelope.
+- Duplicate interaction deliveries are ignored to prevent duplicate task/run starts.
+- GitLab duplicate deliveries are ignored.
+
+## 9) Slack/GitLab failure-path checks
+
+- Jira timeout/failure:
+  - slash command still acks quickly
+  - response URL receives explicit failure text
+  - no task/run is created
+- Slack post failure:
+  - run and state transitions continue
+  - Slack mirror posting remains best-effort (does not fail webhook processing)
+- GitLab malformed webhook body:
+  - returns `400 BAD_REQUEST`
+  - no run state transition occurs
+
+## 10) Troubleshooting matrix
 
 - Missing run start
   - Ensure Worker secrets are configured for `repo.scmProvider`:
@@ -236,7 +278,7 @@ You can continue to use `npx wrangler dev` for Worker-only execution on the lega
   - Check event metadata fields (`reason`, `reviewGate*`, `attempt`, `attemptCount`, `taskId`, `runId`)
   - Validate conflict policy limits (`conflictPolicy.maxAttempts`) and whether sentinel is paused on exhaustion
 
-## 9) Provider key reference (quick)
+## 11) Provider key reference (quick)
 
 | Provider | Runtime host key | Runtime credential path | Key format |
 | --- | --- | --- | --- |
@@ -244,7 +286,7 @@ You can continue to use `npx wrangler dev` for Worker-only execution on the lega
 | GitLab | `host` from repo URL (e.g., `gitlab.com` or self-hosted host) | Worker secret | `GITLAB_TOKEN` |
 | Jira | `host` from issue URL (e.g., `jira.example.com`) | Worker secret | `JIRA_TOKEN` |
 
-## 10) Sync with docs
+## 12) Sync with docs
 
 Keep this guide aligned with:
 
@@ -253,9 +295,10 @@ Keep this guide aligned with:
 - [docs/plans/archive/stage_3_5.md](plans/archive/stage_3_5.md)
 - [docs/plans/archive/stage_4.md](plans/archive/stage_4.md)
 - [docs/sandbox-capacity-and-scheduling.md](sandbox-capacity-and-scheduling.md)
+- [docs/integrations/slack-jira-gitlab-mvp.md](integrations/slack-jira-gitlab-mvp.md)
 - [docs/integrations/sentinel-orchestration.md](integrations/sentinel-orchestration.md)
 
-## 12) Script-to-native sentinel migration
+## 13) Script-to-native sentinel migration
 
 Use this sequence to migrate from script automation to native APIs/UI:
 
@@ -276,7 +319,7 @@ Fallback:
 - Disable native sentinel: `PATCH /api/repos/:repoId/sentinel/config` with `"enabled": false`
 - Resume manual run/task operation (`POST /api/tasks/:taskId/run`) while sentinel remains disabled
 
-## 13) Parallel run sanity check
+## 14) Parallel run sanity check
 
 Use this check before enabling wide concurrency:
 
