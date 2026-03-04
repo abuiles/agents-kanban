@@ -469,4 +469,197 @@ describe('SentinelController', () => {
       })
     );
   });
+
+  it('retries merge after remediation when initial merge attempt fails', async () => {
+    const reviewRun = makeReviewRun();
+    const reviewTask = makeTask({ taskId: 'task_review', status: 'REVIEW' });
+    const reviewTaskDetail = makeTaskDetail(reviewTask, reviewRun);
+    const getReviewState = vi.fn().mockResolvedValue({
+      exists: true,
+      state: 'open',
+      headSha: 'abc123',
+      mergeable: true
+    });
+    const listCommitChecks = vi.fn().mockResolvedValue([
+      {
+        status: 'completed',
+        conclusion: 'success'
+      }
+    ]);
+    const mergeReview = vi.fn()
+      .mockResolvedValueOnce({
+        merged: false,
+        reason: 'merge conflict'
+      })
+      .mockResolvedValueOnce({
+        merged: true,
+        mergedAt: '2026-01-02T00:00:00.000Z'
+      });
+    const adapter = createScmAdapter({
+      getReviewState,
+      listCommitChecks,
+      mergeReview
+    });
+
+    const boardAfter: FakeSentinelBoard = {
+      ...board,
+      getTask: vi.fn().mockResolvedValue(reviewTaskDetail),
+      listTasks: vi.fn().mockResolvedValue([]),
+      transitionRun: vi.fn().mockResolvedValue(reviewRun),
+      updateTask: vi.fn().mockResolvedValue(reviewTask)
+    };
+    const controller = new SentinelController({
+      env: {} as Env,
+      tenantId: 'tenant_local',
+      repo: makeRepo({
+        sentinelConfig: {
+          ...(makeRepo().sentinelConfig as NonNullable<Repo['sentinelConfig']>),
+          conflictPolicy: { rebaseBeforeMerge: false, remediationEnabled: true, maxAttempts: 2 }
+        }
+      }),
+      repoId: 'repo_1',
+      scmAdapter: adapter,
+      run: makeBaseSentinelRun({
+        currentTaskId: reviewTask.taskId,
+        currentRunId: reviewRun.runId
+      }),
+      board: boardAfter,
+      executionContext: {} as unknown as ExecutionContext<unknown>,
+      appendSentinelEvent,
+      getScmCredential: vi.fn().mockResolvedValue({ token: 'gh_token' }),
+      claimSentinelRunTask: vi.fn(),
+      linkSentinelRunTaskId: vi.fn(),
+      clearSentinelRunTask: vi.fn().mockResolvedValue(makeBaseSentinelRun({}))
+    });
+
+    const outcome = await controller.progress();
+
+    expect(outcome.progressed).toBe(false);
+    expect(outcome.reason).toBe('none_available');
+    expect(mergeReview).toHaveBeenCalledTimes(2);
+    expect(boardAfter.transitionRun).toHaveBeenCalled();
+    expect(boardAfter.updateTask).toHaveBeenCalledWith(reviewTask.taskId, { status: 'DONE' });
+    expect(appendSentinelEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        type: 'remediation.succeeded',
+        sentinelRunId: baseRun.id
+      })
+    );
+    expect(appendSentinelEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        type: 'merge.succeeded',
+        sentinelRunId: baseRun.id
+      })
+    );
+  });
+
+  it('tracks bounded remediation retries and pauses sentinel when exhausted', async () => {
+    const reviewRun = makeReviewRun();
+    const reviewTask = makeTask({ taskId: 'task_review', status: 'REVIEW' });
+    const reviewTaskDetail = makeTaskDetail(reviewTask, reviewRun);
+    const getReviewState = vi.fn().mockResolvedValue({
+      exists: true,
+      state: 'open',
+      headSha: 'abc123',
+      mergeable: true
+    });
+    const listCommitChecks = vi.fn().mockResolvedValue([
+      {
+        status: 'completed',
+        conclusion: 'success'
+      }
+    ]);
+    const mergeReview = vi.fn().mockResolvedValue({
+      merged: false,
+      reason: 'merge conflict'
+    });
+    const adapter = createScmAdapter({
+      getReviewState,
+      listCommitChecks,
+      mergeReview
+    });
+
+    const updateSentinelRun = vi.fn(async (_env, _tenantId, runId, patch) => {
+      return {
+        ...makeBaseSentinelRun({
+          id: runId,
+          status: patch.status ?? 'running',
+          attemptCount: patch.attemptCount ?? 0
+        }),
+        currentTaskId: 'task_review',
+        currentRunId: reviewRun.runId
+      };
+    });
+
+    const controller = new SentinelController({
+      env: {} as Env,
+      tenantId: 'tenant_local',
+      repo: makeRepo({
+        sentinelConfig: {
+          ...(makeRepo().sentinelConfig as NonNullable<Repo['sentinelConfig']>),
+          reviewGate: { requireChecksGreen: false, requireAutoReviewPass: false },
+          conflictPolicy: { rebaseBeforeMerge: false, remediationEnabled: false, maxAttempts: 1 }
+        }
+      }),
+      repoId: 'repo_1',
+      scmAdapter: adapter,
+      run: makeBaseSentinelRun({
+        currentTaskId: reviewTask.taskId,
+        currentRunId: reviewRun.runId,
+        attemptCount: 0
+      }),
+      board: {
+        ...board,
+        getTask: vi.fn().mockResolvedValue(reviewTaskDetail),
+        listTasks: vi.fn(),
+        transitionRun: vi.fn(),
+        updateTask: vi.fn()
+      },
+      executionContext: {} as unknown as ExecutionContext<unknown>,
+      appendSentinelEvent,
+      getScmCredential: vi.fn().mockResolvedValue({ token: 'gh_token' }),
+      clearSentinelRunTask: vi.fn().mockResolvedValue(makeBaseSentinelRun({ currentTaskId: reviewTask.taskId })),
+      updateSentinelRun
+    });
+
+    const outcome = await controller.progress();
+
+    expect(outcome.progressed).toBe(false);
+    expect(outcome.run.status).toBe('paused');
+    expect(outcome.message).toContain('after');
+    expect(mergeReview).toHaveBeenCalledTimes(1);
+    expect(updateSentinelRun).toHaveBeenCalledTimes(2);
+    expect(updateSentinelRun).toHaveBeenCalledWith(
+      expect.anything(),
+      'tenant_local',
+      'sentinel_run_1',
+      expect.objectContaining({
+        attemptCount: 1
+      })
+    );
+    expect(updateSentinelRun).toHaveBeenCalledWith(
+      expect.anything(),
+      'tenant_local',
+      'sentinel_run_1',
+      expect.objectContaining({
+        status: 'paused'
+      })
+    );
+    expect(appendSentinelEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        type: 'sentinel.paused',
+        sentinelRunId: 'sentinel_run_1'
+      })
+    );
+    expect(appendSentinelEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        type: 'merge.failed',
+        sentinelRunId: 'sentinel_run_1'
+      })
+    );
+  });
 });
