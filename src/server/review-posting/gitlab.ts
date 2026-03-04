@@ -7,11 +7,13 @@ import {
   type ReviewPostingResult,
   type ReviewReplyContext,
   type ReviewReplyFetchInput,
+  retryReviewPosting,
   buildReviewFindingBody,
   buildReviewFindingMarker,
   buildReviewSummaryMarker,
   extractFindingIdsFromText,
-  extractRunIdFromSummaryMarker
+  extractRunIdFromSummaryMarker,
+  REVIEW_POSTING_MAX_ATTEMPTS
 } from './adapter';
 
 type GitLabDiscussionNote = {
@@ -104,6 +106,21 @@ export class GitLabReviewPostingAdapter implements ReviewPostingAdapter {
       errors.push(message);
     }
 
+    const refreshFindingThreads = async () => {
+      const discussions = await this.fetchDiscussions(input.repo, reviewNumber, input.credential.token);
+      const markerThreads = this.fetchExistingFindingThreads(discussions, existingSummary?.noteId);
+      findingsByMarker.clear();
+      markerThreads.forEach((value, key) => {
+        findingsByMarker.set(key, value);
+      });
+    };
+
+    const refreshSummary = async () => {
+      const discussions = await this.fetchDiscussions(input.repo, reviewNumber, input.credential.token);
+      existingSummary = this.fetchSummaryThread(discussions, input.run.runId);
+      return existingSummary;
+    };
+
     const diffRefs = await this.fetchMergeRequestDiffRefs(input.repo, reviewNumber, input.credential.token).catch((error) => {
       const message = error instanceof Error ? error.message : String(error);
       errors.push(message);
@@ -142,14 +159,30 @@ export class GitLabReviewPostingAdapter implements ReviewPostingAdapter {
       }
 
       try {
-        const response = await this.postGitLabInlineFinding({
-          repo: input.repo,
-          reviewNumber,
-          finding,
-          marker,
-          diffRefs,
-          token: input.credential.token
-        });
+        const response = await retryReviewPosting<{ noteId: string; noteUrl?: string }>(
+          {
+            operation: async () => {
+              await refreshFindingThreads();
+              const existingThread = findingsByMarker.get(finding.findingId);
+              if (existingThread) {
+                return {
+                  noteId: existingThread.noteId,
+                  noteUrl: existingThread.noteUrl
+                };
+              }
+              return this.postGitLabInlineFinding({
+                repo: input.repo,
+                reviewNumber,
+                finding,
+                marker,
+                diffRefs,
+                token: input.credential.token
+              });
+            },
+            maxAttempts: REVIEW_POSTING_MAX_ATTEMPTS
+          },
+          `GitLab inline posting failed for finding ${finding.findingId}`
+        );
         result.posted = true;
         result.inline = true;
         result.summary = false;
@@ -169,14 +202,31 @@ export class GitLabReviewPostingAdapter implements ReviewPostingAdapter {
     let summary: ReviewPostingResult['summary'];
     if (needsSummary.length > 0) {
       try {
-        const postedSummary = await this.postGitLabSummaryNote({
-          repo: input.repo,
-          reviewNumber,
-          runId: input.run.runId,
-          findings: needsSummary,
-          token: input.credential.token,
-          existingSummaryNoteId: existingSummary?.noteId
-        });
+        const postedSummary = await retryReviewPosting<{ noteId: string; noteUrl?: string }>(
+          {
+            operation: async () => {
+              const observedSummary = await refreshSummary();
+              if (observedSummary?.noteId) {
+                return observedSummary;
+              }
+              const createdSummary = await this.postGitLabSummaryNote({
+                repo: input.repo,
+                reviewNumber,
+                runId: input.run.runId,
+                findings: needsSummary,
+                token: input.credential.token,
+                existingSummaryNoteId: existingSummary?.noteId
+              });
+              existingSummary = {
+                noteId: createdSummary.noteId,
+                noteUrl: createdSummary.noteUrl
+              };
+              return createdSummary;
+            },
+            maxAttempts: REVIEW_POSTING_MAX_ATTEMPTS
+          },
+          `GitLab summary posting failed for review run ${input.run.runId}`
+        );
         summary = {
           posted: true,
           providerThreadId: postedSummary.noteId,

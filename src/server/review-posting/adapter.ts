@@ -52,6 +52,40 @@ export const REVIEW_MARKER_TAG = 'agentboard-review';
 const FINDING_MARKER_RE = /<!--\s*agentboard-review:finding:([^:\s>]+):([^>\s]+)\s*-->/g;
 const SUMMARY_MARKER_RE = /<!--\s*agentboard-review:summary:([^>\s]+)\s*-->/;
 
+export const REVIEW_POSTING_MAX_ATTEMPTS = 3;
+
+type RetryOptions = {
+  maxAttempts?: number;
+  operation: () => Promise<unknown>;
+};
+
+export async function retryReviewPosting<T>(
+  input: RetryOptions,
+  context: string
+): Promise<T> {
+  const maxAttempts = input.maxAttempts ?? REVIEW_POSTING_MAX_ATTEMPTS;
+  let lastError: unknown;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      return await input.operation() as T;
+    } catch (error) {
+      lastError = error;
+      if (attempt >= maxAttempts) {
+        break;
+      }
+      console.error(
+        `${context}: attempt ${attempt} failed (${error instanceof Error ? error.message : String(error)}). Retrying with attempt ${attempt + 1}/${maxAttempts}.`
+      );
+    }
+  }
+
+  if (lastError instanceof Error) {
+    throw new Error(`${context}: all ${maxAttempts} attempts failed. Last error: ${lastError.message}`);
+  }
+  throw new Error(`${context}: all ${maxAttempts} attempts failed. Last error: ${String(lastError)}`);
+}
+
 export function buildReviewFindingMarker(findingId: string, runId: string) {
   return `<!-- agentboard-review:finding:${findingId}:${runId} -->`;
 }

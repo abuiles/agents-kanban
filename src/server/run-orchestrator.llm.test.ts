@@ -361,6 +361,107 @@ describe('executeRunJob LLM adapter coverage', () => {
     });
     expect(harness.getRun().timeline.some((entry) => entry.note?.includes('Auto review started (round 1).'))).toBe(true);
     expect(harness.getRun().timeline.some((entry) => entry.note?.includes('Review completed (round 1; 1 findings, 1 posted).'))).toBe(true);
+    expect(harness.getRun().timeline.some((entry) => entry.status === 'PR_OPEN')).toBe(true);
+    expect(harness.getRun().timeline.some((entry) => entry.note?.includes('Pull request opened.'))).toBe(true);
+  });
+
+  it('supports manual review-only rerun and increments review round', async () => {
+    const task = buildTask({
+      sourceRef: 'https://jira.example.com/browse/AK-123',
+      uiMeta: {
+        llmAdapter: 'codex',
+        llmModel: 'gpt-5.3-codex',
+        llmReasoningEffort: 'medium'
+      }
+    });
+    const repo = buildRepo({
+      autoReview: {
+        enabled: true,
+        provider: 'jira',
+        postInline: false
+      }
+    });
+    const harness = createHarness(task, repo);
+    (harness.env as unknown as { JIRA_TOKEN?: string }).JIRA_TOKEN = 'jira-token-test';
+    const sandbox = buildSandbox([
+      { type: 'stdout', data: 'Applied fix.\n' },
+      { type: 'exit', exitCode: 0 }
+    ]);
+    const baseExec = sandbox.exec.bind(sandbox);
+    sandbox.exec = async (command) => {
+      if (command.includes('/workspace/prompt-last-message.txt')) {
+        return {
+          success: true,
+          exitCode: 0,
+          stdout: '\n===CODEX_LAST_MESSAGE===\n{"findings":[{"severity":"low","title":"Follow-up formatting issue","description":"Whitespace should be consistent.","filePath":"src/styles.ts","lineStart":4}]}\n'
+        };
+      }
+      return baseExec(command);
+    };
+    sandboxState.current = sandbox;
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/rest/api/2/issue/AK-123/comment') && init?.method === 'POST') {
+        return new Response(JSON.stringify({ id: '301' }), { status: 200 });
+      }
+      if (url.includes('/rest/api/2/issue/AK-123/comment')) {
+        return new Response(JSON.stringify({ comments: [] }), { status: 200 });
+      }
+      throw new Error(`Unexpected fetch URL: ${url}`);
+    }));
+
+    await executeRunJob(
+      harness.env,
+      {
+        tenantId: 'tenant_legacy',
+        repoId: repo.repoId,
+        taskId: task.taskId,
+        runId: 'run_1',
+        mode: 'full_run'
+      },
+      async () => {}
+    );
+
+    const firstRound = harness.getRun().reviewExecution;
+    expect(firstRound).toMatchObject({ round: 1, status: 'completed' });
+    expect(harness.getRun().reviewPostState).toMatchObject({ round: 1, status: 'completed', postedCount: 1 });
+
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/rest/api/2/issue/AK-123/comment') && init?.method === 'POST') {
+        return new Response(JSON.stringify({ id: '401' }), { status: 200 });
+      }
+      if (url.includes('/rest/api/2/issue/AK-123/comment')) {
+        return new Response(JSON.stringify({
+          comments: []
+        }), { status: 200 });
+      }
+      throw new Error(`Unexpected fetch URL: ${url}`);
+    }));
+
+    await executeRunJob(
+      harness.env,
+      {
+        tenantId: 'tenant_legacy',
+        repoId: repo.repoId,
+        taskId: task.taskId,
+        runId: 'run_1',
+        mode: 'review_only'
+      },
+      async () => {}
+    );
+
+    const secondRound = harness.getRun().reviewExecution;
+    expect(secondRound).toMatchObject({ round: 2, status: 'completed', trigger: 'manual_rerun' });
+    expect(secondRound?.enabled).toBe(true);
+    expect(harness.getRun().reviewPostState).toMatchObject({
+      provider: 'jira',
+      round: 2,
+      status: 'completed',
+      postedCount: 1
+    });
+    expect(harness.getRun().timeline.some((entry) => entry.note?.includes('Manual review started (round 2).'))).toBe(true);
+    expect(harness.getRun().timeline.some((entry) => entry.note?.includes('Review completed (round 2;'))).toBe(true);
   });
 
   it('skips auto-review when effective setting is disabled', async () => {

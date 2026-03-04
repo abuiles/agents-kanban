@@ -6,9 +6,11 @@ import {
   type ReviewPostingResult,
   type ReviewReplyContext,
   type ReviewReplyFetchInput,
+  retryReviewPosting,
   buildReviewFindingBody,
   buildReviewFindingMarker,
-  extractFindingIdsFromText
+  extractFindingIdsFromText,
+  REVIEW_POSTING_MAX_ATTEMPTS
 } from './adapter';
 
 type JiraIssueComment = {
@@ -57,18 +59,30 @@ export class JiraReviewPostingAdapter implements ReviewPostingAdapter {
       };
     }
 
-    const existingComments = await this.fetchExistingComments(target.host, target.issueKey, input.credential.token);
-    const existingMap = new Map<string, string>();
-    for (const comment of existingComments) {
-      const existingMarkerIds = extractFindingIdsFromText(this.toJiraBodyText(comment.body));
-      const commentId = comment.id;
-      if (!commentId) {
-        continue;
+    const loadExistingCommentMap = async (): Promise<Map<string, string>> => {
+      const existingComments = await this.fetchExistingComments(target.host, target.issueKey, input.credential.token);
+      const map = new Map<string, string>();
+      for (const comment of existingComments) {
+        const existingMarkerIds = extractFindingIdsFromText(this.toJiraBodyText(comment.body));
+        const commentId = comment.id;
+        if (!commentId) {
+          continue;
+        }
+        for (const findingId of existingMarkerIds) {
+          map.set(findingId, commentId);
+        }
       }
-      for (const findingId of existingMarkerIds) {
-        existingMap.set(findingId, commentId);
-      }
-    }
+      return map;
+    };
+
+    const existingMap = await loadExistingCommentMap();
+    const refreshExistingMap = async () => {
+      const refreshed = await loadExistingCommentMap();
+      existingMap.clear();
+      refreshed.forEach((value, key) => {
+        existingMap.set(key, value);
+      });
+    };
 
     const results: ReviewPostingFindingRecord[] = [];
     const updatedFindings = [...input.findings];
@@ -97,20 +111,34 @@ export class JiraReviewPostingAdapter implements ReviewPostingAdapter {
         includeLocation: Boolean(finding.filePath)
       });
       try {
-        const response = await this.requestJson<JiraCommentResponse>(
-          target.host,
-          `/rest/api/2/issue/${encodeURIComponent(target.issueKey)}/comment`,
-          input.credential.token,
+        const commentId = await retryReviewPosting<string | undefined>(
           {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ body } satisfies JiraCommentRequestPayload)
-          }
+            operation: async () => {
+              await refreshExistingMap();
+              const retryCommentId = existingMap.get(finding.findingId);
+              if (retryCommentId) {
+                return retryCommentId;
+              }
+              const response = await this.requestJson<JiraCommentResponse>(
+                target.host,
+                `/rest/api/2/issue/${encodeURIComponent(target.issueKey)}/comment`,
+                input.credential.token,
+                {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ body } satisfies JiraCommentRequestPayload)
+                }
+              );
+              return response.id;
+            },
+            maxAttempts: REVIEW_POSTING_MAX_ATTEMPTS
+          },
+          `Jira posting failed for finding ${finding.findingId}`
         );
-        if (response.id) {
+        if (commentId) {
           record.posted = true;
-          record.providerThreadId = response.id;
-          record.providerThreadUrl = `${target.host}/browse/${target.issueKey}?focusedCommentId=${response.id}&page=com.atlassian.jira.plugin.system.issuetabpanels:comment-tabpanel#comment-${response.id}`;
+          record.providerThreadId = commentId;
+          record.providerThreadUrl = `${target.host}/browse/${target.issueKey}?focusedCommentId=${commentId}&page=com.atlassian.jira.plugin.system.issuetabpanels:comment-tabpanel#comment-${commentId}`;
           this.updateFindingRecord(updatedFindings, finding.findingId, record.providerThreadId);
         }
       } catch (error) {

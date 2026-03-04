@@ -11,6 +11,11 @@ Use this flow to verify:
 - code changes are committed and pushed
 - review/preview/evidence lifecycle is tracked
 - attach paths are available (`/api/runs/:runId/terminal`, `/api/runs/:runId/ws`)
+- Stage 6 auto-review/change-loop behavior:
+  - run reaches review state
+  - review auto-posting executes and writes review artifacts
+  - selective request-changes with provider-reply context
+  - manual review rerun keeps execution metadata updated
 
 ## 2) Required accounts and keys
 
@@ -20,6 +25,7 @@ The runtime resolves SCM and OpenAI credentials from Worker secrets only:
 
 - `GITHUB_TOKEN`
 - `GITLAB_TOKEN`
+- `JIRA_TOKEN` (required for Jira review posting)
 - `OPENAI_API_KEY`
 - Optional platform support-admin bootstrap via worker env:
   - `PLATFORM_ADMIN_EMAIL`
@@ -36,10 +42,11 @@ BASE="http://localhost:5173/api"
 ```bash
 npx wrangler secret put GITHUB_TOKEN
 npx wrangler secret put GITLAB_TOKEN
+npx wrangler secret put JIRA_TOKEN
 npx wrangler secret put OPENAI_API_KEY
 ```
 
-Set only the providers you use (`GITHUB_TOKEN` for GitHub repos, `GITLAB_TOKEN` for GitLab repos).
+Set only the providers you use (`GITHUB_TOKEN` for GitHub repos, `GITLAB_TOKEN` for GitLab repos, `JIRA_TOKEN` when review provider is Jira).
 
 ## 3) Required infrastructure bindings
 
@@ -181,6 +188,11 @@ You can continue to use `npx wrangler dev` for Worker-only execution on the lega
    - `POST /api/runs/:runId/retry`
    - `POST /api/runs/:runId/preview`
    - `POST /api/runs/:runId/evidence`
+6.5. Validate auto-review and selective follow-up loop
+   - `GET /api/runs/:runId` (verify `reviewExecution` fields and round count)
+   - `GET /api/runs/:runId/artifacts` (verify `reviewFindingsJson` and `reviewMarkdown` review pointers)
+   - `POST /api/runs/:runId/request-changes` with `reviewSelection` payload
+   - `POST /api/runs/:runId/review` to execute manual review-only rerun
 
 ## 7) Operator attach smoke test
 
@@ -209,6 +221,7 @@ You can continue to use `npx wrangler dev` for Worker-only execution on the lega
 | --- | --- | --- | --- |
 | GitHub | `host` from repo URL (e.g., `github.com`) | Worker secret | `GITHUB_TOKEN` |
 | GitLab | `host` from repo URL (e.g., `gitlab.com` or self-hosted host) | Worker secret | `GITLAB_TOKEN` |
+| Jira | `host` from issue URL (e.g., `jira.example.com`) | Worker secret | `JIRA_TOKEN` |
 
 ## 10) Sync with docs
 

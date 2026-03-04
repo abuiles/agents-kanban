@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AgentRun, Repo, Task, ReviewFinding } from '../../ui/domain/types';
 import {
   buildReviewFindingMarker,
-  buildReviewSummaryMarker
+  buildReviewSummaryMarker,
+  retryReviewPosting
 } from './adapter';
 import { GitLabReviewPostingAdapter } from './gitlab';
 import { JiraReviewPostingAdapter } from './jira';
@@ -75,6 +76,34 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+describe('retryReviewPosting', () => {
+  it('retries failed operations before succeeding', async () => {
+    const attempts = vi.fn()
+      .mockRejectedValueOnce(new Error('temporary failure'))
+      .mockResolvedValueOnce('ok');
+
+    const result = await retryReviewPosting<string>({
+      operation: attempts,
+      maxAttempts: 2
+    }, 'temporary retry coverage');
+
+    expect(result).toBe('ok');
+    expect(attempts).toHaveBeenCalledTimes(2);
+  });
+
+  it('throws after exhausting all retry attempts', async () => {
+    const attempts = vi.fn().mockRejectedValue(new Error('hard failure'));
+
+    const promise = retryReviewPosting<string>({
+      operation: attempts,
+      maxAttempts: 2
+    }, 'exhaustion coverage');
+
+    await expect(promise).rejects.toThrow('exhaustion coverage');
+    expect(attempts).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe('GitLab review posting adapter', () => {
   it('posts inline findings when location is available and reuses existing notes by marker', async () => {
     const fetchMock = vi.fn()
@@ -89,14 +118,34 @@ describe('GitLab review posting adapter', () => {
           diff_refs: { base_sha: 'base', head_sha: 'head', start_sha: 'start' }
         }), { status: 200 })
       )
-      .mockResolvedValueOnce(new Response(JSON.stringify({
-        id: 900,
-        notes: [{ id: '200', body: 'inline marker', url: 'https://gitlab.example.com/note/200' }]
-      }), { status: 201 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({
-        id: 901,
-        notes: [{ id: '201', body: 'inline marker', url: 'https://gitlab.example.com/note/201' }]
-      }), { status: 201 }));
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify([
+          {
+            id: 'd2',
+            notes: [{ id: '101', body: 'ignore me' }]
+          }
+        ]), { status: 200 })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({
+          id: 900,
+          notes: [{ id: '200', body: 'inline marker', url: 'https://gitlab.example.com/note/200' }]
+        }), { status: 201 })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify([
+          {
+            id: 'd3',
+            notes: [{ id: '102', body: 'ignore me' }]
+          }
+        ]), { status: 200 })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({
+          id: 901,
+          notes: [{ id: '201', body: 'inline marker', url: 'https://gitlab.example.com/note/201' }]
+        }), { status: 201 })
+      );
     vi.stubGlobal('fetch', fetchMock);
 
     const adapter = new GitLabReviewPostingAdapter();
@@ -116,6 +165,7 @@ describe('GitLab review posting adapter', () => {
     expect(result.findings.every((entry) => entry.posted && entry.inline)).toBe(true);
     expect(result.summary).toBeUndefined();
     expect(result.findings[0].providerThreadId).toBe('200');
+    expect(fetchMock).toHaveBeenCalledTimes(6);
   });
 
   it('falls back to a summary note when inline posting is unavailable', async () => {
@@ -221,10 +271,72 @@ describe('Jira review posting adapter', () => {
     expect(result.findings).toHaveLength(2);
     expect(result.findings.every((entry) => entry.posted)).toBe(true);
     expect(result.findings[0].providerThreadId).toBe('9001');
-    expect(fetchMock).toHaveBeenCalledTimes(3);
-    expect(fetchMock.mock.calls[1]?.[0]).toContain('/rest/api/2/issue/ABC-123/comment');
-    const secondBody = JSON.parse((fetchMock.mock.calls[1]?.[1] as RequestInit).body as string).body;
+    expect(result.findings[1].providerThreadId).toBe('9002');
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+    expect(fetchMock.mock.calls[2]?.[0]).toContain('/rest/api/2/issue/ABC-123/comment');
+    const secondBody = JSON.parse((fetchMock.mock.calls[2]?.[1] as RequestInit).body as string).body;
     expect(secondBody).toContain('Location: src/main.ts:10');
+  });
+
+  it('reuses existing Jira marker mapping for idempotent retry-safe posting', async () => {
+    const markerA = buildReviewFindingMarker('rf_1', 'run_demo');
+    const markerB = buildReviewFindingMarker('rf_2', 'run_demo');
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        comments: [
+          { id: '101', body: markerA },
+          { id: '102', body: markerB }
+        ]
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ comments: [{ id: '101', body: markerA }] }), { status: 200 }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ comments: [{ id: '102', body: markerB }] }), { status: 200 })
+      );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const adapter = new JiraReviewPostingAdapter();
+    const result = await adapter.postFindings({
+      repo: buildRepo({ scmProvider: 'github', scmBaseUrl: 'https://github.com', projectPath: 'acme/demo', autoReview: undefined }),
+      task: buildTask(),
+      run: buildRun({ reviewUrl: 'https://jira.example.com/browse/ABC-123' }),
+      findings: [
+        buildFinding({ findingId: 'rf_1', filePath: 'src/main.ts', lineStart: 10 }),
+        buildFinding({ findingId: 'rf_2', filePath: 'src/lib.ts', lineStart: 30, lineEnd: 35 })
+      ],
+      credential: { token: 'jira_token' }
+    });
+
+    expect(result.findings).toHaveLength(2);
+    expect(result.findings.every((entry) => entry.posted)).toBe(true);
+    expect(result.findings[0].providerThreadId).toBe('101');
+    expect(result.findings[1].providerThreadId).toBe('102');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('recovers to existing Jira marker during retry without posting duplicates', async () => {
+    const markerA = buildReviewFindingMarker('rf_1', 'run_demo');
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ comments: [] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ comments: [] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response('temporary failure', { status: 502 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ comments: [{ id: '901', body: markerA }] }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const adapter = new JiraReviewPostingAdapter();
+    const result = await adapter.postFindings({
+      repo: buildRepo({ scmProvider: 'github', scmBaseUrl: 'https://github.com', projectPath: 'acme/demo', autoReview: undefined }),
+      task: buildTask(),
+      run: buildRun({ reviewUrl: 'https://jira.example.com/browse/ABC-123' }),
+      findings: [buildFinding({ findingId: 'rf_1', filePath: 'src/main.ts', lineStart: 10 })],
+      credential: { token: 'jira_token' }
+    });
+
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0]).toMatchObject({ posted: true, providerThreadId: '901' });
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    const postPath = fetchMock.mock.calls[2]?.[0];
+    expect(typeof postPath).toBe('string');
+    expect(postPath as string).toContain('/rest/api/2/issue/ABC-123/comment');
   });
 
   it('maps Jira replies back to finding IDs from marker-bearing comments', async () => {
