@@ -94,13 +94,28 @@ export function buildReviewSummaryMarker(runId: string) {
   return `<!-- agentboard-review:summary:${runId} -->`;
 }
 
-export function extractFindingIdsFromText(text: string) {
-  const ids = new Set<string>();
+export function extractFindingMarkersFromText(text: string) {
+  const markers: Array<{ findingId: string; runId: string }> = [];
+  const seen = new Set<string>();
   const matcher = new RegExp(FINDING_MARKER_RE.source, 'gi');
   for (let match = matcher.exec(text); match; match = matcher.exec(text)) {
-    if (match[1]) {
-      ids.add(match[1]);
+    if (!match[1] || !match[2]) {
+      continue;
     }
+    const key = `${match[1]}:${match[2]}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    markers.push({ findingId: match[1], runId: match[2] });
+  }
+  return markers;
+}
+
+export function extractFindingIdsFromText(text: string) {
+  const ids = new Set<string>();
+  for (const marker of extractFindingMarkersFromText(text)) {
+    ids.add(marker.findingId);
   }
   return [...ids];
 }
