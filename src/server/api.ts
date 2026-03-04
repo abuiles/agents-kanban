@@ -43,7 +43,10 @@ import {
   handleTenantUsageSummary,
   handleUpdateRepo,
   handleUpdateTask,
-  handleUpsertScmCredential
+  handleUpsertScmCredential,
+  handleSlackCommands,
+  handleSlackEvents,
+  handleSlackInteractions
 } from './router';
 import { json } from './http/response';
 
@@ -65,6 +68,15 @@ apiRouter.delete('/api/me/api-tokens/:tokenId', (c: Context) =>
 );
 
 apiRouter.get('/api/board', (c: Context) => handleBoard(c.req.raw, c.env as Env));
+apiRouter.post('/api/integrations/slack/commands', (c: Context) =>
+  handleSlackCommands(c.req.raw, c.env as Env, c.executionCtx as unknown as ExecutionContext<unknown>)
+);
+apiRouter.post('/api/integrations/slack/events', (c: Context) =>
+  handleSlackEvents(c.req.raw, c.env as Env)
+);
+apiRouter.post('/api/integrations/slack/interactions', (c: Context) =>
+  handleSlackInteractions(c.req.raw, c.env as Env)
+);
 apiRouter.get('/api/board/ws', (c: Context) => handleBoardWs(c.req.raw, c.env as Env));
 apiRouter.get('/api/repos', (c: Context) => handleListRepos(c.req.raw, c.env as Env));
 apiRouter.post('/api/repos', (c: Context) => handleCreateRepo(c.req.raw, c.env as Env));

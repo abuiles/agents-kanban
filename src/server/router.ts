@@ -31,6 +31,11 @@ import { scheduleRunJob } from './run-orchestrator';
 import { getRunUsage, getTenantRunUsage, getTenantUsageSummary } from './usage-reporting';
 import { normalizeTenantId, normalizeTenantIdStrict } from '../shared/tenant';
 import * as tenantAuthDb from './tenant-auth-db';
+import {
+  handleSlackCommands as handleSlackCommandsHandler,
+  handleSlackEvents as handleSlackEventsHandler,
+  handleSlackInteractions as handleSlackInteractionsHandler
+} from './integrations/slack/handlers';
 
 const BOARD_OBJECT_NAME = 'agentboard';
 
@@ -62,6 +67,18 @@ async function resolveTenantContextFromRequest(env: Env, request: Request, optio
 
 function parsePathParam(value: string | undefined) {
   return decodeURIComponent(value ?? '');
+}
+
+export async function handleSlackCommands(request: Request, env: Env, ctx: ExecutionContext<unknown>): Promise<Response> {
+  return handleSlackCommandsHandler(request, env, ctx);
+}
+
+export async function handleSlackEvents(request: Request, env: Env): Promise<Response> {
+  return handleSlackEventsHandler(request, env);
+}
+
+export async function handleSlackInteractions(request: Request, env: Env): Promise<Response> {
+  return handleSlackInteractionsHandler(request, env);
 }
 
 export async function handleAuthSignup(request: Request, env: Env): Promise<Response> {
