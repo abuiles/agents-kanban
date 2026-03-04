@@ -174,8 +174,23 @@ function buildSandbox(events: SandboxEvent[]): FakeSandbox {
       if (command.includes('git rev-parse origin/main')) {
         return { success: true, exitCode: 0, stdout: 'a'.repeat(40) };
       }
+      if (command.includes('git merge-base HEAD origin/main')) {
+        return { success: true, exitCode: 0, stdout: 'a'.repeat(40) };
+      }
       if (command.includes('git rev-parse HEAD')) {
         return { success: true, exitCode: 0, stdout: currentHead.value };
+      }
+      if (command.includes('git reset --soft')) {
+        currentHead.value = 'a'.repeat(40);
+        this.currentHead = currentHead.value;
+        return { success: true, exitCode: 0, stdout: '' };
+      }
+      if (command.includes('git cat-file -e HEAD:')) {
+        return {
+          success: false,
+          exitCode: 128,
+          stderr: 'fatal: path does not exist in HEAD'
+        };
       }
       if (command.includes('git add -A && git commit -m')) {
         currentHead.value = 'b'.repeat(40);
@@ -906,7 +921,7 @@ describe('executeRunJob LLM adapter coverage', () => {
     sandbox.exec = async (command) => {
       if (command.includes('git status --short')) {
         statusCall += 1;
-        if (statusCall === 2) {
+        if (statusCall === 2 || statusCall === 4) {
           return { success: true, exitCode: 0, stdout: 'M src/index.ts\n' };
         }
         return { success: true, exitCode: 0, stdout: '' };
@@ -926,8 +941,13 @@ describe('executeRunJob LLM adapter coverage', () => {
       contextNotesPath: '.agentskanban/context/run-context.md'
     });
     expect(harness.events.some((event) => event.eventType === 'run.checkpoint.created')).toBe(true);
+    expect(harness.events.some((event) => event.eventType === 'run.review_prep.context_cleaned')).toBe(true);
+    expect(harness.events.some((event) => event.eventType === 'run.review_prep.squashed')).toBe(true);
     expect(harness.getRun().timeline.some((entry) => entry.note?.includes('Checkpoint created (codex):'))).toBe(true);
-    expect(harness.commands.filter((command) => command.command.includes('git add -A && git commit -m')).length).toBe(1);
+    expect(harness.getRun().timeline.some((entry) => entry.note?.includes('Review prep removed checkpoint context notes'))).toBe(true);
+    expect(harness.getRun().timeline.some((entry) => entry.note?.includes('Review prep squashed 1 checkpoint commit'))).toBe(true);
+    expect(harness.commands.some((command) => command.command.includes('git reset --soft'))).toBe(true);
+    expect(harness.commands.filter((command) => command.command.includes('git add -A && git commit -m')).length).toBe(2);
     expect(sandbox.writes).toContainEqual({
       path: '/workspace/repo/.agentskanban/context/run-context.md',
       contents: [
@@ -1001,6 +1021,113 @@ describe('executeRunJob LLM adapter coverage', () => {
     expect(harness.events.some((event) => event.eventType === 'run.checkpoint.created')).toBe(false);
     expect(sandbox.writes.some((entry) => entry.path.includes('.agentskanban/context/run-context.md'))).toBe(false);
     expect(harness.commands.some((command) => command.command.includes('agentskanban checkpoint'))).toBe(false);
+  });
+
+  it('prepares first review push with context cleanup and checkpoint-history squash', async () => {
+    const task = buildTask();
+    const repo = buildRepo({
+      checkpointConfig: {
+        enabled: true,
+        triggerMode: 'phase_boundary',
+        contextNotes: {
+          enabled: true,
+          filePath: '.agentskanban/context/run-context.md',
+          cleanupBeforeReview: true
+        },
+        reviewPrep: {
+          squashBeforeFirstReviewOpen: true,
+          rewriteOnChangeRequestRerun: false
+        }
+      }
+    });
+    const harness = createHarness(task, repo);
+    const sandbox = buildSandbox([
+      { type: 'stdout', data: 'Applied fix.\n' },
+      { type: 'exit', exitCode: 0 }
+    ]);
+    const baseExec = sandbox.exec.bind(sandbox);
+    let statusCall = 0;
+    sandbox.exec = async (command) => {
+      if (command.includes('git status --short')) {
+        statusCall += 1;
+        if (statusCall === 2 || statusCall === 4) {
+          return { success: true, exitCode: 0, stdout: 'M src/index.ts\n' };
+        }
+        return { success: true, exitCode: 0, stdout: '' };
+      }
+      return baseExec(command);
+    };
+    sandboxState.current = sandbox;
+
+    await executeRunJob(harness.env, { tenantId: 'tenant_legacy', repoId: repo.repoId, taskId: task.taskId, runId: 'run_1', mode: 'full_run' }, async () => {});
+
+    expect(harness.getRun().status).toBe('DONE');
+    expect(harness.getRun().checkpoints).toHaveLength(1);
+    expect(harness.commands.some((command) => command.command.includes('git ls-files --error-unmatch .agentskanban/context/run-context.md'))).toBe(true);
+    expect(harness.commands.some((command) => command.command.includes('rm -f .agentskanban/context/run-context.md'))).toBe(true);
+    expect(harness.commands.some((command) => command.command.includes('git merge-base HEAD origin/main'))).toBe(true);
+    expect(harness.commands.some((command) => command.command.includes('git reset --soft'))).toBe(true);
+    expect(harness.commands.some((command) => command.command.includes('git cat-file -e HEAD:.agentskanban/context/run-context.md'))).toBe(true);
+    expect(harness.events.some((event) => event.eventType === 'run.review_prep.context_cleaned')).toBe(true);
+    expect(harness.events.some((event) => event.eventType === 'run.review_prep.squashed')).toBe(true);
+  });
+
+  it('preserves no-rewrite behavior for change-request reruns on existing review branches', async () => {
+    const task = buildTask();
+    const repo = buildRepo({
+      checkpointConfig: {
+        enabled: true,
+        triggerMode: 'phase_boundary',
+        contextNotes: {
+          enabled: true,
+          filePath: '.agentskanban/context/run-context.md',
+          cleanupBeforeReview: true
+        },
+        reviewPrep: {
+          squashBeforeFirstReviewOpen: true,
+          rewriteOnChangeRequestRerun: false
+        }
+      }
+    });
+    const harness = createHarness(task, repo);
+    await harness.repoBoard.transitionRun('run_1', {
+      reviewUrl: 'https://github.com/abuiles/minions/pull/17',
+      reviewNumber: 17,
+      reviewProvider: 'github',
+      changeRequest: {
+        prompt: 'Please revise this change.',
+        requestedAt: '2026-03-02T01:00:00.000Z'
+      }
+    });
+
+    const sandbox = buildSandbox([
+      { type: 'stdout', data: 'Applied fix.\n' },
+      { type: 'exit', exitCode: 0 }
+    ]);
+    const baseExec = sandbox.exec.bind(sandbox);
+    let statusCall = 0;
+    sandbox.exec = async (command) => {
+      if (command.includes('git status --short')) {
+        statusCall += 1;
+        if (statusCall === 2) {
+          return { success: true, exitCode: 0, stdout: 'M src/index.ts\n' };
+        }
+        return { success: true, exitCode: 0, stdout: '' };
+      }
+      return baseExec(command);
+    };
+    sandboxState.current = sandbox;
+
+    await executeRunJob(harness.env, { tenantId: 'tenant_legacy', repoId: repo.repoId, taskId: task.taskId, runId: 'run_1', mode: 'full_run' }, async () => {});
+
+    expect(harness.getRun().status).toBe('DONE');
+    expect(harness.commands.some((command) => command.command.includes('git reset --soft'))).toBe(false);
+    expect(harness.commands.some((command) => command.command.includes('rm -f .agentskanban/context/run-context.md'))).toBe(true);
+    expect(harness.events.some((event) => event.eventType === 'run.review_prep.context_cleaned')).toBe(true);
+    expect(harness.events.some((event) => event.eventType === 'run.review_prep.squashed')).toBe(false);
+    expect(
+      harness.getRun().timeline.some((entry) => entry.note?.includes('Review prep skipped checkpoint-history squash to preserve no-rewrite'))
+    ).toBe(true);
   });
 
   it('emits partial usage entries when the run fails', async () => {
