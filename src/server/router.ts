@@ -43,7 +43,8 @@ import {
   handleSlackInteractions as handleSlackInteractionsHandler
 } from './integrations/slack/handlers';
 import { handleGitlabWebhook as handleGitlabWebhookHandler } from './integrations/gitlab/handlers';
-import type { SentinelRun } from '../ui/domain/types';
+import type { Repo, SentinelRun } from '../ui/domain/types';
+import { getScmAdapter } from './scm/registry';
 
 const BOARD_OBJECT_NAME = 'agentboard';
 
@@ -647,32 +648,35 @@ async function progressRepoSentinel(
   tenantId: string,
   repoId: string,
   run: SentinelRun | undefined,
-  ctx: ExecutionContext<unknown>
+  ctx: ExecutionContext<unknown>,
+  repo: Repo
 ) {
   if (!run || run.status !== 'running') {
     return run;
   }
+  const board = env.REPO_BOARD.getByName(repoId);
   const controller = new SentinelController({
     env,
     tenantId,
+    repo: repo as Repo,
     repoId,
+    scmAdapter: getScmAdapter(repo),
     run,
     board: {
       listTasks: async (tenantIdOverride?: string, options?: { tags?: string[] }) => {
-        const board = env.REPO_BOARD.getByName(repoId);
         return board.listTasks(tenantIdOverride, options);
       },
       getTask: async (taskId: string, tenantIdOverride?: string) => {
-        const board = env.REPO_BOARD.getByName(repoId);
         return board.getTask(taskId, tenantIdOverride);
       },
       startRun: async (taskId: string, options?: { tenantId?: string }) => {
-        const board = env.REPO_BOARD.getByName(repoId);
         return board.startRun(taskId, options);
       },
-      transitionRun: async (runId: string, patch: { workflowInstanceId: string; orchestrationMode: 'workflow' | 'local_alarm' }) => {
-        const board = env.REPO_BOARD.getByName(repoId);
+      transitionRun: async (runId, patch) => {
         return board.transitionRun(runId, patch);
+      },
+      updateTask: async (taskId, patch) => {
+        return board.updateTask(taskId, patch);
       }
     },
     executionContext: ctx
@@ -699,7 +703,7 @@ export async function handleStartRepoSentinel(
       ? (input.scopeValue ?? repo.sentinelConfig?.defaultGroupTag)
       : undefined;
     const transition = await transitionRepoSentinelRun(env, requestContext.activeTenantId, repoId, 'start', { scopeType, scopeValue });
-    await progressRepoSentinel(env, requestContext.activeTenantId, repoId, transition.run, ctx);
+    await progressRepoSentinel(env, requestContext.activeTenantId, repoId, transition.run, ctx, repo);
     const state = await buildRepoSentinelState(env, requestContext.activeTenantId, repoId);
     return json({
       repoId,
@@ -739,7 +743,7 @@ export async function handleResumeRepoSentinel(
     const repoId = parsePathParam(params.repoId);
     const repo = await assertRepoAccess(env, board, requestContext, repoId);
     const transition = await transitionRepoSentinelRun(env, requestContext.activeTenantId, repoId, 'resume');
-    await progressRepoSentinel(env, requestContext.activeTenantId, repoId, transition.run, ctx);
+    await progressRepoSentinel(env, requestContext.activeTenantId, repoId, transition.run, ctx, repo);
     const state = await buildRepoSentinelState(env, requestContext.activeTenantId, repoId);
     return json({
       repoId,
