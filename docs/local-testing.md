@@ -16,6 +16,11 @@ Use this flow to verify:
   - review auto-posting executes and writes review artifacts
   - selective request-changes with provider-reply context
   - manual review rerun keeps execution metadata updated
+- Stage 7 native sentinel behavior:
+  - start/pause/resume/stop control actions
+  - serial task progression within sentinel scope
+  - review gate wait/merge/remediation events are operator-actionable
+  - no sentinel side effects when `sentinelConfig.enabled = false`
 
 ## 2) Required accounts and keys
 
@@ -193,6 +198,15 @@ You can continue to use `npx wrangler dev` for Worker-only execution on the lega
    - `GET /api/runs/:runId/artifacts` (verify `reviewFindingsJson` and `reviewMarkdown` review pointers)
    - `POST /api/runs/:runId/request-changes` with `reviewSelection` payload
    - `POST /api/runs/:runId/review` to execute manual review-only rerun
+6.6 Validate native sentinel orchestration
+   - `PATCH /api/repos/:repoId/sentinel/config` with `{ "enabled": true }` plus desired scope/gate/policy
+   - `POST /api/repos/:repoId/sentinel/start`
+   - `GET /api/repos/:repoId/sentinel` and verify:
+     - `run.status`, `run.currentTaskId`, `run.attemptCount`
+     - `diagnostics.latestErrorEvent` / `diagnostics.latestWarningEvent`
+     - event timeline includes `task.activated`, `run.started`, and merge/gate/remediation events
+   - `POST /api/repos/:repoId/sentinel/pause`, `resume`, and `stop`
+   - `GET /api/repos/:repoId/sentinel/events?limit=50` for operator timeline review
 
 ## 7) Operator attach smoke test
 
@@ -214,6 +228,13 @@ You can continue to use `npx wrangler dev` for Worker-only execution on the lega
   - Confirm preview mode and preview check config are correct
 - Evidence never finishes
   - Verify Playwright install can access the baseline and preview URL from sandbox
+- Sentinel does not start
+  - Confirm `repo.sentinelConfig.enabled = true` (start/resume are rejected when disabled)
+  - Confirm SCM token exists (`GITHUB_TOKEN` or `GITLAB_TOKEN`) for merge/review state checks
+- Sentinel appears stuck
+  - Check `GET /api/repos/:repoId/sentinel` diagnostics (`latestErrorEvent`, `latestWarningEvent`)
+  - Check event metadata fields (`reason`, `reviewGate*`, `attempt`, `attemptCount`, `taskId`, `runId`)
+  - Validate conflict policy limits (`conflictPolicy.maxAttempts`) and whether sentinel is paused on exhaustion
 
 ## 9) Provider key reference (quick)
 
@@ -232,8 +253,30 @@ Keep this guide aligned with:
 - [docs/plans/archive/stage_3_5.md](plans/archive/stage_3_5.md)
 - [docs/plans/archive/stage_4.md](plans/archive/stage_4.md)
 - [docs/sandbox-capacity-and-scheduling.md](sandbox-capacity-and-scheduling.md)
+- [docs/integrations/sentinel-orchestration.md](integrations/sentinel-orchestration.md)
 
-## 11) Parallel run sanity check
+## 12) Script-to-native sentinel migration
+
+Use this sequence to migrate from script automation to native APIs/UI:
+
+1. Disable external loops:
+   - stop `scripts/autopilot.sh`
+   - stop `scripts/p5-sentinel.sh`
+2. Enable native sentinel config on one pilot repo:
+   - `PATCH /api/repos/:repoId/sentinel/config` with `"enabled": true`
+3. Start in narrow scope first:
+   - group scope (`scopeType = "group"`, `scopeValue = <tag>`)
+4. Observe for one full lifecycle:
+   - activation -> run -> review gate -> merge/remediation -> done
+5. Expand to global scope only after stable event timelines and expected remediation behavior.
+
+Fallback:
+
+- Immediate stop: `POST /api/repos/:repoId/sentinel/stop`
+- Disable native sentinel: `PATCH /api/repos/:repoId/sentinel/config` with `"enabled": false`
+- Resume manual run/task operation (`POST /api/tasks/:taskId/run`) while sentinel remains disabled
+
+## 13) Parallel run sanity check
 
 Use this check before enabling wide concurrency:
 

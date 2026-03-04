@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
+  acquireSentinelRunLease,
   appendSentinelEvent,
   acceptTenantInvite,
   createSentinelRun,
@@ -30,6 +31,7 @@ import {
   resolvePendingTenantInviteByToken,
   resolveSessionByToken,
   revokeUserApiToken,
+  releaseSentinelRunLease,
   signup
 } from './tenant-auth-db';
 
@@ -333,30 +335,128 @@ class FakeTenantAuthDb {
     }
 
     if (sql.includes('INSERT INTO sentinel_runs')) {
+      const tenantId = String(bindings[1]);
+      const repoId = String(bindings[2]);
+      const status = String(bindings[5]);
+      if (status === 'running') {
+        const duplicateRunning = this.sentinelRuns.some((row) => (
+          row.tenant_id === tenantId
+          && row.repo_id === repoId
+          && row.status === 'running'
+        ));
+        if (duplicateRunning) {
+          throw new Error('UNIQUE constraint failed: sentinel_runs.tenant_id, sentinel_runs.repo_id');
+        }
+      }
       this.sentinelRuns.push({
         external_id: String(bindings[0]),
-        tenant_id: String(bindings[1]),
-        repo_id: String(bindings[2]),
+        tenant_id: tenantId,
+        repo_id: repoId,
         scope_type: String(bindings[3]),
         scope_value: bindings[4] ? String(bindings[4]) : null,
-        status: String(bindings[5]),
+        status,
         current_task_id: bindings[6] ? String(bindings[6]) : null,
         current_run_id: bindings[7] ? String(bindings[7]) : null,
         attempt_count: Number(bindings[8]),
         started_at: String(bindings[9]),
-        updated_at: String(bindings[10])
+        updated_at: String(bindings[10]),
+        controller_lease_token: null,
+        controller_lease_expires_at: null
       });
       return {};
     }
 
-    if (sql.includes('UPDATE sentinel_runs')) {
+    if (sql.includes('UPDATE sentinel_runs') && sql.includes('current_task_id IS NULL')) {
+      const taskId = bindings[0] ? String(bindings[0]) : null;
+      const taskRunId = bindings[1] ? String(bindings[1]) : null;
+      const updatedAt = String(bindings[2]);
+      const tenantId = String(bindings[3]);
+      const runId = String(bindings[4]);
+      this.sentinelRuns = this.sentinelRuns.map((row) => (
+        row.tenant_id === tenantId && row.external_id === runId && row.status === 'running' && !row.current_task_id
+          ? {
+              ...row,
+              current_task_id: taskId,
+              current_run_id: taskRunId,
+              updated_at: updatedAt
+            }
+          : row
+      ));
+      return {};
+    }
+
+    if (sql.includes('SELECT external_id FROM sentinel_runs')) {
+      const tenantId = String(bindings[0]);
+      const runId = String(bindings[1]);
+      const status = String(bindings[2]);
+      const taskId = String(bindings[3]);
+      return {
+        results: this.sentinelRuns
+          .filter((row) => row.tenant_id === tenantId && row.external_id === runId && row.status === status && row.current_task_id === taskId)
+          .map((row) => ({ external_id: row.external_id }))
+      };
+    }
+
+    if (sql.includes('UPDATE sentinel_runs') && sql.includes('controller_lease_token = ?, controller_lease_expires_at = ?, updated_at = ?')) {
+      const leaseToken = String(bindings[0]);
+      const leaseExpiresAt = String(bindings[1]);
+      const updatedAt = String(bindings[2]);
+      const tenantId = String(bindings[3]);
+      const runId = String(bindings[4]);
+      const sameLeaseToken = String(bindings[5]);
+      const now = String(bindings[6]);
+      this.sentinelRuns = this.sentinelRuns.map((row) => {
+        const canAcquire = (
+          row.tenant_id === tenantId
+          && row.external_id === runId
+          && row.status === 'running'
+          && (
+            !row.controller_lease_token
+            || row.controller_lease_token === sameLeaseToken
+            || !row.controller_lease_expires_at
+            || String(row.controller_lease_expires_at) <= now
+          )
+        );
+        if (!canAcquire) {
+          return row;
+        }
+        return {
+          ...row,
+          controller_lease_token: leaseToken,
+          controller_lease_expires_at: leaseExpiresAt,
+          updated_at: updatedAt
+        };
+      });
+      return {};
+    }
+
+    if (sql.includes('UPDATE sentinel_runs') && sql.includes('controller_lease_token = NULL, controller_lease_expires_at = NULL')) {
+      const updatedAt = String(bindings[0]);
+      const tenantId = String(bindings[1]);
+      const runId = String(bindings[2]);
+      const leaseToken = String(bindings[3]);
+      this.sentinelRuns = this.sentinelRuns.map((row) => (
+        row.tenant_id === tenantId && row.external_id === runId && row.controller_lease_token === leaseToken
+          ? {
+              ...row,
+              controller_lease_token: null,
+              controller_lease_expires_at: null,
+              updated_at: updatedAt
+            }
+          : row
+      ));
+      return {};
+    }
+
+    if (sql.includes('UPDATE sentinel_runs') && sql.includes('SET status = ?, current_task_id = ?, current_run_id = ?, attempt_count = ?, updated_at = ?,')) {
       const status = String(bindings[0]);
       const currentTaskId = bindings[1] ? String(bindings[1]) : null;
       const currentRunId = bindings[2] ? String(bindings[2]) : null;
       const attemptCount = Number(bindings[3]);
       const updatedAt = String(bindings[4]);
-      const tenantId = String(bindings[5]);
-      const runId = String(bindings[6]);
+      const shouldClearLease = Number(bindings[5]) === 1;
+      const tenantId = String(bindings[7]);
+      const runId = String(bindings[8]);
       this.sentinelRuns = this.sentinelRuns.map((row) => (
         row.tenant_id === tenantId && row.external_id === runId
           ? {
@@ -365,7 +465,8 @@ class FakeTenantAuthDb {
               current_task_id: currentTaskId,
               current_run_id: currentRunId,
               attempt_count: attemptCount,
-              updated_at: updatedAt
+              updated_at: updatedAt,
+              ...(shouldClearLease ? { controller_lease_token: null, controller_lease_expires_at: null } : {})
             }
           : row
       ));
@@ -379,6 +480,15 @@ class FakeTenantAuthDb {
       if (sql.includes('external_id = ?')) {
         const runId = String(bindings[index]);
         rows = rows.filter((row) => row.external_id === runId);
+        index += 1;
+      }
+      if (sql.includes('controller_lease_token = ?')) {
+        const leaseToken = String(bindings[index++]);
+        rows = rows.filter((row) => row.controller_lease_token === leaseToken);
+      }
+      if (sql.includes('controller_lease_expires_at > ?')) {
+        const now = String(bindings[index++]);
+        rows = rows.filter((row) => row.controller_lease_expires_at && String(row.controller_lease_expires_at) > now);
       }
       if (sql.includes('repo_id = ?')) {
         const repoId = String(bindings[index++]);
@@ -1044,5 +1154,47 @@ describe('tenant-auth-db single-tenant auth store', () => {
 
     const repoRuns = await listSentinelRuns(env, tenantId, { repoId });
     expect(repoRuns.map((entry) => entry.id)).toContain(run.id);
+  });
+
+  it('keeps running sentinel creation idempotent and enforces lease ownership', async () => {
+    const tenantId = 'tenant_local';
+    const repoId = 'repo_alpha';
+    const run = await createSentinelRun(env, {
+      tenantId,
+      repoId,
+      scopeType: 'global',
+      status: 'running'
+    });
+
+    const duplicate = await createSentinelRun(env, {
+      tenantId,
+      repoId,
+      scopeType: 'group',
+      scopeValue: 'payments',
+      status: 'running'
+    });
+    expect(duplicate.id).toBe(run.id);
+
+    const lease1 = await acquireSentinelRunLease(env, tenantId, run.id, {
+      leaseToken: 'lease_a',
+      ttlSeconds: 30,
+      now: '2026-01-01T00:00:00.000Z'
+    });
+    expect(lease1?.id).toBe(run.id);
+
+    const lease2 = await acquireSentinelRunLease(env, tenantId, run.id, {
+      leaseToken: 'lease_b',
+      ttlSeconds: 30,
+      now: '2026-01-01T00:00:10.000Z'
+    });
+    expect(lease2).toBeNull();
+
+    await releaseSentinelRunLease(env, tenantId, run.id, 'lease_a', '2026-01-01T00:00:11.000Z');
+    const lease3 = await acquireSentinelRunLease(env, tenantId, run.id, {
+      leaseToken: 'lease_b',
+      ttlSeconds: 30,
+      now: '2026-01-01T00:00:12.000Z'
+    });
+    expect(lease3?.id).toBe(run.id);
   });
 });

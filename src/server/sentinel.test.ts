@@ -555,6 +555,75 @@ describe('SentinelController', () => {
     );
   });
 
+  it('advances serially to the next eligible task after current task completes', async () => {
+    const finishedTask = makeTask({ taskId: 'task_done', status: 'DONE' });
+    const nextTask = makeTask({
+      taskId: 'task_next',
+      status: 'READY',
+      createdAt: '2026-01-02T00:00:00.000Z'
+    });
+    const blockedTask = makeTask({
+      taskId: 'task_blocked',
+      status: 'READY',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      dependencyState: { blocked: true, reasons: [{ upstreamTaskId: 'task_upstream', state: 'not_ready', message: 'waiting' }] }
+    });
+
+    board.getTask.mockResolvedValue(makeTaskDetail(finishedTask));
+    board.listTasks.mockResolvedValue([blockedTask, nextTask]);
+    board.startRun.mockResolvedValue({
+      runId: 'run_task_next',
+      taskId: nextTask.taskId,
+      repoId: nextTask.repoId,
+      status: 'RUNNING',
+      branchName: 'task-next'
+    } as unknown as AgentRun);
+    board.transitionRun.mockResolvedValue({} as unknown as AgentRun);
+
+    const clearSentinelRunTask = vi.fn().mockResolvedValue(makeBaseSentinelRun({}));
+    const claimSentinelRunTask = vi.fn().mockResolvedValue(makeBaseSentinelRun({
+      currentTaskId: nextTask.taskId
+    }));
+    const linkSentinelRunTaskId = vi.fn().mockResolvedValue(makeBaseSentinelRun({
+      currentTaskId: nextTask.taskId,
+      currentRunId: 'run_task_next'
+    }));
+
+    const controller = new SentinelController({
+      env: {} as Env,
+      tenantId: 'tenant_local',
+      repo,
+      repoId: 'repo_1',
+      scmAdapter,
+      run: makeBaseSentinelRun({
+        currentTaskId: finishedTask.taskId,
+        currentRunId: 'run_done'
+      }),
+      board,
+      executionContext: {} as unknown as ExecutionContext<unknown>,
+      appendSentinelEvent,
+      clearSentinelRunTask,
+      claimSentinelRunTask,
+      linkSentinelRunTaskId,
+      scheduleRun: vi.fn().mockResolvedValue({ id: 'local-alarm-run_task_next' }),
+      getScmCredential: vi.fn().mockResolvedValue({ token: 'gh_token' })
+    });
+
+    const outcome = await controller.progress();
+
+    expect(outcome.progressed).toBe(true);
+    expect(outcome.reason).toBe('started');
+    expect(clearSentinelRunTask).toHaveBeenCalledTimes(1);
+    expect(claimSentinelRunTask).toHaveBeenCalledWith(
+      expect.anything(),
+      'tenant_local',
+      'sentinel_run_1',
+      'task_next',
+      undefined
+    );
+    expect(board.startRun).toHaveBeenCalledWith('task_next', { tenantId: 'tenant_local' });
+  });
+
   it('tracks bounded remediation retries and pauses sentinel when exhausted', async () => {
     const reviewRun = makeReviewRun();
     const reviewTask = makeTask({ taskId: 'task_review', status: 'REVIEW' });

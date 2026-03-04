@@ -44,6 +44,14 @@ AgentsKanban helps you run AI-assisted software work the same way you already ma
 - Replies from providers can be included in follow-up prompts when `reviewSelection.includeReplies = true`.
 - Manual reruns are available via `POST /api/runs/:runId/review`.
 
+### Native Sentinel Orchestration
+
+- Repo-level sentinel controls are available in API/UI (`start`, `pause`, `resume`, `stop`) when `sentinelConfig.enabled = true`.
+- Sentinel emits an operator timeline (`GET /api/repos/:repoId/sentinel/events`) with actionable metadata for gate, merge, and remediation paths.
+- Progression is race-hardened with per-run controller leases and idempotent start semantics (single running sentinel per repo).
+- Merge and remediation behavior follows repo policy (`reviewGate`, `mergePolicy`, `conflictPolicy`).
+- Script-based automation (`scripts/autopilot.sh`, `scripts/p5-sentinel.sh`) can be retired in favor of native sentinel controls.
+
 ### Operator Controls
 
 - Watch live run events and command history
@@ -207,7 +215,7 @@ npx wrangler d1 migrations apply TENANT_DB --remote
 npm run bootstrap:single-tenant -- --input ./scripts/bootstrap-single-tenant.example.json --remote
 ```
 
-For deeper setup and troubleshooting, see [docs/local-testing.md](docs/local-testing.md), [docs/features-and-api.md](docs/features-and-api.md), and [docs/integrations/auto-review-change-loop.md](docs/integrations/auto-review-change-loop.md).
+For deeper setup and troubleshooting, see [docs/local-testing.md](docs/local-testing.md), [docs/features-and-api.md](docs/features-and-api.md), [docs/integrations/auto-review-change-loop.md](docs/integrations/auto-review-change-loop.md), and [docs/integrations/sentinel-orchestration.md](docs/integrations/sentinel-orchestration.md).
 
 ## Onboarding Prompts
 

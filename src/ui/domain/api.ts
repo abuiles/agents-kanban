@@ -50,6 +50,11 @@ export type RepoSentinelStatus = {
   config: RepoSentinelConfig;
   run?: SentinelRun;
   events: SentinelEvent[];
+  diagnostics?: {
+    latestEvent?: SentinelEvent;
+    latestErrorEvent?: SentinelEvent;
+    latestWarningEvent?: SentinelEvent;
+  };
 };
 
 export type RepoSentinelActionResult = RepoSentinelStatus & {

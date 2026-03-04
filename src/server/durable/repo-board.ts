@@ -1184,18 +1184,12 @@ function inferLoopStateFromStatus(nextStatus: AgentRun['status'], currentLoopSta
     return currentLoopState === 'PAUSED' ? 'PAUSED' : 'FAILED';
   }
   if (currentLoopState === 'REVIEW_PENDING' || currentLoopState === 'DECISION_REQUIRED') {
-    if (nextStatus === 'FAILED' || nextStatus === 'DONE') {
-      return nextStatus === 'DONE' ? 'DONE' : currentLoopState === 'PAUSED' ? 'PAUSED' : 'FAILED';
-    }
     return currentLoopState;
   }
   if (['BOOTSTRAPPING', 'RUNNING_CODEX', 'OPERATOR_CONTROLLED', 'RUNNING_TESTS', 'PUSHING_BRANCH'].includes(nextStatus)) {
     return 'RUNNING';
   }
   if (nextStatus === 'PR_OPEN' || nextStatus === 'WAITING_PREVIEW' || nextStatus === 'EVIDENCE_RUNNING') {
-    if (currentLoopState === 'REVIEW_PENDING' || currentLoopState === 'DECISION_REQUIRED') {
-      return currentLoopState;
-    }
     if (currentLoopState === 'RERUN_QUEUED') {
       return 'RUNNING';
     }
