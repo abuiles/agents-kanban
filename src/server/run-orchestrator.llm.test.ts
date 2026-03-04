@@ -22,7 +22,7 @@ const sandboxState: { current: FakeSandbox | undefined } = { current: undefined 
 type FakeScmAdapter = {
   provider: 'github' | 'gitlab';
   buildCloneUrl: (repo: Repo, credential: { token: string }) => string;
-  inferSourceRefFromTask: () => undefined;
+  inferSourceRefFromTask: (task: Pick<Task, 'sourceRef' | 'title' | 'description' | 'taskPrompt'>, repo: Repo) => string | undefined;
   normalizeSourceRef: (sourceRef: string) => { kind: 'branch'; value: string; label: string };
   createReviewRequest: () => Promise<{ provider: 'github' | 'gitlab'; number: number; url: string }>;
   upsertRunComment: () => Promise<void>;
@@ -301,7 +301,7 @@ beforeEach(() => {
   scmState.current = {
     provider: 'github',
     buildCloneUrl: (_repo, credential) => `https://x-access-token:${credential.token}@github.com/abuiles/minions.git`,
-    inferSourceRefFromTask: () => undefined,
+    inferSourceRefFromTask: (task) => task.sourceRef?.trim() || undefined,
     normalizeSourceRef: (sourceRef) => ({ kind: 'branch', value: sourceRef, label: sourceRef }),
     createReviewRequest: async () => ({
       provider: 'github',
@@ -316,6 +316,140 @@ beforeEach(() => {
 });
 
 describe('executeRunJob LLM adapter coverage', () => {
+  it('keeps explicit source ref when remote ref exists', async () => {
+    const task = buildTask({
+      sourceRef: 'main',
+      uiMeta: {
+        llmAdapter: 'codex',
+        llmModel: 'gpt-5.3-codex',
+        llmReasoningEffort: 'medium'
+      }
+    });
+    const repo = buildRepo({
+      defaultBranch: 'master'
+    });
+    const harness = createHarness(task, repo);
+    const sandbox = buildSandbox([
+      { type: 'stdout', data: 'Applied fix.\n' },
+      { type: 'exit', exitCode: 0 }
+    ]);
+    const baseExec = sandbox.exec.bind(sandbox);
+    sandbox.exec = async (command) => {
+      sandbox.commands.push(command);
+      if (/git fetch origin .*main.*&& git checkout -B/.test(command)) {
+        return { success: true, exitCode: 0, stdout: '' };
+      }
+      return baseExec(command);
+    };
+    sandboxState.current = sandbox;
+
+    await executeRunJob(harness.env, {
+      tenantId: 'tenant_legacy',
+      repoId: repo.repoId,
+      taskId: task.taskId,
+      runId: 'run_1',
+      mode: 'full_run'
+    }, async () => {});
+
+    expect(sandbox.commands.some((command) => /git fetch origin .*main.*&& git checkout -B/.test(command))).toBe(true);
+    expect(sandbox.commands.some((command) => /git fetch origin .*master.*&& git checkout -B/.test(command))).toBe(false);
+    expect(harness.logs.some((entry) => entry.message.includes('falling back to default branch'))).toBe(false);
+  });
+
+  it('falls back to default branch when explicit source ref is missing on remote', async () => {
+    const task = buildTask({
+      sourceRef: 'main',
+      uiMeta: {
+        llmAdapter: 'codex',
+        llmModel: 'gpt-5.3-codex',
+        llmReasoningEffort: 'medium'
+      }
+    });
+    const repo = buildRepo({
+      defaultBranch: 'master'
+    });
+    const harness = createHarness(task, repo);
+    const sandbox = buildSandbox([
+      { type: 'stdout', data: 'Applied fix.\n' },
+      { type: 'exit', exitCode: 0 }
+    ]);
+    const baseExec = sandbox.exec.bind(sandbox);
+    sandbox.exec = async (command) => {
+      sandbox.commands.push(command);
+      if (/git fetch origin .*main.*&& git checkout -B/.test(command)) {
+        return {
+          success: false,
+          exitCode: 128,
+          stderr: "fatal: couldn't find remote ref main"
+        };
+      }
+      if (/git fetch origin .*master.*&& git checkout -B/.test(command)) {
+        return { success: true, exitCode: 0, stdout: '' };
+      }
+      return baseExec(command);
+    };
+    sandboxState.current = sandbox;
+
+    await executeRunJob(harness.env, {
+      tenantId: 'tenant_legacy',
+      repoId: repo.repoId,
+      taskId: task.taskId,
+      runId: 'run_1',
+      mode: 'full_run'
+    }, async () => {});
+
+    expect(sandbox.commands.some((command) => /git fetch origin .*main.*&& git checkout -B/.test(command))).toBe(true);
+    expect(sandbox.commands.some((command) => /git fetch origin .*master.*&& git checkout -B/.test(command))).toBe(true);
+    expect(harness.logs.some((entry) => entry.message.includes('falling back to default branch master'))).toBe(true);
+  });
+
+  it('fails clearly when explicit source ref, default branch, and remote HEAD are all missing', async () => {
+    const task = buildTask({
+      sourceRef: 'main',
+      uiMeta: {
+        llmAdapter: 'codex',
+        llmModel: 'gpt-5.3-codex',
+        llmReasoningEffort: 'medium'
+      }
+    });
+    const repo = buildRepo({
+      defaultBranch: 'master'
+    });
+    const harness = createHarness(task, repo);
+    const sandbox = buildSandbox([
+      { type: 'stdout', data: 'Applied fix.\n' },
+      { type: 'exit', exitCode: 0 }
+    ]);
+    const baseExec = sandbox.exec.bind(sandbox);
+    sandbox.exec = async (command) => {
+      sandbox.commands.push(command);
+      if (/git fetch origin .*main.*&& git checkout -B/.test(command)
+        || /git fetch origin .*master.*&& git checkout -B/.test(command)
+        || /git fetch origin .*HEAD.*&& git checkout -B/.test(command)) {
+        return {
+          success: false,
+          exitCode: 128,
+          stderr: "fatal: couldn't find remote ref"
+        };
+      }
+      return baseExec(command);
+    };
+    sandboxState.current = sandbox;
+
+    await expect(executeRunJob(harness.env, {
+      tenantId: 'tenant_legacy',
+      repoId: repo.repoId,
+      taskId: task.taskId,
+      runId: 'run_1',
+      mode: 'full_run'
+    }, async () => {})).rejects.toThrow(/fallback to master and remote HEAD also failed/i);
+
+    expect(harness.getRun().status).toBe('FAILED');
+    expect(harness.logs.some((entry) => entry.message.includes('falling back to default branch master'))).toBe(true);
+    expect(harness.logs.some((entry) => entry.message.includes('falling back to remote HEAD'))).toBe(true);
+    expect(sandbox.commands.some((command) => /git fetch origin .*HEAD.*&& git checkout -B/.test(command))).toBe(true);
+  });
+
   it('auto-runs review on REVIEW entry when enabled', async () => {
     const task = buildTask({
       sourceRef: 'https://jira.example.com/browse/AK-123',

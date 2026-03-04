@@ -2357,6 +2357,20 @@ async function prepareRunBranchFromTaskSource(
   run: Awaited<ReturnType<RepoBoardDO['getRun']>>,
   scmAdapter: ScmAdapter
 ) {
+  const runFetchCheckout = async (fetchSpec: string) => {
+    const checkout = await sandbox.exec(
+      `cd /workspace/repo && git fetch origin ${shellEscape(fetchSpec)} && git checkout -B ${shellEscape(run.branchName)} FETCH_HEAD`
+    );
+    await appendCommandLogs(repoBoard, runId, 'bootstrap', checkout.stdout, checkout.stderr);
+    return checkout;
+  };
+  const isMissingRemoteRefError = (stderr: string | undefined) => {
+    const normalized = (stderr ?? '').toLowerCase();
+    return normalized.includes("couldn't find remote ref")
+      || normalized.includes('could not find remote ref')
+      || normalized.includes("fatal: couldn't find remote ref");
+  };
+
   if (run.changeRequest?.prompt && getRunReviewUrl(run)) {
     await repoBoard.appendRunLogs(runId, [
       buildRunLog(runId, `Preparing existing review branch ${run.branchName} for a review change request.`, 'bootstrap')
@@ -2419,12 +2433,45 @@ async function prepareRunBranchFromTaskSource(
   await repoBoard.appendRunLogs(runId, [
     buildRunLog(runId, `Preparing run branch ${run.branchName} from explicit source ref ${normalized.label}.`, 'bootstrap')
   ]);
-  const checkout = await sandbox.exec(
-    `cd /workspace/repo && git fetch origin ${shellEscape(getScmSourceRefFetchSpec(normalized))} && git checkout -B ${shellEscape(run.branchName)} FETCH_HEAD`
-  );
-  await appendCommandLogs(repoBoard, runId, 'bootstrap', checkout.stdout, checkout.stderr);
-  if (!checkout.success) {
-    throw new Error(checkout.stderr || `Failed to prepare run branch ${run.branchName} from ${normalized.label}.`);
+  const explicitFetchSpec = getScmSourceRefFetchSpec(normalized);
+  const explicitCheckout = await runFetchCheckout(explicitFetchSpec);
+  if (explicitCheckout.success) {
+    return;
+  }
+  if (!isMissingRemoteRefError(explicitCheckout.stderr)) {
+    throw new Error(explicitCheckout.stderr || `Failed to prepare run branch ${run.branchName} from ${normalized.label}.`);
+  }
+
+  if (repo.defaultBranch.trim() && repo.defaultBranch.trim() !== explicitFetchSpec) {
+    await repoBoard.appendRunLogs(runId, [
+      buildRunLog(
+        runId,
+        `Source ref ${normalized.label} is unavailable on remote; falling back to default branch ${repo.defaultBranch}.`,
+        'bootstrap'
+      )
+    ]);
+    const defaultCheckout = await runFetchCheckout(repo.defaultBranch);
+    if (defaultCheckout.success) {
+      return;
+    }
+    if (!isMissingRemoteRefError(defaultCheckout.stderr)) {
+      throw new Error(defaultCheckout.stderr || `Failed to prepare run branch ${run.branchName} from fallback default branch ${repo.defaultBranch}.`);
+    }
+  }
+
+  await repoBoard.appendRunLogs(runId, [
+    buildRunLog(
+      runId,
+      `Default fallback was unavailable; falling back to remote HEAD for run branch ${run.branchName}.`,
+      'bootstrap'
+    )
+  ]);
+  const headCheckout = await runFetchCheckout('HEAD');
+  if (!headCheckout.success) {
+    throw new Error(
+      `Failed to prepare run branch ${run.branchName} from ${normalized.label}; fallback to ${repo.defaultBranch} and remote HEAD also failed.`
+      + (headCheckout.stderr?.trim() ? ` Last error: ${headCheckout.stderr.trim()}` : '')
+    );
   }
 }
 
