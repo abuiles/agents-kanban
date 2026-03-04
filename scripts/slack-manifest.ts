@@ -179,13 +179,25 @@ function buildManifest(options: CliOptions) {
     },
     oauth_config: {
       scopes: {
-        bot: ['commands', 'chat:write']
+        bot: [
+          'commands',
+          'chat:write',
+          'channels:history',
+          'groups:history',
+          'im:history',
+          'mpim:history'
+        ]
       }
     },
     settings: {
       event_subscriptions: {
         request_url: `${options.baseUrl}/api/integrations/slack/events`,
-        bot_events: []
+        bot_events: [
+          'message.channels',
+          'message.groups',
+          'message.im',
+          'message.mpim'
+        ]
       },
       interactivity: {
         is_enabled: true,
