@@ -6,6 +6,10 @@ import type {
   CreateInviteInput,
   CreateInviteResult,
   CreateRepoInput,
+  RepoSentinelActionResult,
+  RepoSentinelConfigInput,
+  RepoSentinelStartInput,
+  RepoSentinelStatus,
   CreateTaskInput,
   CreateUserApiTokenInput,
   CreateUserApiTokenResult,
@@ -159,6 +163,52 @@ export class HttpAgentBoardApi implements AgentBoardApi {
     const repo = await this.request<Repo>(`/api/repos/${encodeURIComponent(repoId)}`, { method: 'PATCH', body: JSON.stringify(patch) });
     await this.refresh();
     return repo;
+  }
+
+  async getRepoSentinel(repoId: string) {
+    return this.request<RepoSentinelStatus>(`/api/repos/${encodeURIComponent(repoId)}/sentinel`);
+  }
+
+  async updateRepoSentinelConfig(repoId: string, patch: RepoSentinelConfigInput) {
+    const status = await this.request<RepoSentinelStatus>(`/api/repos/${encodeURIComponent(repoId)}/sentinel/config`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch)
+    });
+    await this.refresh();
+    return status;
+  }
+
+  async startRepoSentinel(repoId: string, input?: RepoSentinelStartInput) {
+    return this.request<RepoSentinelActionResult>(`/api/repos/${encodeURIComponent(repoId)}/sentinel/start`, {
+      method: 'POST',
+      body: JSON.stringify(input ?? {})
+    });
+  }
+
+  async pauseRepoSentinel(repoId: string) {
+    return this.request<RepoSentinelActionResult>(`/api/repos/${encodeURIComponent(repoId)}/sentinel/pause`, {
+      method: 'POST',
+      body: JSON.stringify({})
+    });
+  }
+
+  async resumeRepoSentinel(repoId: string) {
+    return this.request<RepoSentinelActionResult>(`/api/repos/${encodeURIComponent(repoId)}/sentinel/resume`, {
+      method: 'POST',
+      body: JSON.stringify({})
+    });
+  }
+
+  async stopRepoSentinel(repoId: string) {
+    return this.request<RepoSentinelActionResult>(`/api/repos/${encodeURIComponent(repoId)}/sentinel/stop`, {
+      method: 'POST',
+      body: JSON.stringify({})
+    });
+  }
+
+  async listRepoSentinelEvents(repoId: string, options?: { limit?: number }) {
+    const query = options?.limit ? `?limit=${options.limit}` : '';
+    return this.request<RepoSentinelStatus['events']>(`/api/repos/${encodeURIComponent(repoId)}/sentinel/events${query}`);
   }
 
   async listScmCredentials() {

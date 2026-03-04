@@ -17,6 +17,7 @@ import {
   handleDebugSandboxRun,
   handleDeleteApiToken,
   handleDeleteTask,
+  handleGetRepoSentinel,
   handleGetRun,
   handleGetRunArtifacts,
   handleGetRunCommands,
@@ -33,12 +34,18 @@ import {
   handleListScmCredentials,
   handleListTasks,
   handleMe,
+  handlePatchRepoSentinelConfig,
+  handlePauseRepoSentinel,
   handleRequestChanges,
+  handleResumeRepoSentinel,
   handleRerunReview,
   handleRetryEvidence,
   handleRetryPreview,
   handleRetryRun,
   handleRunTask,
+  handleStartRepoSentinel,
+  handleStopRepoSentinel,
+  handleListRepoSentinelEvents,
   handleTakeoverRun,
   handleTenantRunUsage,
   handleTenantUsageSummary,
@@ -87,6 +94,27 @@ apiRouter.get('/api/repos', (c: Context) => handleListRepos(c.req.raw, c.env as 
 apiRouter.post('/api/repos', (c: Context) => handleCreateRepo(c.req.raw, c.env as Env));
 apiRouter.patch('/api/repos/:repoId', (c: Context) =>
   handleUpdateRepo(c.req.raw, c.env as Env, { repoId: c.req.param('repoId') })
+);
+apiRouter.get('/api/repos/:repoId/sentinel', (c: Context) =>
+  handleGetRepoSentinel(c.req.raw, c.env as Env, { repoId: c.req.param('repoId') })
+);
+apiRouter.patch('/api/repos/:repoId/sentinel/config', (c: Context) =>
+  handlePatchRepoSentinelConfig(c.req.raw, c.env as Env, { repoId: c.req.param('repoId') })
+);
+apiRouter.post('/api/repos/:repoId/sentinel/start', (c: Context) =>
+  handleStartRepoSentinel(c.req.raw, c.env as Env, { repoId: c.req.param('repoId') })
+);
+apiRouter.post('/api/repos/:repoId/sentinel/pause', (c: Context) =>
+  handlePauseRepoSentinel(c.req.raw, c.env as Env, { repoId: c.req.param('repoId') })
+);
+apiRouter.post('/api/repos/:repoId/sentinel/resume', (c: Context) =>
+  handleResumeRepoSentinel(c.req.raw, c.env as Env, { repoId: c.req.param('repoId') })
+);
+apiRouter.post('/api/repos/:repoId/sentinel/stop', (c: Context) =>
+  handleStopRepoSentinel(c.req.raw, c.env as Env, { repoId: c.req.param('repoId') })
+);
+apiRouter.get('/api/repos/:repoId/sentinel/events', (c: Context) =>
+  handleListRepoSentinelEvents(c.req.raw, c.env as Env, { repoId: c.req.param('repoId') })
 );
 
 apiRouter.get('/api/scm/credentials', (c: Context) => handleListScmCredentials(c.req.raw, c.env as Env));

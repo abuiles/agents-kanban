@@ -8,7 +8,7 @@ import { Modal } from './components/Modal';
 import { RunTerminal } from './components/RunTerminal';
 import { getTaskDetail, getTasksByColumn, getTasksForRepo } from './domain/selectors';
 import type { RunCommand, RunEvent, RunLogEntry, TaskStatus, TerminalBootstrap } from './domain/types';
-import type { AgentBoardApi, AuthSession, InviteRecord, UserApiTokenRecord } from './domain/api';
+import type { AgentBoardApi, AuthSession, InviteRecord, RepoSentinelStatus, UserApiTokenRecord } from './domain/api';
 import { getAgentBoardApi } from './api';
 import { downloadJson } from './store/import-export';
 import { getSelectedTaskIdFromUrl, setSelectedTaskIdInUrl } from './url-state';
@@ -54,6 +54,9 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
   const [createdApiToken, setCreatedApiToken] = useState<string | undefined>();
   const [apiTokenError, setApiTokenError] = useState<string | undefined>();
   const [taskSelectionHydrated, setTaskSelectionHydrated] = useState(false);
+  const [repoSentinelStatus, setRepoSentinelStatus] = useState<RepoSentinelStatus | undefined>();
+  const [repoSentinelLoading, setRepoSentinelLoading] = useState(false);
+  const [repoSentinelError, setRepoSentinelError] = useState<string | undefined>();
 
   const selectedRepoId = snapshot.ui.selectedRepoId;
   const selectedTaskId = snapshot.ui.selectedTaskId;
@@ -162,6 +165,26 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
       setSelectedTaskIdInUrl(undefined);
     }
   }, [api, selectedTaskId, snapshot.tasks, taskSelectionHydrated]);
+
+  useEffect(() => {
+    if (!repoToEditId) {
+      setRepoSentinelStatus(undefined);
+      setRepoSentinelError(undefined);
+      setRepoSentinelLoading(false);
+      return;
+    }
+    setRepoSentinelLoading(true);
+    setRepoSentinelError(undefined);
+    void api.getRepoSentinel(repoToEditId)
+      .then((status) => {
+        setRepoSentinelStatus(status);
+        setRepoSentinelLoading(false);
+      })
+      .catch((error) => {
+        setRepoSentinelError(error instanceof Error ? error.message : 'Failed to load sentinel status.');
+        setRepoSentinelLoading(false);
+      });
+  }, [api, repoToEditId]);
 
   useEffect(() => {
     if (!taskSelectionHydrated) {
@@ -377,6 +400,26 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
     }
   }
 
+  async function triggerRepoSentinelAction(
+    repoId: string,
+    action: 'start' | 'pause' | 'resume' | 'stop'
+  ) {
+    setRepoSentinelError(undefined);
+    try {
+      const result = action === 'start'
+        ? await api.startRepoSentinel(repoId)
+        : action === 'pause'
+          ? await api.pauseRepoSentinel(repoId)
+          : action === 'resume'
+            ? await api.resumeRepoSentinel(repoId)
+            : await api.stopRepoSentinel(repoId);
+      setRepoSentinelStatus(result);
+      setNotice(`Sentinel ${action}${result.changed ? ' applied' : ' already in target state'}.`);
+    } catch (error) {
+      setRepoSentinelError(error instanceof Error ? error.message : `Failed to ${action} sentinel.`);
+    }
+  }
+
   if (authLoading) {
     return <div className="min-h-screen px-4 py-8 text-slate-100">Loading...</div>;
   }
@@ -563,34 +606,100 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
 
       {repoToEdit ? (
         <Modal title={`Edit ${repoToEdit.projectPath ?? repoToEdit.slug}`} onClose={() => setRepoToEditId(undefined)}>
-          <RepoForm
-            initialValues={{
-              slug: repoToEdit.slug,
-              scmProvider: repoToEdit.scmProvider,
-              scmBaseUrl: repoToEdit.scmBaseUrl,
-              projectPath: repoToEdit.projectPath,
-              defaultBranch: repoToEdit.defaultBranch,
-              baselineUrl: repoToEdit.baselineUrl,
-              previewMode: repoToEdit.previewMode,
-              evidenceMode: repoToEdit.evidenceMode,
-              previewAdapter: repoToEdit.previewAdapter,
-              previewConfig: repoToEdit.previewConfig,
-              commitConfig: repoToEdit.commitConfig,
-              previewProvider: repoToEdit.previewProvider,
-              previewCheckName: repoToEdit.previewCheckName,
-              llmAdapter: repoToEdit.llmAdapter,
-              llmProfileId: repoToEdit.llmProfileId,
-              llmAuthBundleR2Key: repoToEdit.llmAuthBundleR2Key,
-              codexAuthBundleR2Key: repoToEdit.codexAuthBundleR2Key,
-              autoReview: repoToEdit.autoReview
-            }}
-            submitLabel="Save repo"
-            onSubmit={async (input) => {
-              await api.updateRepo(repoToEdit.repoId, input);
-              setRepoToEditId(undefined);
-              setNotice(`Updated ${input.projectPath ?? input.slug ?? repoToEdit.projectPath ?? repoToEdit.slug}.`);
-            }}
-          />
+          <div className="space-y-4">
+            <RepoForm
+              initialValues={{
+                slug: repoToEdit.slug,
+                scmProvider: repoToEdit.scmProvider,
+                scmBaseUrl: repoToEdit.scmBaseUrl,
+                projectPath: repoToEdit.projectPath,
+                defaultBranch: repoToEdit.defaultBranch,
+                baselineUrl: repoToEdit.baselineUrl,
+                previewMode: repoToEdit.previewMode,
+                evidenceMode: repoToEdit.evidenceMode,
+                previewAdapter: repoToEdit.previewAdapter,
+                previewConfig: repoToEdit.previewConfig,
+                commitConfig: repoToEdit.commitConfig,
+                previewProvider: repoToEdit.previewProvider,
+                previewCheckName: repoToEdit.previewCheckName,
+                llmAdapter: repoToEdit.llmAdapter,
+                llmProfileId: repoToEdit.llmProfileId,
+                llmAuthBundleR2Key: repoToEdit.llmAuthBundleR2Key,
+                codexAuthBundleR2Key: repoToEdit.codexAuthBundleR2Key,
+                autoReview: repoToEdit.autoReview,
+                sentinelConfig: repoToEdit.sentinelConfig
+              }}
+              submitLabel="Save repo"
+              onSubmit={async (input) => {
+                const { sentinelConfig, ...repoPatch } = input;
+                await api.updateRepo(repoToEdit.repoId, repoPatch);
+                if (sentinelConfig) {
+                  const status = await api.updateRepoSentinelConfig(repoToEdit.repoId, sentinelConfig);
+                  setRepoSentinelStatus(status);
+                }
+                setRepoToEditId(undefined);
+                setNotice(`Updated ${input.projectPath ?? input.slug ?? repoToEdit.projectPath ?? repoToEdit.slug}.`);
+              }}
+            />
+            <section className="rounded-xl border border-slate-800 bg-slate-950/40 p-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <div className="text-sm font-semibold text-slate-100">Sentinel status</div>
+                  <div className="mt-1 text-xs text-slate-400">
+                    {repoSentinelLoading
+                      ? 'Loading status...'
+                      : `Run state: ${repoSentinelStatus?.run?.status ?? 'idle'} · Scope: ${repoSentinelStatus?.run?.scopeType ?? 'n/a'}`}
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    className="rounded-lg border border-emerald-400/35 bg-emerald-500/10 px-3 py-1.5 text-xs text-emerald-100"
+                    onClick={() => void triggerRepoSentinelAction(repoToEdit.repoId, 'start')}
+                  >
+                    Start
+                  </button>
+                  <button
+                    type="button"
+                    className="rounded-lg border border-amber-400/35 bg-amber-500/10 px-3 py-1.5 text-xs text-amber-100"
+                    onClick={() => void triggerRepoSentinelAction(repoToEdit.repoId, 'pause')}
+                  >
+                    Pause
+                  </button>
+                  <button
+                    type="button"
+                    className="rounded-lg border border-cyan-400/35 bg-cyan-500/10 px-3 py-1.5 text-xs text-cyan-100"
+                    onClick={() => void triggerRepoSentinelAction(repoToEdit.repoId, 'resume')}
+                  >
+                    Resume
+                  </button>
+                  <button
+                    type="button"
+                    className="rounded-lg border border-rose-400/35 bg-rose-500/10 px-3 py-1.5 text-xs text-rose-100"
+                    onClick={() => void triggerRepoSentinelAction(repoToEdit.repoId, 'stop')}
+                  >
+                    Stop
+                  </button>
+                </div>
+              </div>
+              {repoSentinelError ? <div className="mt-2 text-sm text-rose-300">{repoSentinelError}</div> : null}
+              <div className="mt-3 max-h-52 space-y-2 overflow-auto">
+                {(repoSentinelStatus?.events ?? []).length ? (
+                  repoSentinelStatus?.events.map((event) => (
+                    <div key={event.id} className="rounded-lg border border-slate-800 bg-slate-950/70 px-3 py-2 text-xs text-slate-300">
+                      <div className="flex items-center justify-between gap-2">
+                        <span>{event.type}</span>
+                        <span className="text-slate-500">{new Date(event.at).toLocaleString()}</span>
+                      </div>
+                      <div className="mt-1 text-slate-400">{event.message}</div>
+                    </div>
+                  ))
+                ) : (
+                  <div className="text-xs text-slate-500">No sentinel events yet.</div>
+                )}
+              </div>
+            </section>
+          </div>
         </Modal>
       ) : null}
 

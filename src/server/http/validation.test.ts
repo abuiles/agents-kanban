@@ -6,7 +6,9 @@ import {
   parseCreateRepoInput,
   parseCreateTaskInput,
   parseCreateUserApiTokenInput,
+  parseStartRepoSentinelInput,
   parseRequestRunChangesInput,
+  parseUpdateRepoSentinelConfigInput,
   parseUpdateRepoInput,
   parseUpdateTaskInput,
   parseUpsertScmCredentialInput
@@ -325,6 +327,38 @@ describe('repo validation', () => {
         }
       })
     ).toThrow('Invalid sentinelConfig.mergePolicy.method.');
+  });
+
+  it('parses repo sentinel config patch payloads', () => {
+    expect(parseUpdateRepoSentinelConfigInput({
+      enabled: true,
+      conflictPolicy: {
+        maxAttempts: 4
+      }
+    })).toEqual({
+      enabled: true,
+      conflictPolicy: {
+        maxAttempts: 4
+      }
+    });
+  });
+
+  it('rejects invalid sentinel config patch payloads', () => {
+    expect(() => parseUpdateRepoSentinelConfigInput('invalid')).toThrow('Invalid sentinel config patch payload.');
+  });
+
+  it('parses sentinel start payloads', () => {
+    expect(parseStartRepoSentinelInput({
+      scopeType: 'group',
+      scopeValue: 'payments'
+    })).toEqual({
+      scopeType: 'group',
+      scopeValue: 'payments'
+    });
+  });
+
+  it('rejects invalid sentinel start payload scope types', () => {
+    expect(() => parseStartRepoSentinelInput({ scopeType: 'team' })).toThrow('Invalid scopeType.');
   });
 
   it('defaults repo auto-review provider and includes prompt when enabled', () => {

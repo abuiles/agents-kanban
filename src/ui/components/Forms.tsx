@@ -7,6 +7,7 @@ import type {
   LlmAdapter,
   LlmReasoningEffort,
   PreviewAdapterKind,
+  RepoSentinelConfig,
   Repo,
   ScmProvider,
   TaskContextLink,
@@ -97,6 +98,17 @@ export function RepoForm({
   const initialCommitMessageTemplate = initialValues?.commitConfig?.messageTemplate ?? '';
   const initialCommitMessageRegex = initialValues?.commitConfig?.messageRegex ?? '';
   const initialCommitMessageExamples = (initialValues?.commitConfig?.messageExamples ?? []).join('\n');
+  const initialSentinelEnabled = initialValues?.sentinelConfig?.enabled ?? false;
+  const initialSentinelGlobalMode = initialValues?.sentinelConfig?.globalMode ?? true;
+  const initialSentinelGroupTag = initialValues?.sentinelConfig?.defaultGroupTag ?? '';
+  const initialSentinelRequireChecksGreen = initialValues?.sentinelConfig?.reviewGate?.requireChecksGreen ?? true;
+  const initialSentinelRequireAutoReviewPass = initialValues?.sentinelConfig?.reviewGate?.requireAutoReviewPass ?? true;
+  const initialSentinelAutoMergeEnabled = initialValues?.sentinelConfig?.mergePolicy?.autoMergeEnabled ?? false;
+  const initialSentinelMergeMethod = initialValues?.sentinelConfig?.mergePolicy?.method ?? 'squash';
+  const initialSentinelDeleteBranch = initialValues?.sentinelConfig?.mergePolicy?.deleteBranch ?? true;
+  const initialSentinelRebaseBeforeMerge = initialValues?.sentinelConfig?.conflictPolicy?.rebaseBeforeMerge ?? true;
+  const initialSentinelRemediationEnabled = initialValues?.sentinelConfig?.conflictPolicy?.remediationEnabled ?? true;
+  const initialSentinelMaxAttempts = String(initialValues?.sentinelConfig?.conflictPolicy?.maxAttempts ?? 2);
 
   const [scmProvider, setScmProvider] = useState<ScmProvider>(initialScmProvider);
   const [scmBaseUrl, setScmBaseUrl] = useState(initialScmBaseUrl);
@@ -119,6 +131,17 @@ export function RepoForm({
   const [commitMessageTemplate, setCommitMessageTemplate] = useState(initialCommitMessageTemplate);
   const [commitMessageRegex, setCommitMessageRegex] = useState(initialCommitMessageRegex);
   const [commitMessageExamples, setCommitMessageExamples] = useState(initialCommitMessageExamples);
+  const [sentinelEnabled, setSentinelEnabled] = useState(initialSentinelEnabled);
+  const [sentinelGlobalMode, setSentinelGlobalMode] = useState(initialSentinelGlobalMode);
+  const [sentinelGroupTag, setSentinelGroupTag] = useState(initialSentinelGroupTag);
+  const [sentinelRequireChecksGreen, setSentinelRequireChecksGreen] = useState(initialSentinelRequireChecksGreen);
+  const [sentinelRequireAutoReviewPass, setSentinelRequireAutoReviewPass] = useState(initialSentinelRequireAutoReviewPass);
+  const [sentinelAutoMergeEnabled, setSentinelAutoMergeEnabled] = useState(initialSentinelAutoMergeEnabled);
+  const [sentinelMergeMethod, setSentinelMergeMethod] = useState<RepoSentinelConfig['mergePolicy']['method']>(initialSentinelMergeMethod);
+  const [sentinelDeleteBranch, setSentinelDeleteBranch] = useState(initialSentinelDeleteBranch);
+  const [sentinelRebaseBeforeMerge, setSentinelRebaseBeforeMerge] = useState(initialSentinelRebaseBeforeMerge);
+  const [sentinelRemediationEnabled, setSentinelRemediationEnabled] = useState(initialSentinelRemediationEnabled);
+  const [sentinelMaxAttempts, setSentinelMaxAttempts] = useState(initialSentinelMaxAttempts);
 
   useEffect(() => {
     setScmProvider(initialScmProvider);
@@ -142,6 +165,17 @@ export function RepoForm({
     setCommitMessageTemplate(initialCommitMessageTemplate);
     setCommitMessageRegex(initialCommitMessageRegex);
     setCommitMessageExamples(initialCommitMessageExamples);
+    setSentinelEnabled(initialSentinelEnabled);
+    setSentinelGlobalMode(initialSentinelGlobalMode);
+    setSentinelGroupTag(initialSentinelGroupTag);
+    setSentinelRequireChecksGreen(initialSentinelRequireChecksGreen);
+    setSentinelRequireAutoReviewPass(initialSentinelRequireAutoReviewPass);
+    setSentinelAutoMergeEnabled(initialSentinelAutoMergeEnabled);
+    setSentinelMergeMethod(initialSentinelMergeMethod);
+    setSentinelDeleteBranch(initialSentinelDeleteBranch);
+    setSentinelRebaseBeforeMerge(initialSentinelRebaseBeforeMerge);
+    setSentinelRemediationEnabled(initialSentinelRemediationEnabled);
+    setSentinelMaxAttempts(initialSentinelMaxAttempts);
   }, [
     initialScmProvider,
     initialScmBaseUrl,
@@ -163,7 +197,18 @@ export function RepoForm({
     initialCodexAuthBundleR2Key,
     initialCommitMessageTemplate,
     initialCommitMessageRegex,
-    initialCommitMessageExamples
+    initialCommitMessageExamples,
+    initialSentinelEnabled,
+    initialSentinelGlobalMode,
+    initialSentinelGroupTag,
+    initialSentinelRequireChecksGreen,
+    initialSentinelRequireAutoReviewPass,
+    initialSentinelAutoMergeEnabled,
+    initialSentinelMergeMethod,
+    initialSentinelDeleteBranch,
+    initialSentinelRebaseBeforeMerge,
+    initialSentinelRemediationEnabled,
+    initialSentinelMaxAttempts
   ]);
 
   const projectPathHint = scmProvider === 'gitlab'
@@ -191,6 +236,10 @@ export function RepoForm({
     ...(commitMessageRegex.trim() ? { messageRegex: commitMessageRegex.trim() } : {}),
     ...(commitMessageExamplesList.length ? { messageExamples: commitMessageExamplesList } : {})
   };
+  const parsedSentinelMaxAttempts = Number.parseInt(sentinelMaxAttempts, 10);
+  const normalizedSentinelMaxAttempts = Number.isInteger(parsedSentinelMaxAttempts) && parsedSentinelMaxAttempts > 0
+    ? parsedSentinelMaxAttempts
+    : 1;
 
   return (
     <form
@@ -220,7 +269,26 @@ export function RepoForm({
           previewConfig: Object.keys(previewConfig).length > 0 ? previewConfig : undefined,
           commitConfig: Object.keys(commitConfig).length > 0 ? commitConfig : undefined,
           previewCheckName: previewCheckName || undefined,
-          codexAuthBundleR2Key: codexAuthBundleR2Key || (llmAdapter === 'codex' ? (llmAuthBundleR2Key || undefined) : undefined)
+          codexAuthBundleR2Key: codexAuthBundleR2Key || (llmAdapter === 'codex' ? (llmAuthBundleR2Key || undefined) : undefined),
+          sentinelConfig: {
+            enabled: sentinelEnabled,
+            globalMode: sentinelGlobalMode,
+            defaultGroupTag: sentinelGlobalMode ? undefined : (sentinelGroupTag.trim() || undefined),
+            reviewGate: {
+              requireChecksGreen: sentinelRequireChecksGreen,
+              requireAutoReviewPass: sentinelRequireAutoReviewPass
+            },
+            mergePolicy: {
+              autoMergeEnabled: sentinelAutoMergeEnabled,
+              method: sentinelMergeMethod,
+              deleteBranch: sentinelDeleteBranch
+            },
+            conflictPolicy: {
+              rebaseBeforeMerge: sentinelRebaseBeforeMerge,
+              remediationEnabled: sentinelRemediationEnabled,
+              maxAttempts: normalizedSentinelMaxAttempts
+            }
+          }
         });
         setScmProvider('github');
         setScmBaseUrl(DEFAULT_SCM_BASE_URLS.github);
@@ -243,6 +311,17 @@ export function RepoForm({
         setCommitMessageTemplate('');
         setCommitMessageRegex('');
         setCommitMessageExamples('');
+        setSentinelEnabled(false);
+        setSentinelGlobalMode(true);
+        setSentinelGroupTag('');
+        setSentinelRequireChecksGreen(true);
+        setSentinelRequireAutoReviewPass(true);
+        setSentinelAutoMergeEnabled(false);
+        setSentinelMergeMethod('squash');
+        setSentinelDeleteBranch(true);
+        setSentinelRebaseBeforeMerge(true);
+        setSentinelRemediationEnabled(true);
+        setSentinelMaxAttempts('2');
       }}
     >
       <div className="grid gap-4 md:grid-cols-3">
@@ -418,6 +497,115 @@ export function RepoForm({
           placeholder={'feat(cp): Add banner block support [task_abc123]\nfix(cp): Correct CTA URL handling [task_def456]'}
         />
       </FieldShell>
+      <div className="rounded-xl border border-slate-800 bg-slate-950/40 p-4">
+        <div className="text-sm font-semibold text-slate-100">Sentinel</div>
+        <div className="mt-3 grid gap-4 md:grid-cols-2">
+          <FieldShell label="Enabled" hint="Allow operators to orchestrate this repo with sentinel APIs.">
+            <div className="flex h-11 items-center gap-3 rounded-xl border border-slate-700 bg-slate-900/90 px-3 text-sm text-slate-100">
+              <input
+                type="checkbox"
+                checked={sentinelEnabled}
+                onChange={(event) => setSentinelEnabled(event.target.checked)}
+                className="h-4 w-4 rounded border-slate-600 bg-slate-950 text-cyan-400 focus:ring-cyan-400/30"
+              />
+              <span>{sentinelEnabled ? 'Enabled' : 'Disabled'}</span>
+            </div>
+          </FieldShell>
+          <FieldShell label="Scope mode">
+            <select className={inputClass()} value={sentinelGlobalMode ? 'global' : 'group'} onChange={(event) => setSentinelGlobalMode(event.target.value === 'global')}>
+              <option value="global">Global</option>
+              <option value="group">Group tag</option>
+            </select>
+          </FieldShell>
+          {!sentinelGlobalMode ? (
+            <FieldShell label="Default group tag" hint="Used by start API when no scope tag is provided.">
+              <input className={inputClass()} value={sentinelGroupTag} onChange={(event) => setSentinelGroupTag(event.target.value)} placeholder="payments" />
+            </FieldShell>
+          ) : null}
+        </div>
+        <div className="mt-3 grid gap-4 md:grid-cols-2">
+          <FieldShell label="Require checks green">
+            <div className="flex h-11 items-center gap-3 rounded-xl border border-slate-700 bg-slate-900/90 px-3 text-sm text-slate-100">
+              <input
+                type="checkbox"
+                checked={sentinelRequireChecksGreen}
+                onChange={(event) => setSentinelRequireChecksGreen(event.target.checked)}
+                className="h-4 w-4 rounded border-slate-600 bg-slate-950 text-cyan-400 focus:ring-cyan-400/30"
+              />
+              <span>{sentinelRequireChecksGreen ? 'Required' : 'Optional'}</span>
+            </div>
+          </FieldShell>
+          <FieldShell label="Require auto-review pass">
+            <div className="flex h-11 items-center gap-3 rounded-xl border border-slate-700 bg-slate-900/90 px-3 text-sm text-slate-100">
+              <input
+                type="checkbox"
+                checked={sentinelRequireAutoReviewPass}
+                onChange={(event) => setSentinelRequireAutoReviewPass(event.target.checked)}
+                className="h-4 w-4 rounded border-slate-600 bg-slate-950 text-cyan-400 focus:ring-cyan-400/30"
+              />
+              <span>{sentinelRequireAutoReviewPass ? 'Required' : 'Optional'}</span>
+            </div>
+          </FieldShell>
+        </div>
+        <div className="mt-3 grid gap-4 md:grid-cols-3">
+          <FieldShell label="Auto-merge enabled">
+            <div className="flex h-11 items-center gap-3 rounded-xl border border-slate-700 bg-slate-900/90 px-3 text-sm text-slate-100">
+              <input
+                type="checkbox"
+                checked={sentinelAutoMergeEnabled}
+                onChange={(event) => setSentinelAutoMergeEnabled(event.target.checked)}
+                className="h-4 w-4 rounded border-slate-600 bg-slate-950 text-cyan-400 focus:ring-cyan-400/30"
+              />
+              <span>{sentinelAutoMergeEnabled ? 'Enabled' : 'Disabled'}</span>
+            </div>
+          </FieldShell>
+          <FieldShell label="Merge method">
+            <select className={inputClass()} value={sentinelMergeMethod} onChange={(event) => setSentinelMergeMethod(event.target.value as RepoSentinelConfig['mergePolicy']['method'])}>
+              <option value="merge">Merge</option>
+              <option value="squash">Squash</option>
+              <option value="rebase">Rebase</option>
+            </select>
+          </FieldShell>
+          <FieldShell label="Delete branch on merge">
+            <div className="flex h-11 items-center gap-3 rounded-xl border border-slate-700 bg-slate-900/90 px-3 text-sm text-slate-100">
+              <input
+                type="checkbox"
+                checked={sentinelDeleteBranch}
+                onChange={(event) => setSentinelDeleteBranch(event.target.checked)}
+                className="h-4 w-4 rounded border-slate-600 bg-slate-950 text-cyan-400 focus:ring-cyan-400/30"
+              />
+              <span>{sentinelDeleteBranch ? 'Delete' : 'Keep'}</span>
+            </div>
+          </FieldShell>
+        </div>
+        <div className="mt-3 grid gap-4 md:grid-cols-3">
+          <FieldShell label="Rebase before merge">
+            <div className="flex h-11 items-center gap-3 rounded-xl border border-slate-700 bg-slate-900/90 px-3 text-sm text-slate-100">
+              <input
+                type="checkbox"
+                checked={sentinelRebaseBeforeMerge}
+                onChange={(event) => setSentinelRebaseBeforeMerge(event.target.checked)}
+                className="h-4 w-4 rounded border-slate-600 bg-slate-950 text-cyan-400 focus:ring-cyan-400/30"
+              />
+              <span>{sentinelRebaseBeforeMerge ? 'Enabled' : 'Disabled'}</span>
+            </div>
+          </FieldShell>
+          <FieldShell label="Remediation enabled">
+            <div className="flex h-11 items-center gap-3 rounded-xl border border-slate-700 bg-slate-900/90 px-3 text-sm text-slate-100">
+              <input
+                type="checkbox"
+                checked={sentinelRemediationEnabled}
+                onChange={(event) => setSentinelRemediationEnabled(event.target.checked)}
+                className="h-4 w-4 rounded border-slate-600 bg-slate-950 text-cyan-400 focus:ring-cyan-400/30"
+              />
+              <span>{sentinelRemediationEnabled ? 'Enabled' : 'Disabled'}</span>
+            </div>
+          </FieldShell>
+          <FieldShell label="Max remediation attempts">
+            <input className={inputClass()} type="number" min={1} step={1} value={sentinelMaxAttempts} onChange={(event) => setSentinelMaxAttempts(event.target.value)} />
+          </FieldShell>
+        </div>
+      </div>
       <PrimaryButton>{submitLabel}</PrimaryButton>
     </form>
   );
@@ -704,7 +892,7 @@ export function TaskForm({
       </div>
       <div className="grid gap-4 xl:grid-cols-2">
         <FieldShell label="Auto-review mode" hint="inherit uses repo setting; on/off force behavior for this task.">
-          <select className={inputClass()} value={autoReviewMode} onChange={(event) => setAutoReviewMode(event.target.value as CreateTaskInput['autoReviewMode'])}>
+          <select className={inputClass()} value={autoReviewMode} onChange={(event) => setAutoReviewMode(event.target.value as NonNullable<CreateTaskInput['autoReviewMode']>)}>
             <option value="inherit">Inherit</option>
             <option value="on">On</option>
             <option value="off">Off</option>
