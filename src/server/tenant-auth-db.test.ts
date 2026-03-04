@@ -1,8 +1,19 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
   acceptTenantInvite,
+  deleteIntegrationConfig,
+  deleteJiraProjectRepoMapping,
+  deleteSlackThreadBinding,
   createTenantInvite,
+  getIntegrationConfig,
+  getSlackThreadBinding,
   createUserApiToken,
+  listIntegrationConfigs,
+  listJiraProjectRepoMappings,
+  listJiraProjectRepoMappingsByProject,
+  upsertIntegrationConfig,
+  upsertJiraProjectRepoMapping,
+  upsertSlackThreadBinding,
   listTenantInvites,
   listUserApiTokens,
   login,
@@ -61,6 +72,9 @@ class FakeTenantAuthDb {
   invites: Row[] = [];
   userApiTokens: Row[] = [];
   securityAuditLog: Row[] = [];
+  integrationConfigs: Row[] = [];
+  jiraProjectRepoMappings: Row[] = [];
+  slackThreadBindings: Row[] = [];
 
   prepare(sql: string) {
     return new FakeD1Statement(sql, (statement, bindings) => this.execute(statement, bindings));
@@ -82,13 +96,188 @@ class FakeTenantAuthDb {
           { name: 'user_sessions' },
           { name: 'invites' },
           { name: 'user_api_tokens' },
-          { name: 'security_audit_log' }
+          { name: 'security_audit_log' },
+          { name: 'integration_configs' },
+          { name: 'jira_project_repo_mappings' },
+          { name: 'slack_thread_bindings' }
         ]
       };
     }
 
     if (sql === 'SELECT * FROM app_tenant_config LIMIT 1') {
       return { results: [this.appTenantConfig] };
+    }
+
+    if (sql.includes('INSERT INTO integration_configs')) {
+      const row = {
+        external_id: String(bindings[0]),
+        tenant_id: String(bindings[1]),
+        scope_type: String(bindings[2]),
+        scope_id: String(bindings[3] ?? ''),
+        plugin_kind: String(bindings[4]),
+        enabled: bindings[5],
+        settings_json: String(bindings[6]),
+        secret_ref: bindings[7],
+        created_at: bindings[8],
+        updated_at: bindings[9]
+      };
+      const existingIndex = this.integrationConfigs.findIndex((entry) => (
+        entry.tenant_id === row.tenant_id
+        && entry.scope_type === row.scope_type
+        && entry.scope_id === row.scope_id
+        && entry.plugin_kind === row.plugin_kind
+      ));
+      if (existingIndex >= 0) {
+        this.integrationConfigs[existingIndex] = {
+          ...this.integrationConfigs[existingIndex],
+          enabled: row.enabled,
+          settings_json: row.settings_json,
+          secret_ref: row.secret_ref,
+          updated_at: row.updated_at
+        };
+      } else {
+        const createdAt = this.integrationConfigs[existingIndex]?.created_at ?? row.created_at;
+        this.integrationConfigs.push({
+          ...row,
+          created_at: createdAt
+        });
+      }
+      return {};
+    }
+
+    if (sql.includes('SELECT * FROM integration_configs')) {
+      const tenantId = String(bindings[0]);
+      const pluginKindIndex = sql.includes('plugin_kind = ?') ? 1 : -1;
+      const scopeTypeIndex = sql.includes('scope_type = ?') ? (pluginKindIndex >= 0 ? 2 : 1) : -1;
+      const scopeIdIndex = sql.includes('scope_id = ?') ? ((scopeTypeIndex >= 0 ? scopeTypeIndex + 1 : 1) + (pluginKindIndex >= 0 ? 0 : 0)) : -1;
+      const requestedPluginKind = pluginKindIndex >= 0 ? String(bindings[pluginKindIndex]) : undefined;
+      const requestedScopeType = scopeTypeIndex >= 0 ? String(bindings[scopeTypeIndex]) : undefined;
+      const requestedScopeId = scopeIdIndex >= 0 ? String(bindings[scopeIdIndex]) : undefined;
+      let rows = this.integrationConfigs.filter((row) => row.tenant_id === tenantId);
+      if (requestedPluginKind) {
+        rows = rows.filter((row) => row.plugin_kind === requestedPluginKind);
+      }
+      if (requestedScopeType) {
+        rows = rows.filter((row) => row.scope_type === requestedScopeType);
+      }
+      if (requestedScopeId && requestedScopeType !== 'tenant') {
+        rows = rows.filter((row) => row.scope_id === requestedScopeId);
+      }
+      if (sql.includes('enabled = 1')) {
+        rows = rows.filter((row) => Number(row.enabled) === 1);
+      }
+      if (sql.includes('ORDER BY updated_at DESC')) {
+        rows = [...rows].sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)));
+      }
+      if (sql.includes('LIMIT 1')) {
+        rows = rows.slice(0, 1);
+      }
+      return { results: rows };
+    }
+
+    if (sql.includes('INSERT INTO jira_project_repo_mappings')) {
+      const row = {
+        external_id: String(bindings[0]),
+        tenant_id: String(bindings[1]),
+        jira_project_key: String(bindings[2]),
+        repo_id: String(bindings[3]),
+        priority: bindings[4],
+        active: bindings[5],
+        created_at: bindings[6],
+        updated_at: bindings[7]
+      };
+      const existingIndex = this.jiraProjectRepoMappings.findIndex((entry) => (
+        entry.tenant_id === row.tenant_id
+        && entry.jira_project_key === row.jira_project_key
+        && entry.repo_id === row.repo_id
+      ));
+      if (existingIndex >= 0) {
+        this.jiraProjectRepoMappings[existingIndex] = {
+          ...this.jiraProjectRepoMappings[existingIndex],
+          priority: row.priority,
+          active: row.active,
+          updated_at: row.updated_at
+        };
+      } else {
+        const createdAt = this.jiraProjectRepoMappings[existingIndex]?.created_at ?? row.created_at;
+        this.jiraProjectRepoMappings.push({ ...row, created_at: createdAt });
+      }
+      return {};
+    }
+
+    if (sql.includes('SELECT * FROM jira_project_repo_mappings')) {
+      const tenantId = String(bindings[0]);
+      let index = 1;
+      const rowsByProject = this.jiraProjectRepoMappings.filter((row) => row.tenant_id === tenantId);
+      let projectFiltered = rowsByProject;
+      if (sql.includes('jira_project_key = ?')) {
+        const jiraProjectKey = String(bindings[index++]);
+        projectFiltered = projectFiltered.filter((row) => String(row.jira_project_key).toUpperCase() === jiraProjectKey);
+      }
+      if (sql.includes('repo_id = ?')) {
+        const repoId = String(bindings[index++]);
+        projectFiltered = projectFiltered.filter((row) => row.repo_id === repoId);
+      }
+      if (sql.includes('active = 1')) {
+        projectFiltered = projectFiltered.filter((row) => Number(row.active) === 1);
+      }
+      const rows = [...projectFiltered].sort((left, right) => {
+        if (Number(left.priority) === Number(right.priority)) {
+          return String(right.updated_at).localeCompare(String(left.updated_at));
+        }
+        return Number(left.priority) - Number(right.priority);
+      });
+      return { results: rows };
+    }
+
+    if (sql.includes('INSERT INTO slack_thread_bindings')) {
+      const row = {
+        external_id: String(bindings[0]),
+        tenant_id: String(bindings[1]),
+        task_id: String(bindings[2]),
+        channel_id: String(bindings[3]),
+        thread_ts: String(bindings[4]),
+        current_run_id: bindings[5] ? String(bindings[5]) : null,
+        latest_review_round: bindings[6],
+        created_at: bindings[7],
+        updated_at: bindings[8]
+      };
+      const existingIndex = this.slackThreadBindings.findIndex((entry) => (
+        entry.tenant_id === row.tenant_id
+        && entry.task_id === row.task_id
+        && entry.channel_id === row.channel_id
+      ));
+      if (existingIndex >= 0) {
+        this.slackThreadBindings[existingIndex] = {
+          ...this.slackThreadBindings[existingIndex],
+          thread_ts: row.thread_ts,
+          current_run_id: row.current_run_id,
+          latest_review_round: row.latest_review_round,
+          updated_at: row.updated_at
+        };
+      } else {
+        const createdAt = this.slackThreadBindings[existingIndex]?.created_at ?? row.created_at;
+        this.slackThreadBindings.push({ ...row, created_at: createdAt });
+      }
+      return {};
+    }
+
+    if (sql.includes('SELECT * FROM slack_thread_bindings')) {
+      const tenantId = String(bindings[0]);
+      let rows = this.slackThreadBindings.filter((row) => row.tenant_id === tenantId);
+      if (sql.includes('task_id = ?')) {
+        const taskId = String(bindings[1]);
+        rows = rows.filter((row) => row.task_id === taskId);
+      }
+      if (sql.includes('channel_id = ?')) {
+        const taskIdProvided = sql.includes('task_id = ?');
+        const channelId = String(bindings[taskIdProvided ? 2 : 1]);
+        rows = rows.filter((row) => row.channel_id === channelId);
+      }
+      if (sql.includes('LIMIT 1')) {
+        rows = rows.slice(0, 1);
+      }
+      return { results: rows };
     }
 
     if (sql === 'SELECT external_id FROM users WHERE email = ? LIMIT 1') {
@@ -325,6 +514,34 @@ class FakeTenantAuthDb {
       return {};
     }
 
+    if (sql === 'DELETE FROM integration_configs WHERE tenant_id = ? AND external_id = ?') {
+      const tenantId = String(bindings[0]);
+      const configId = String(bindings[1]);
+      this.integrationConfigs = this.integrationConfigs.filter(
+        (row) => !(row.tenant_id === tenantId && String(row.external_id) === configId)
+      );
+      return {};
+    }
+
+    if (sql === 'DELETE FROM jira_project_repo_mappings WHERE tenant_id = ? AND external_id = ?') {
+      const tenantId = String(bindings[0]);
+      const mappingId = String(bindings[1]);
+      this.jiraProjectRepoMappings = this.jiraProjectRepoMappings.filter(
+        (row) => !(row.tenant_id === tenantId && String(row.external_id) === mappingId)
+      );
+      return {};
+    }
+
+    if (sql === 'DELETE FROM slack_thread_bindings WHERE tenant_id = ? AND task_id = ? AND channel_id = ?') {
+      const tenantId = String(bindings[0]);
+      const taskId = String(bindings[1]);
+      const channelId = String(bindings[2]);
+      this.slackThreadBindings = this.slackThreadBindings.filter(
+        (row) => !(row.tenant_id === tenantId && row.task_id === taskId && row.channel_id === channelId)
+      );
+      return {};
+    }
+
     if (sql === 'SELECT * FROM users ORDER BY created_at ASC') {
       return { results: [...this.users] };
     }
@@ -459,5 +676,124 @@ describe('tenant-auth-db single-tenant auth store', () => {
 
     const upgraded = db.users.find((row) => row.external_id === created.user.id);
     expect(String(upgraded?.password_hash)).toMatch(/^pbkdf2_sha256\$\d+\$[a-f0-9]+\$[a-f0-9]{64}$/);
+  });
+
+  it('supports integration config persistence with scope-specific upsert/list/get/delete', async () => {
+    const tenantId = 'tenant_local';
+    const tenantScope = await upsertIntegrationConfig(env, {
+      tenantId,
+      scopeType: 'tenant',
+      pluginKind: 'slack',
+      enabled: true,
+      settings: { channelDefault: 'yes' }
+    });
+    const repoScope = await upsertIntegrationConfig(env, {
+      tenantId,
+      scopeType: 'repo',
+      scopeId: 'repo_alpha',
+      pluginKind: 'slack',
+      enabled: false,
+      settings: { command: 'slash' }
+    });
+    const channelScope = await upsertIntegrationConfig(env, {
+      tenantId,
+      scopeType: 'channel',
+      scopeId: 'C123',
+      pluginKind: 'slack',
+      enabled: true,
+      settings: { mention: true }
+    });
+    const byScope = await getIntegrationConfig(env, {
+      tenantId,
+      pluginKind: 'slack',
+      scopeType: 'channel',
+      scopeId: 'C123'
+    });
+    expect(byScope?.id).toBe(channelScope.id);
+    const tenantByScope = await getIntegrationConfig(env, {
+      tenantId,
+      pluginKind: 'slack',
+      scopeType: 'tenant'
+    });
+    expect(tenantByScope?.id).toBe(tenantScope.id);
+
+    const forPlugin = await listIntegrationConfigs(env, tenantId, { pluginKind: 'slack' });
+    expect(forPlugin.map((entry) => entry.scopeId).sort()).toEqual([undefined, 'repo_alpha', 'C123'].sort());
+
+    await deleteIntegrationConfig(env, tenantId, repoScope.id);
+    const afterDelete = await listIntegrationConfigs(env, tenantId, { pluginKind: 'slack', scopeType: 'repo' });
+    expect(afterDelete).toHaveLength(0);
+
+    const overwritten = await upsertIntegrationConfig(env, {
+      tenantId,
+      scopeType: 'tenant',
+      pluginKind: 'slack',
+      enabled: true,
+      settings: { channelDefault: 'no' }
+    });
+    expect(overwritten.id).toBe(tenantScope.id);
+    expect(overwritten.settings).toEqual({ channelDefault: 'no' });
+
+    expect(tenantScope.id).toBeDefined();
+    expect(repoScope.id).toBeDefined();
+    expect(channelScope.id).toBeDefined();
+    expect(byScope?.scopeType).toBe('channel');
+    expect(tenantByScope?.scopeType).toBe('tenant');
+  });
+
+  it('persists and orders Jira project mappings', async () => {
+    const tenantId = 'tenant_local';
+    await upsertJiraProjectRepoMapping(env, {
+      tenantId,
+      jiraProjectKey: 'ABC',
+      repoId: 'repo_z',
+      priority: 3
+    });
+    const midPriority = await upsertJiraProjectRepoMapping(env, {
+      tenantId,
+      jiraProjectKey: 'ABC',
+      repoId: 'repo_m',
+      priority: 2
+    });
+    const highPriority = await upsertJiraProjectRepoMapping(env, {
+      tenantId,
+      jiraProjectKey: 'ABC',
+      repoId: 'repo_a',
+      priority: 1
+    });
+    const listings = await listJiraProjectRepoMappingsByProject(env, tenantId, 'ABC');
+    expect(listings.map((row) => row.repoId)).toEqual([highPriority.repoId, midPriority.repoId, 'repo_z']);
+
+    await deleteJiraProjectRepoMapping(env, tenantId, midPriority.id);
+    const remaining = await listJiraProjectRepoMappings(env, tenantId, { jiraProjectKey: 'ABC' });
+    expect(remaining).toHaveLength(2);
+  });
+
+  it('persists slack thread bindings with upsert and lookup by task/channel', async () => {
+    const tenantId = 'tenant_local';
+    const initial = await upsertSlackThreadBinding(env, {
+      tenantId,
+      taskId: 'task_1',
+      channelId: 'C123',
+      threadTs: '123.456',
+      latestReviewRound: 1
+    });
+    const updated = await upsertSlackThreadBinding(env, {
+      tenantId,
+      taskId: 'task_1',
+      channelId: 'C123',
+      threadTs: '789.012',
+      currentRunId: 'run_1',
+      latestReviewRound: 2
+    });
+    const lookedUp = await getSlackThreadBinding(env, tenantId, 'task_1', 'C123');
+    expect(lookedUp?.id).toBe(initial.id);
+    expect(lookedUp?.threadTs).toBe(updated.threadTs);
+    expect(lookedUp?.currentRunId).toBe('run_1');
+    expect(lookedUp?.latestReviewRound).toBe(2);
+
+    await deleteSlackThreadBinding(env, tenantId, 'task_1', 'C123');
+    const afterDelete = await getSlackThreadBinding(env, tenantId, 'task_1', 'C123');
+    expect(afterDelete).toBeUndefined();
   });
 });

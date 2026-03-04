@@ -1,4 +1,16 @@
-import type { Tenant, TenantMember, TenantSeatSummary, User, UserSession } from '../ui/domain/types';
+import type {
+  IntegrationConfig,
+  IntegrationConfigSettings,
+  IntegrationPluginKind,
+  IntegrationScopeType,
+  JiraProjectRepoMapping,
+  SlackThreadBinding,
+  Tenant,
+  TenantMember,
+  TenantSeatSummary,
+  User,
+  UserSession
+} from '../ui/domain/types';
 import { badRequest, conflict, forbidden, notFound, unauthorized } from './http/errors';
 
 type TenantRecordInput = {
@@ -64,13 +76,45 @@ type UserApiTokenRecord = {
   revokedAt?: string;
 };
 
+type IntegrationConfigInput = {
+  tenantId: string;
+  scopeType: IntegrationScopeType;
+  scopeId?: string;
+  pluginKind: IntegrationPluginKind;
+  enabled?: boolean;
+  settings?: IntegrationConfigSettings;
+  secretRef?: string;
+};
+
+type JiraProjectRepoMappingInput = {
+  tenantId: string;
+  jiraProjectKey: string;
+  repoId: string;
+  priority?: number;
+  active?: boolean;
+};
+
+type SlackThreadBindingInput = {
+  tenantId: string;
+  taskId: string;
+  channelId: string;
+  threadTs: string;
+  currentRunId?: string;
+  latestReviewRound?: number;
+};
+
 const DEFAULT_SEAT_LIMIT = 100;
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 30;
 const INVITE_TTL_MS = 1000 * 60 * 60 * 24 * 30;
 const SINGLE_TENANT_FALLBACK_ID = 'tenant_local';
+const DEFAULT_INTEGRATION_PRIORITY = 0;
+const DEFAULT_INTEGRATION_LATEST_REVIEW_ROUND = 0;
 const PASSWORD_HASH_SCHEME = 'pbkdf2_sha256';
 const PASSWORD_HASH_ITERATIONS = 210_000;
 const PASSWORD_SALT_BYTES = 16;
+
+const VALID_INTEGRATION_SCOPE_TYPES = new Set<IntegrationScopeType>(['tenant', 'repo', 'channel']);
+const VALID_INTEGRATION_PLUGIN_KINDS = new Set<IntegrationPluginKind>(['slack', 'jira', 'gitlab']);
 
 let schemaReady: Promise<void> | undefined;
 
@@ -94,7 +138,10 @@ async function ensureSchema(db: D1Database): Promise<void> {
         'users',
         'user_sessions',
         'invites',
-        'user_api_tokens'
+        'user_api_tokens',
+        'integration_configs',
+        'jira_project_repo_mappings',
+        'slack_thread_bindings'
       ] as const;
       const quoted = requiredTables.map((table) => `'${table}'`).join(', ');
       const result = await db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (${quoted})`).all<{ name: string }>();
@@ -199,6 +246,169 @@ function parseScopes(scopes: unknown): string[] {
   } catch {
     return [];
   }
+}
+
+function parseIntegrationBoolean(value: unknown): boolean {
+  if (typeof value === 'boolean') {
+    return value;
+  }
+
+  if (typeof value === 'number') {
+    return value === 1;
+  }
+
+  if (typeof value === 'string') {
+    return value === '1' || value.toLowerCase() === 'true';
+  }
+
+  return false;
+}
+
+function parseSettingsJson(value: unknown): IntegrationConfigSettings {
+  if (typeof value !== 'string' || !value.trim()) {
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(value);
+    if (parsed === null || Array.isArray(parsed) || typeof parsed !== 'object') {
+      return {};
+    }
+    const settings = parsed as Record<string, unknown>;
+    const sanitized: IntegrationConfigSettings = {};
+    for (const [key, raw] of Object.entries(settings)) {
+      if (typeof raw === 'string' || typeof raw === 'number' || typeof raw === 'boolean') {
+        sanitized[key] = raw;
+      }
+    }
+    return sanitized;
+  } catch {
+    return {};
+  }
+}
+
+function parseScopeType(value: unknown): IntegrationScopeType {
+  const candidate = String(value ?? '').trim();
+  if (VALID_INTEGRATION_SCOPE_TYPES.has(candidate as IntegrationScopeType)) {
+    return candidate as IntegrationScopeType;
+  }
+  throw badRequest('Invalid integration config scope type.');
+}
+
+function parsePluginKind(value: unknown): IntegrationPluginKind {
+  const candidate = String(value ?? '').trim();
+  if (VALID_INTEGRATION_PLUGIN_KINDS.has(candidate as IntegrationPluginKind)) {
+    return candidate as IntegrationPluginKind;
+  }
+  throw badRequest('Invalid integration plugin kind.');
+}
+
+function mapIntegrationConfig(row: Record<string, unknown>): IntegrationConfig {
+  return {
+    id: externalId(row),
+    tenantId: String(row.tenant_id),
+    scopeType: parseScopeType(row.scope_type),
+    scopeId: row.scope_type === 'tenant' || row.scope_id === '' ? undefined : String(row.scope_id),
+    pluginKind: parsePluginKind(row.plugin_kind),
+    enabled: parseIntegrationBoolean(row.enabled),
+    settings: parseSettingsJson(row.settings_json),
+    secretRef: row.secret_ref ? String(row.secret_ref) : undefined,
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at)
+  };
+}
+
+function mapJiraProjectRepoMapping(row: Record<string, unknown>): JiraProjectRepoMapping {
+  return {
+    id: externalId(row),
+    tenantId: String(row.tenant_id),
+    jiraProjectKey: String(row.jira_project_key),
+    repoId: String(row.repo_id),
+    priority: Number(row.priority ?? DEFAULT_INTEGRATION_PRIORITY),
+    active: parseIntegrationBoolean(row.active),
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at)
+  };
+}
+
+function mapSlackThreadBinding(row: Record<string, unknown>): SlackThreadBinding {
+  return {
+    id: externalId(row),
+    tenantId: String(row.tenant_id),
+    taskId: String(row.task_id),
+    channelId: String(row.channel_id),
+    threadTs: String(row.thread_ts),
+    currentRunId: row.current_run_id ? String(row.current_run_id) : undefined,
+    latestReviewRound: Number(row.latest_review_round ?? DEFAULT_INTEGRATION_LATEST_REVIEW_ROUND),
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at)
+  };
+}
+
+function normalizeIntegrationScope(scopeType: IntegrationScopeType, scopeId: string | undefined): string {
+  if (scopeType === 'tenant') {
+    return '';
+  }
+  if (!scopeId?.trim()) {
+    throw badRequest(`integration scope ${scopeType} requires scopeId.`);
+  }
+  if (scopeId.includes(':')) {
+    throw badRequest(`integration scopeId cannot contain ":" for scope ${scopeType}.`);
+  }
+  return scopeId.trim();
+}
+
+function normalizeIntegrationInput(input: IntegrationConfigInput): IntegrationConfigInput {
+  if (!VALID_INTEGRATION_SCOPE_TYPES.has(input.scopeType)) {
+    throw badRequest('Invalid integration scope type.');
+  }
+  if (!VALID_INTEGRATION_PLUGIN_KINDS.has(input.pluginKind)) {
+    throw badRequest('Invalid integration plugin kind.');
+  }
+  const scopeId = normalizeIntegrationScope(input.scopeType, input.scopeId);
+  return {
+    tenantId: input.tenantId,
+    scopeType: input.scopeType,
+    scopeId,
+    pluginKind: input.pluginKind,
+    enabled: input.enabled ?? true,
+    settings: input.settings ?? {},
+    secretRef: input.secretRef
+  };
+}
+
+function normalizeMappingInput(input: JiraProjectRepoMappingInput): JiraProjectRepoMappingInput {
+  const jiraProjectKey = input.jiraProjectKey.trim().toUpperCase();
+  if (!jiraProjectKey) {
+    throw badRequest('jiraProjectKey is required.');
+  }
+  const repoId = input.repoId.trim();
+  if (!repoId) {
+    throw badRequest('repoId is required.');
+  }
+  return {
+    tenantId: input.tenantId,
+    jiraProjectKey,
+    repoId,
+    priority: Number.isFinite(input.priority) ? Number(input.priority) : 0,
+    active: input.active ?? true
+  };
+}
+
+function normalizeSlackBindingInput(input: SlackThreadBindingInput): SlackThreadBindingInput {
+  const taskId = input.taskId.trim();
+  const channelId = input.channelId.trim();
+  const threadTs = input.threadTs.trim();
+  if (!taskId || !channelId || !threadTs) {
+    throw badRequest('taskId, channelId and threadTs are required.');
+  }
+  return {
+    tenantId: input.tenantId,
+    taskId,
+    channelId,
+    threadTs,
+    currentRunId: input.currentRunId?.trim(),
+    latestReviewRound: Number.isFinite(input.latestReviewRound) ? input.latestReviewRound : 0
+  };
 }
 
 function mapApiToken(row: Record<string, unknown>): UserApiTokenRecord {
@@ -405,6 +615,273 @@ async function writeAuditLog(
     entry.tenantId ?? null,
     entry.metadata ? JSON.stringify(entry.metadata) : null
   ).run();
+}
+
+function buildIntegrationConfigRowId() {
+  return `integration_config_${crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2, 10)}`;
+}
+
+function buildJiraProjectRepoMappingRowId() {
+  return `jira_mapping_${crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2, 10)}`;
+}
+
+function buildSlackThreadBindingRowId() {
+  return `thread_binding_${crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2, 10)}`;
+}
+
+export async function upsertIntegrationConfig(env: Env, input: IntegrationConfigInput): Promise<IntegrationConfig> {
+  const db = getDb(env);
+  await ensureSchema(db);
+  const normalized = normalizeIntegrationInput(input);
+  const now = new Date().toISOString();
+  const id = buildIntegrationConfigRowId();
+  await db.prepare(
+    `INSERT INTO integration_configs
+     (external_id, tenant_id, scope_type, scope_id, plugin_kind, enabled, settings_json, secret_ref, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT (tenant_id, scope_type, scope_id, plugin_kind) DO UPDATE SET
+       enabled = excluded.enabled,
+       settings_json = excluded.settings_json,
+       secret_ref = excluded.secret_ref,
+       updated_at = excluded.updated_at`
+  ).bind(
+    id,
+    normalized.tenantId,
+    normalized.scopeType,
+    normalized.scopeId ?? null,
+    normalized.pluginKind,
+    normalized.enabled ? 1 : 0,
+    JSON.stringify(normalized.settings ?? {}),
+    normalized.secretRef ?? null,
+    now,
+    now
+  ).run();
+  const selected = await getIntegrationConfig(env, {
+    tenantId: normalized.tenantId,
+    pluginKind: normalized.pluginKind,
+    scopeType: normalized.scopeType,
+    scopeId: normalized.scopeId
+  });
+  if (!selected) {
+    throw badRequest('Failed to persist integration configuration.');
+  }
+  return selected;
+}
+
+export async function getIntegrationConfig(
+  env: Env,
+  input: {
+    tenantId: string;
+    pluginKind: IntegrationPluginKind;
+    scopeType: IntegrationScopeType;
+    scopeId?: string;
+  }
+): Promise<IntegrationConfig | undefined> {
+  const db = getDb(env);
+  await ensureSchema(db);
+  const scopeId = normalizeIntegrationScope(input.scopeType, input.scopeId);
+  const statement = await db
+    .prepare('SELECT * FROM integration_configs WHERE tenant_id = ? AND plugin_kind = ? AND scope_type = ? AND scope_id = ? LIMIT 1')
+    .bind(input.tenantId, input.pluginKind, input.scopeType, scopeId)
+    .first<Record<string, unknown>>();
+  if (!statement) {
+    return undefined;
+  }
+  return mapIntegrationConfig(statement);
+}
+
+export async function listIntegrationConfigs(
+  env: Env,
+  tenantId: string,
+  filters?: {
+    pluginKind?: IntegrationPluginKind;
+    scopeType?: IntegrationScopeType;
+    scopeId?: string;
+    enabledOnly?: boolean;
+  }
+): Promise<IntegrationConfig[]> {
+  const db = getDb(env);
+  await ensureSchema(db);
+  const clauses: string[] = ['tenant_id = ?'];
+  const values: unknown[] = [tenantId];
+  if (filters?.pluginKind) {
+    clauses.push('plugin_kind = ?');
+    values.push(filters.pluginKind);
+  }
+  if (filters?.scopeType) {
+    clauses.push('scope_type = ?');
+    values.push(filters.scopeType);
+  }
+  if (filters?.scopeType && filters.scopeType !== 'tenant' && filters.scopeId) {
+    clauses.push('scope_id = ?');
+    values.push(filters.scopeId);
+  }
+  if (filters?.enabledOnly) {
+    clauses.push('enabled = 1');
+  }
+
+  const query = `SELECT * FROM integration_configs WHERE ${clauses.join(' AND ')} ORDER BY updated_at DESC`;
+  const result = await db.prepare(query).bind(...values).all<Record<string, unknown>>();
+  return (result.results ?? []).map(mapIntegrationConfig);
+}
+
+export async function deleteIntegrationConfig(
+  env: Env,
+  tenantId: string,
+  configId: string
+): Promise<{ ok: true }> {
+  const db = getDb(env);
+  await ensureSchema(db);
+  await db.prepare('DELETE FROM integration_configs WHERE tenant_id = ? AND external_id = ?').bind(tenantId, configId).run();
+  return { ok: true };
+}
+
+export async function upsertJiraProjectRepoMapping(
+  env: Env,
+  input: JiraProjectRepoMappingInput
+): Promise<JiraProjectRepoMapping> {
+  const db = getDb(env);
+  await ensureSchema(db);
+  const normalized = normalizeMappingInput(input);
+  const now = new Date().toISOString();
+  const id = buildJiraProjectRepoMappingRowId();
+  await db.prepare(
+    `INSERT INTO jira_project_repo_mappings
+     (external_id, tenant_id, jira_project_key, repo_id, priority, active, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT (tenant_id, jira_project_key, repo_id) DO UPDATE SET
+       priority = excluded.priority,
+       active = excluded.active,
+       updated_at = excluded.updated_at`
+  ).bind(
+    id,
+    normalized.tenantId,
+    normalized.jiraProjectKey,
+    normalized.repoId,
+    normalized.priority,
+    normalized.active ? 1 : 0,
+    now,
+    now
+  ).run();
+  const rows = await db.prepare(
+    `SELECT * FROM jira_project_repo_mappings WHERE tenant_id = ? AND jira_project_key = ? AND repo_id = ? LIMIT 1`
+  ).bind(normalized.tenantId, normalized.jiraProjectKey, normalized.repoId).all<Record<string, unknown>>();
+  const found = (rows.results ?? [])[0];
+  if (!found) {
+    throw badRequest('Failed to persist Jira-to-repo mapping.');
+  }
+  return mapJiraProjectRepoMapping(found);
+}
+
+export async function listJiraProjectRepoMappings(
+  env: Env,
+  tenantId: string,
+  filters?: { jiraProjectKey?: string; activeOnly?: boolean; repoId?: string }
+): Promise<JiraProjectRepoMapping[]> {
+  const db = getDb(env);
+  await ensureSchema(db);
+  const clauses = ['tenant_id = ?'];
+  const values: unknown[] = [tenantId];
+  if (filters?.jiraProjectKey) {
+    clauses.push('jira_project_key = ?');
+    values.push(filters.jiraProjectKey.toUpperCase());
+  }
+  if (filters?.repoId) {
+    clauses.push('repo_id = ?');
+    values.push(filters.repoId);
+  }
+  if (filters?.activeOnly) {
+    clauses.push('active = 1');
+  }
+  const query = `SELECT * FROM jira_project_repo_mappings WHERE ${clauses.join(' AND ')} ORDER BY priority ASC, updated_at DESC`;
+  const result = await db.prepare(query).bind(...values).all<Record<string, unknown>>();
+  return (result.results ?? []).map(mapJiraProjectRepoMapping);
+}
+
+export async function listJiraProjectRepoMappingsByProject(
+  env: Env,
+  tenantId: string,
+  jiraProjectKey: string,
+  activeOnly = false
+): Promise<JiraProjectRepoMapping[]> {
+  return listJiraProjectRepoMappings(env, tenantId, { jiraProjectKey, activeOnly });
+}
+
+export async function deleteJiraProjectRepoMapping(env: Env, tenantId: string, mappingId: string): Promise<{ ok: true }> {
+  const db = getDb(env);
+  await ensureSchema(db);
+  await db.prepare('DELETE FROM jira_project_repo_mappings WHERE tenant_id = ? AND external_id = ?').bind(tenantId, mappingId).run();
+  return { ok: true };
+}
+
+export async function upsertSlackThreadBinding(
+  env: Env,
+  input: SlackThreadBindingInput
+): Promise<SlackThreadBinding> {
+  const db = getDb(env);
+  await ensureSchema(db);
+  const normalized = normalizeSlackBindingInput(input);
+  const now = new Date().toISOString();
+  const id = buildSlackThreadBindingRowId();
+  await db.prepare(
+    `INSERT INTO slack_thread_bindings
+     (external_id, tenant_id, task_id, channel_id, thread_ts, current_run_id, latest_review_round, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT (tenant_id, task_id, channel_id) DO UPDATE SET
+       thread_ts = excluded.thread_ts,
+       current_run_id = excluded.current_run_id,
+       latest_review_round = excluded.latest_review_round,
+       updated_at = excluded.updated_at`
+  ).bind(
+    id,
+    normalized.tenantId,
+    normalized.taskId,
+    normalized.channelId,
+    normalized.threadTs,
+    normalized.currentRunId ?? null,
+    normalized.latestReviewRound,
+    now,
+    now
+  ).run();
+  const rows = await db.prepare(
+    `SELECT * FROM slack_thread_bindings WHERE tenant_id = ? AND task_id = ? AND channel_id = ? LIMIT 1`
+  ).bind(normalized.tenantId, normalized.taskId, normalized.channelId).all<Record<string, unknown>>();
+  const found = (rows.results ?? [])[0];
+  if (!found) {
+    throw badRequest('Failed to persist slack thread binding.');
+  }
+  return mapSlackThreadBinding(found);
+}
+
+export async function getSlackThreadBinding(
+  env: Env,
+  tenantId: string,
+  taskId: string,
+  channelId: string
+): Promise<SlackThreadBinding | undefined> {
+  const db = getDb(env);
+  await ensureSchema(db);
+  const result = await db.prepare(
+    'SELECT * FROM slack_thread_bindings WHERE tenant_id = ? AND task_id = ? AND channel_id = ? LIMIT 1'
+  ).bind(tenantId, taskId.trim(), channelId.trim()).first<Record<string, unknown>>();
+  if (!result) {
+    return undefined;
+  }
+  return mapSlackThreadBinding(result);
+}
+
+export async function deleteSlackThreadBinding(
+  env: Env,
+  tenantId: string,
+  taskId: string,
+  channelId: string
+): Promise<{ ok: true }> {
+  const db = getDb(env);
+  await ensureSchema(db);
+  await db.prepare(
+    'DELETE FROM slack_thread_bindings WHERE tenant_id = ? AND task_id = ? AND channel_id = ?'
+  ).bind(tenantId, taskId.trim(), channelId.trim()).run();
+  return { ok: true };
 }
 
 export async function signup(env: Env, input: {
