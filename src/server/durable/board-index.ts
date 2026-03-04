@@ -1219,6 +1219,7 @@ function buildRepoRecord(input: CreateRepoInput | Repo): Repo {
     enabled: autoReviewEnabled,
     provider: input.autoReview?.provider ?? (autoReviewEnabled ? getAutoReviewProviderDefaultForScm(input.scmProvider) : 'gitlab'),
     postInline: input.autoReview?.postInline ?? false,
+    postingMode: input.autoReview?.postingMode ?? 'platform',
     ...(input.autoReview?.prompt ? { prompt: input.autoReview.prompt.trim() } : {})
   };
   const normalizedSentinelConfig = normalizeRepoSentinelConfig({

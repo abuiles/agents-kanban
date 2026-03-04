@@ -117,6 +117,7 @@ export type AutoReviewResolution = {
   promptSource: ReviewPromptSource;
   provider: AutoReviewProvider;
   postInline: boolean;
+  postingMode: 'platform' | 'agent';
 };
 
 export function resolveAutoReviewConfig(repo: Pick<Repo, 'autoReview' | 'scmProvider'> | undefined, task: Pick<Task, 'uiMeta'> | undefined): AutoReviewResolution {
@@ -137,7 +138,8 @@ export function resolveAutoReviewConfig(repo: Pick<Repo, 'autoReview' | 'scmProv
       promptSource: 'task',
       prompt: taskPrompt,
       provider: repoAutoReview.provider,
-      postInline: repoAutoReview.postInline
+      postInline: repoAutoReview.postInline,
+      postingMode: repoAutoReview.postingMode ?? 'platform'
     };
   }
 
@@ -148,7 +150,8 @@ export function resolveAutoReviewConfig(repo: Pick<Repo, 'autoReview' | 'scmProv
       promptSource: 'repo',
       prompt: repoPrompt,
       provider: repoAutoReview.provider,
-      postInline: repoAutoReview.postInline
+      postInline: repoAutoReview.postInline,
+      postingMode: repoAutoReview.postingMode ?? 'platform'
     };
   }
 
@@ -157,7 +160,8 @@ export function resolveAutoReviewConfig(repo: Pick<Repo, 'autoReview' | 'scmProv
     taskMode,
     promptSource: 'native',
     provider: repoAutoReview.provider,
-    postInline: repoAutoReview.postInline
+    postInline: repoAutoReview.postInline,
+    postingMode: repoAutoReview.postingMode ?? 'platform'
   };
 }
 

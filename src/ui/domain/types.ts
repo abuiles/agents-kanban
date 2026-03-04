@@ -20,6 +20,7 @@ export type LlmAdapter = 'codex' | 'cursor_cli';
 export type LlmReasoningEffort = 'low' | 'medium' | 'high';
 export type ScmProvider = 'github' | 'gitlab';
 export type AutoReviewProvider = 'github' | 'gitlab' | 'jira';
+export type AutoReviewPostingMode = 'platform' | 'agent';
 export type ReviewProvider = ScmProvider;
 export type AutoReviewMode = 'inherit' | 'on' | 'off';
 export type PreviewAdapterKind = 'cloudflare_checks' | 'prompt_recipe';
@@ -74,6 +75,7 @@ export type RepoAutoReview = {
   prompt?: string;
   provider: AutoReviewProvider;
   postInline: boolean;
+  postingMode?: AutoReviewPostingMode;
 };
 export type RepoSentinelConfig = {
   enabled: boolean;

@@ -768,7 +768,7 @@ fi`)}`
         task,
         run,
         cwd: '/workspace/repo',
-        prompt: buildReviewPrompt(task, repo, run, autoReview.prompt),
+        prompt: buildReviewPrompt(task, repo, run, autoReview),
         model: llmModel,
         reasoningEffort: llmReasoningEffort,
         timeoutMs: 180_000,
@@ -797,43 +797,47 @@ fi`)}`
     let summaryPosted: boolean | undefined;
     let summaryThreadId: string | undefined;
     let summaryThreadUrl: string | undefined;
-    const reviewCredential = getReviewPostingCredential(env, autoReview.provider);
-
-    if (!reviewCredential) {
-      postErrors = [buildMissingReviewPostingCredentialError(autoReview.provider)];
+    if (autoReview.postingMode === 'agent') {
+      postedCount = findings.filter((finding) => Boolean(finding.providerThreadId?.trim())).length;
     } else {
-      try {
-        const postingAdapter = getReviewPostingAdapter(autoReview.provider);
-        const posting = await postingAdapter.postFindings({
-          repo,
-          task,
-          run,
-          findings,
-          credential: reviewCredential,
-          postInline: autoReview.postInline
-        });
-        findings = posting.updatedFindings;
-        postedCount = posting.findings.filter((entry) => entry.posted).length;
-        postErrors = posting.errors;
-        summaryPosted = posting.summary?.posted;
-        summaryThreadId = posting.summary?.providerThreadId;
-        summaryThreadUrl = posting.summary?.providerThreadUrl;
-      } catch (error) {
-        postErrors = [error instanceof Error ? error.message : String(error)];
+      const reviewCredential = getReviewPostingCredential(env, autoReview.provider);
+
+      if (!reviewCredential) {
+        postErrors = [buildMissingReviewPostingCredentialError(autoReview.provider)];
+      } else {
+        try {
+          const postingAdapter = getReviewPostingAdapter(autoReview.provider);
+          const posting = await postingAdapter.postFindings({
+            repo,
+            task,
+            run,
+            findings,
+            credential: reviewCredential,
+            postInline: autoReview.postInline
+          });
+          findings = posting.updatedFindings;
+          postedCount = posting.findings.filter((entry) => entry.posted).length;
+          postErrors = posting.errors;
+          summaryPosted = posting.summary?.posted;
+          summaryThreadId = posting.summary?.providerThreadId;
+          summaryThreadUrl = posting.summary?.providerThreadUrl;
+        } catch (error) {
+          postErrors = [error instanceof Error ? error.message : String(error)];
+        }
       }
     }
     const sanitizedPostErrors = postErrors.map((error) => redactSensitiveText(error));
     const reviewPostStatus = sanitizedPostErrors.length ? 'failed' : 'completed';
     const postingOutcomeNote = sanitizedPostErrors.length
-      ? `Review completed (round ${round}; ${findings.length} findings, ${postedCount} posted). Posting via ${autoReview.provider} failed: ${sanitizedPostErrors[0]}`
-      : `Review completed (round ${round}; ${findings.length} findings, ${postedCount} posted). Posting via ${autoReview.provider} succeeded.`;
+      ? `Review completed (round ${round}; ${findings.length} findings, ${postedCount} posted). Posting via ${autoReview.provider}/${autoReview.postingMode} failed: ${sanitizedPostErrors[0]}`
+      : `Review completed (round ${round}; ${findings.length} findings, ${postedCount} posted). Posting via ${autoReview.provider}/${autoReview.postingMode} succeeded.`;
 
     await repoBoard.appendRunLogs(runId, [
       buildRunLog(
         runId,
         sanitizedPostErrors.length
-          ? `Review posting via ${autoReview.provider} failed with ${sanitizedPostErrors.length} error(s): ${sanitizedPostErrors[0]}`
-          : `Review posting via ${autoReview.provider} completed (${postedCount}/${findings.length} findings posted).`,
+          ? `Review posting via ${autoReview.provider}/${autoReview.postingMode} failed with ${sanitizedPostErrors.length} error(s): ${sanitizedPostErrors[0]}`
+          : `Review posting via ${autoReview.provider}/${autoReview.postingMode} completed (${postedCount}/${findings.length} findings posted).`,
         'pr',
         sanitizedPostErrors.length ? 'error' : 'info',
         {
@@ -932,7 +936,13 @@ fi`)}`
   }
 }
 
-function buildReviewPrompt(task: Task, repo: Repo, run: Awaited<ReturnType<RepoBoardDO['getRun']>>, customPrompt?: string) {
+function buildReviewPrompt(
+  task: Task,
+  repo: Repo,
+  run: Awaited<ReturnType<RepoBoardDO['getRun']>>,
+  autoReview: { prompt?: string; provider: AutoReviewProvider; postingMode: 'platform' | 'agent'; postInline: boolean }
+) {
+  const customPrompt = autoReview.prompt;
   const useNativeReview = !customPrompt?.trim();
   const reviewIntent = customPrompt?.trim()
     ? `Review instructions:\n${customPrompt.trim()}`
@@ -942,6 +952,23 @@ function buildReviewPrompt(task: Task, repo: Repo, run: Awaited<ReturnType<RepoB
         'Use native review mode focused on correctness, regressions, security risks, and missing tests.',
         'Only report actionable findings that should block merge.'
       ].join('\n');
+
+  const reviewNumber = run.reviewNumber ?? run.prNumber;
+  const reviewUrl = run.reviewUrl ?? run.prUrl;
+  const agentPostingGuidance = autoReview.postingMode === 'agent'
+    ? [
+        '',
+        `Posting mode: agent-managed (${autoReview.provider}).`,
+        'After you identify findings, post them directly to the provider from this sandbox using available credentials in env.',
+        `Provider target: ${autoReview.provider}${reviewNumber ? ` #${reviewNumber}` : ''}${reviewUrl ? ` (${reviewUrl})` : ''}.`,
+        autoReview.provider === 'github'
+          ? 'For GitHub, prefer inline PR review comments when file+line map to the current diff; fallback to a PR issue comment summary when inline is not possible.'
+          : 'Prefer inline comments when possible; fallback to a summary thread when inline is not possible.',
+        'Include the resulting provider thread/comment id in each finding as providerThreadId.',
+        'If multiple findings are posted in one summary comment, reuse that same providerThreadId on each finding.',
+        'Do not skip posting when findings exist.'
+      ]
+    : [];
 
   return [
     `You are reviewing code changes for ${repo.slug}.`,
@@ -955,6 +982,7 @@ function buildReviewPrompt(task: Task, repo: Repo, run: Awaited<ReturnType<RepoB
     ...task.acceptanceCriteria.map((item) => `- ${item}`),
     '',
     reviewIntent,
+    ...agentPostingGuidance,
     ...(useNativeReview
       ? [
           '',
@@ -963,7 +991,7 @@ function buildReviewPrompt(task: Task, repo: Repo, run: Awaited<ReturnType<RepoB
       : []),
     '',
     'Return JSON only using this exact schema shape:',
-    '{ "findings": [ { "severity": "critical|high|medium|low|info", "title": "string", "description": "string", "filePath": "string?", "lineStart": "number?", "lineEnd": "number?" } ] }',
+    '{ "findings": [ { "severity": "critical|high|medium|low|info", "title": "string", "description": "string", "filePath": "string|null?", "lineStart": "number|null?", "lineEnd": "number|null?", "providerThreadId": "string|null?" } ] }',
     'If there are no issues, return {"findings":[]}.'
   ].filter(Boolean).join('\n');
 }

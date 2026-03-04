@@ -15,6 +15,7 @@ const CODEX_MODELS = new Set(['gpt-5.1-codex-mini', 'gpt-5.3-codex', 'gpt-5.3-co
 const CODEX_REASONING_EFFORTS = new Set(['low', 'medium', 'high'] as const);
 const LLM_ADAPTERS = new Set(['codex', 'cursor_cli'] as const);
 const AUTO_REVIEW_PROVIDERS = new Set(['github', 'gitlab', 'jira'] as const);
+const AUTO_REVIEW_POSTING_MODES = new Set(['platform', 'agent'] as const);
 const AUTO_REVIEW_MODES = new Set(['inherit', 'on', 'off'] as const);
 const AUTO_REVIEW_SELECTION_MODES = new Set(['all', 'include', 'exclude', 'freeform'] as const);
 const RETRY_RECOVERY_MODES = new Set(['latest_checkpoint', 'fresh'] as const);
@@ -385,11 +386,13 @@ function readAutoReviewConfig(value: unknown, field: string, required = true): N
   const prompt = readTrimmedString(value.prompt, `${field}.prompt`, false);
   const provider = readEnumValue(value.provider, `${field}.provider`, AUTO_REVIEW_PROVIDERS, false);
   const postInline = readBoolean(value.postInline, `${field}.postInline`, false);
+  const postingMode = readEnumValue(value.postingMode, `${field}.postingMode`, AUTO_REVIEW_POSTING_MODES, false);
 
   return {
     ...(typeof enabled === 'boolean' ? { enabled } : {}),
     ...(provider ? { provider } : {}),
     ...(typeof postInline === 'boolean' ? { postInline } : {}),
+    ...(postingMode ? { postingMode } : {}),
     ...(prompt ? { prompt } : {}),
   };
 }
@@ -649,6 +652,7 @@ export function parseCreateRepoInput(body: unknown): CreateRepoInput {
       enabled: autoReviewEnabled,
       provider: autoReviewProvider,
       postInline: autoReviewConfig?.postInline ?? false,
+      postingMode: autoReviewConfig?.postingMode ?? 'platform',
       ...(autoReviewConfig?.prompt ? { prompt: autoReviewConfig.prompt } : {})
     },
     sentinelConfig: hasOwn(body, 'sentinelConfig')

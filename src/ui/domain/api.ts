@@ -2,6 +2,7 @@ import type {
   AgentRun,
   BoardSnapshotV1,
   AutoReviewMode,
+  AutoReviewPostingMode,
   CodexModel,
   CodexReasoningEffort,
   AutoReviewProvider,
@@ -32,6 +33,7 @@ export type RepoAutoReviewInput = {
   prompt?: string;
   provider?: AutoReviewProvider;
   postInline?: boolean;
+  postingMode?: AutoReviewPostingMode;
 };
 export type RepoSentinelConfigInput = {
   enabled?: boolean;
