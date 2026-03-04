@@ -289,6 +289,13 @@ export async function executeRunJob(env: Env, params: RunJobParams, sleepFn: Sle
         ]);
       }
 
+      const reviewPrepResult = await prepareReviewBranchForFirstReview({
+        repoBoard,
+        runId: params.runId,
+        repo,
+        sandbox
+      });
+
       const statusResult = await emitCommandLifecycle(repoBoard, params.runId, 'push', 'cd /workspace/repo && git status --short', () =>
         sandbox.exec('cd /workspace/repo && git status --short')
       );
@@ -446,6 +453,15 @@ export async function executeRunJob(env: Env, params: RunJobParams, sleepFn: Sle
           buildRunLog(params.runId, `Detected an existing local commit from ${llmExecutorLabel}; pushing it without creating another commit.`, 'push')
         ]);
         effectiveBranchName = await pushWithAdaptiveRecovery();
+      }
+
+      if (reviewPrepResult.mustVerifyContextFileAbsent) {
+        await verifyContextFileAbsentFromHeadOrFail({
+          repoBoard,
+          runId: params.runId,
+          sandbox,
+          contextNotesPath: reviewPrepResult.contextNotesPath
+        });
       }
 
       const shaResult = await emitCommandLifecycle(repoBoard, params.runId, 'push', 'cd /workspace/repo && git rev-parse HEAD', () =>
@@ -1233,6 +1249,129 @@ async function createPhaseBoundaryCheckpoint(input: {
       }
     )
   ]);
+}
+
+async function prepareReviewBranchForFirstReview(input: {
+  repoBoard: DurableObjectStub<RepoBoardDO>;
+  runId: string;
+  repo: Repo;
+  sandbox: ReturnType<typeof getSandbox>;
+}) {
+  const currentRun = await input.repoBoard.getRun(input.runId);
+  const normalizedRepo = normalizeRepoCheckpointConfig(input.repo);
+  const checkpointConfig = normalizedRepo.checkpointConfig;
+  if (!checkpointConfig.enabled) {
+    return { mustVerifyContextFileAbsent: false, contextNotesPath: '' };
+  }
+
+  const contextNotesPath = checkpointConfig.contextNotes.filePath;
+  const hasExistingReview = Boolean(getRunReviewUrl(currentRun) && getRunReviewNumber(currentRun));
+  const isChangeRequestRerun = Boolean(currentRun.changeRequest?.prompt && hasExistingReview);
+  const allowsHistoryRewrite = !isChangeRequestRerun || checkpointConfig.reviewPrep.rewriteOnChangeRequestRerun;
+
+  if (checkpointConfig.contextNotes.enabled && checkpointConfig.contextNotes.cleanupBeforeReview) {
+    const trackedContextFile = await emitCommandLifecycle(
+      input.repoBoard,
+      input.runId,
+      'push',
+      `cd /workspace/repo && git ls-files --error-unmatch ${shellEscape(contextNotesPath)}`,
+      () => input.sandbox.exec(`cd /workspace/repo && git ls-files --error-unmatch ${shellEscape(contextNotesPath)}`)
+    );
+    if (trackedContextFile.success) {
+      const removeContextFile = await emitCommandLifecycle(
+        input.repoBoard,
+        input.runId,
+        'push',
+        `cd /workspace/repo && rm -f ${shellEscape(contextNotesPath)}`,
+        () => input.sandbox.exec(`cd /workspace/repo && rm -f ${shellEscape(contextNotesPath)}`)
+      );
+      if (!removeContextFile.success) {
+        throw new Error(removeContextFile.stderr || `Failed to remove checkpoint context notes file ${contextNotesPath} before review.`);
+      }
+      const runAfterCleanup = await input.repoBoard.transitionRun(input.runId, {
+        appendTimelineNote: `Review prep removed checkpoint context notes (${contextNotesPath}).`
+      });
+      await input.repoBoard.appendRunEvents(input.runId, [
+        buildRunEvent(
+          runAfterCleanup,
+          'workflow',
+          'run.review_prep.context_cleaned',
+          `Removed checkpoint context notes before review push: ${contextNotesPath}.`,
+          { contextNotesPath }
+        )
+      ]);
+    }
+  }
+
+  const shouldSquashForFirstReview = checkpointConfig.reviewPrep.squashBeforeFirstReviewOpen
+    && (hasExistingReview ? allowsHistoryRewrite : true);
+  const checkpointCount = currentRun.checkpoints?.length ?? 0;
+
+  if (shouldSquashForFirstReview && checkpointCount > 0) {
+    const mergeBase = await emitCommandLifecycle(
+      input.repoBoard,
+      input.runId,
+      'push',
+      `cd /workspace/repo && git merge-base HEAD origin/${shellEscape(input.repo.defaultBranch)}`,
+      () => input.sandbox.exec(`cd /workspace/repo && git merge-base HEAD origin/${shellEscape(input.repo.defaultBranch)}`)
+    );
+    if (!mergeBase.success) {
+      throw new Error(mergeBase.stderr || `Failed to resolve merge base for review prep squash against origin/${input.repo.defaultBranch}.`);
+    }
+    const baseSha = mergeBase.stdout.trim();
+    if (!baseSha) {
+      throw new Error(`Failed to resolve merge base for review prep squash against origin/${input.repo.defaultBranch}.`);
+    }
+    const squashResult = await emitCommandLifecycle(
+      input.repoBoard,
+      input.runId,
+      'push',
+      `cd /workspace/repo && git reset --soft ${shellEscape(baseSha)}`,
+      () => input.sandbox.exec(`cd /workspace/repo && git reset --soft ${shellEscape(baseSha)}`)
+    );
+    if (!squashResult.success) {
+      throw new Error(squashResult.stderr || 'Failed to squash checkpoint commits before first review push.');
+    }
+    const runAfterSquash = await input.repoBoard.transitionRun(input.runId, {
+      appendTimelineNote: `Review prep squashed ${checkpointCount} checkpoint commit${checkpointCount === 1 ? '' : 's'} before first review push.`
+    });
+    await input.repoBoard.appendRunEvents(input.runId, [
+      buildRunEvent(
+        runAfterSquash,
+        'workflow',
+        'run.review_prep.squashed',
+        `Squashed checkpoint history into a clean review-visible commit (${checkpointCount} checkpoint commit${checkpointCount === 1 ? '' : 's'}).`,
+        { checkpointCount, baseSha, hasExistingReview }
+      )
+    ]);
+  } else if (hasExistingReview && isChangeRequestRerun && checkpointConfig.reviewPrep.squashBeforeFirstReviewOpen && !allowsHistoryRewrite) {
+    await input.repoBoard.transitionRun(input.runId, {
+      appendTimelineNote: 'Review prep skipped checkpoint-history squash to preserve no-rewrite change-request rerun semantics.'
+    });
+  }
+
+  return {
+    mustVerifyContextFileAbsent: checkpointConfig.contextNotes.enabled && checkpointConfig.contextNotes.cleanupBeforeReview,
+    contextNotesPath
+  };
+}
+
+async function verifyContextFileAbsentFromHeadOrFail(input: {
+  repoBoard: DurableObjectStub<RepoBoardDO>;
+  runId: string;
+  sandbox: ReturnType<typeof getSandbox>;
+  contextNotesPath: string;
+}) {
+  const contextInHead = await emitCommandLifecycle(
+    input.repoBoard,
+    input.runId,
+    'push',
+    `cd /workspace/repo && git cat-file -e HEAD:${shellEscape(input.contextNotesPath)}`,
+    () => input.sandbox.exec(`cd /workspace/repo && git cat-file -e HEAD:${shellEscape(input.contextNotesPath)}`)
+  );
+  if (contextInHead.success) {
+    throw new Error(`Checkpoint context notes file ${input.contextNotesPath} must be absent from the review-visible HEAD commit.`);
+  }
 }
 
 function buildCheckpointId(runId: string, phase: 'bootstrap' | 'codex' | 'tests' | 'push', sequence: number) {
