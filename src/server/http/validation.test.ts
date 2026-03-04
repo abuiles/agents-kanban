@@ -63,6 +63,20 @@ describe('task validation', () => {
     expect(parsed.branchSource?.upstreamReviewProvider).toBe('gitlab');
   });
 
+  it('parses and normalizes task tags for create and update payloads', () => {
+    const created = parseCreateTaskInput(
+      createTaskPayload({
+        tags: [' p1 ', 'backend', 'p1', '']
+      })
+    );
+    expect(created.tags).toEqual(['p1', 'backend']);
+
+    const updated = parseUpdateTaskInput({
+      tags: ['ops', ' ops ', 'infra']
+    });
+    expect(updated.tags).toEqual(['ops', 'infra']);
+  });
+
   it('parses generic llm task fields and mirrors codex aliases', () => {
     const parsed = parseCreateTaskInput(
       createTaskPayload({
@@ -171,6 +185,7 @@ describe('task validation', () => {
 
     expect(parsed.autoReviewMode).toBe('inherit');
     expect(parsed.autoReviewPrompt).toBeUndefined();
+    expect(parsed.tags).toBeUndefined();
   });
 
   it('parses task auto-review overrides', () => {
@@ -265,6 +280,51 @@ describe('repo validation', () => {
       provider: 'gitlab',
       postInline: false
     });
+    expect(parsed.sentinelConfig).toEqual({});
+  });
+
+  it('parses nested sentinel config updates', () => {
+    const parsed = parseUpdateRepoInput({
+      sentinelConfig: {
+        enabled: true,
+        globalMode: true,
+        defaultGroupTag: 'p1',
+        reviewGate: {
+          requireChecksGreen: false
+        },
+        mergePolicy: {
+          autoMergeEnabled: true,
+          method: 'rebase',
+          deleteBranch: false
+        },
+        conflictPolicy: {
+          remediationEnabled: true,
+          rebaseBeforeMerge: true,
+          maxAttempts: 3
+        }
+      }
+    });
+
+    expect(parsed.sentinelConfig).toEqual({
+      enabled: true,
+      globalMode: true,
+      defaultGroupTag: 'p1',
+      reviewGate: { requireChecksGreen: false },
+      mergePolicy: { autoMergeEnabled: true, method: 'rebase', deleteBranch: false },
+      conflictPolicy: { remediationEnabled: true, rebaseBeforeMerge: true, maxAttempts: 3 }
+    });
+  });
+
+  it('rejects invalid sentinel merge policy methods', () => {
+    expect(() =>
+      parseUpdateRepoInput({
+        sentinelConfig: {
+          mergePolicy: {
+            method: 'fast-forward'
+          }
+        }
+      })
+    ).toThrow('Invalid sentinelConfig.mergePolicy.method.');
   });
 
   it('defaults repo auto-review provider and includes prompt when enabled', () => {

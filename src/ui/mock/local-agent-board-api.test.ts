@@ -48,4 +48,29 @@ describe('LocalAgentBoardApi auth management', () => {
     const listedAfterRevoke = await api.listApiTokens();
     expect(listedAfterRevoke).toHaveLength(0);
   });
+
+  it('supports task tag filtering in listTasks', async () => {
+    const api = getLocalAgentBoardApi();
+    const repo = await api.createRepo({ slug: 'demo/repo', baselineUrl: 'https://example.com' });
+
+    await api.createTask({
+      repoId: repo.repoId,
+      title: 'Tagged task',
+      taskPrompt: 'Do tagged work',
+      acceptanceCriteria: ['done'],
+      context: { links: [] },
+      tags: ['p1', 'backend']
+    });
+    await api.createTask({
+      repoId: repo.repoId,
+      title: 'Untagged task',
+      taskPrompt: 'Do other work',
+      acceptanceCriteria: ['done'],
+      context: { links: [] }
+    });
+
+    const filtered = await api.listTasks({ repoId: repo.repoId, tags: ['p1'] });
+    expect(filtered).toHaveLength(1);
+    expect(filtered[0]?.title).toBe('Tagged task');
+  });
 });

@@ -184,11 +184,15 @@ export class HttpAgentBoardApi implements AgentBoardApi {
     return task;
   }
 
-  async listTasks(filter?: { repoId?: string }) {
-    if (!filter?.repoId || filter.repoId === 'all') {
-      return this.snapshot.tasks;
+  async listTasks(filter?: { repoId?: string; tags?: string[] }) {
+    const normalizedTags = (filter?.tags ?? []).map((tag) => tag.trim()).filter(Boolean);
+    const filteredByRepo = (!filter?.repoId || filter.repoId === 'all')
+      ? this.snapshot.tasks
+      : this.snapshot.tasks.filter((task) => task.repoId === filter.repoId);
+    if (!normalizedTags.length) {
+      return filteredByRepo;
     }
-    return this.snapshot.tasks.filter((task) => task.repoId === filter.repoId);
+    return filteredByRepo.filter((task) => normalizedTags.every((tag) => task.tags?.includes(tag)));
   }
 
   async getTask(taskId: string) {

@@ -75,6 +75,66 @@ export type RepoAutoReview = {
   provider: AutoReviewProvider;
   postInline: boolean;
 };
+export type RepoSentinelConfig = {
+  enabled: boolean;
+  globalMode: boolean;
+  defaultGroupTag?: string;
+  reviewGate: {
+    requireChecksGreen: boolean;
+    requireAutoReviewPass: boolean;
+  };
+  mergePolicy: {
+    autoMergeEnabled: boolean;
+    method: 'merge' | 'squash' | 'rebase';
+    deleteBranch: boolean;
+  };
+  conflictPolicy: {
+    rebaseBeforeMerge: boolean;
+    remediationEnabled: boolean;
+    maxAttempts: number;
+  };
+};
+export type SentinelScopeType = 'group' | 'global';
+export type SentinelRunStatus = 'running' | 'paused' | 'stopped' | 'failed' | 'completed';
+export type SentinelEventLevel = 'info' | 'warn' | 'error';
+export type SentinelEventType =
+  | 'sentinel.started'
+  | 'sentinel.paused'
+  | 'sentinel.resumed'
+  | 'sentinel.stopped'
+  | 'task.activated'
+  | 'run.started'
+  | 'review.gate.waiting'
+  | 'merge.attempted'
+  | 'merge.succeeded'
+  | 'merge.failed'
+  | 'remediation.started'
+  | 'remediation.succeeded'
+  | 'remediation.failed';
+export type SentinelRun = {
+  id: string;
+  tenantId: string;
+  repoId: string;
+  scopeType: SentinelScopeType;
+  scopeValue?: string;
+  status: SentinelRunStatus;
+  currentTaskId?: string;
+  currentRunId?: string;
+  attemptCount: number;
+  startedAt: string;
+  updatedAt: string;
+};
+export type SentinelEvent = {
+  id: string;
+  sentinelRunId: string;
+  tenantId: string;
+  repoId: string;
+  at: string;
+  level: SentinelEventLevel;
+  type: SentinelEventType;
+  message: string;
+  metadata?: Record<string, string | number | boolean>;
+};
 export type ReviewFindingSeverity = 'critical' | 'high' | 'medium' | 'low' | 'info';
 export type ReviewFindingStatus = 'open' | 'addressed' | 'ignored';
 export type ReviewPromptSource = 'task' | 'repo' | 'native';
@@ -214,6 +274,7 @@ export type Repo = {
   // Compatibility alias during migration to generic LLM executor fields.
   codexAuthBundleR2Key?: string;
   autoReview?: RepoAutoReview;
+  sentinelConfig?: RepoSentinelConfig;
   createdAt: string;
   updatedAt: string;
 };
@@ -301,6 +362,7 @@ export type Task = {
   taskPrompt: string;
   acceptanceCriteria: string[];
   context: TaskContext;
+  tags?: string[];
   status: TaskStatus;
   baselineUrlOverride?: string;
   createdAt: string;

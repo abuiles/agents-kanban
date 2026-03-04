@@ -4,6 +4,9 @@ import type {
   IntegrationPluginKind,
   IntegrationScopeType,
   JiraProjectRepoMapping,
+  RepoSentinelConfig,
+  SentinelEvent,
+  SentinelRun,
   SlackThreadBinding,
   Tenant,
   TenantMember,
@@ -12,6 +15,7 @@ import type {
   UserSession
 } from '../ui/domain/types';
 import { badRequest, conflict, forbidden, notFound, unauthorized } from './http/errors';
+import { DEFAULT_REPO_SENTINEL_CONFIG, normalizeRepoSentinelConfig } from '../shared/sentinel';
 
 type TenantRecordInput = {
   name: string;
@@ -102,6 +106,36 @@ type SlackThreadBindingInput = {
   currentRunId?: string;
   latestReviewRound?: number;
 };
+type RepoSentinelConfigInput = {
+  tenantId: string;
+  repoId: string;
+  config?: Partial<RepoSentinelConfig>;
+};
+type SentinelRunInput = {
+  id?: string;
+  tenantId: string;
+  repoId: string;
+  scopeType: SentinelRun['scopeType'];
+  scopeValue?: string;
+  status?: SentinelRun['status'];
+  currentTaskId?: string;
+  currentRunId?: string;
+  attemptCount?: number;
+  startedAt?: string;
+  updatedAt?: string;
+};
+type SentinelRunPatch = Partial<Pick<SentinelRun, 'status' | 'currentTaskId' | 'currentRunId' | 'attemptCount' | 'updatedAt'>>;
+type SentinelEventInput = {
+  id?: string;
+  sentinelRunId: string;
+  tenantId: string;
+  repoId: string;
+  at?: string;
+  level: SentinelEvent['level'];
+  type: SentinelEvent['type'];
+  message: string;
+  metadata?: SentinelEvent['metadata'];
+};
 
 const DEFAULT_SEAT_LIMIT = 100;
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 30;
@@ -115,6 +149,24 @@ const PASSWORD_SALT_BYTES = 16;
 
 const VALID_INTEGRATION_SCOPE_TYPES = new Set<IntegrationScopeType>(['tenant', 'repo', 'channel']);
 const VALID_INTEGRATION_PLUGIN_KINDS = new Set<IntegrationPluginKind>(['slack', 'jira', 'gitlab']);
+const VALID_SENTINEL_SCOPE_TYPES = new Set<SentinelRun['scopeType']>(['group', 'global']);
+const VALID_SENTINEL_RUN_STATUSES = new Set<SentinelRun['status']>(['running', 'paused', 'stopped', 'failed', 'completed']);
+const VALID_SENTINEL_EVENT_LEVELS = new Set<SentinelEvent['level']>(['info', 'warn', 'error']);
+const VALID_SENTINEL_EVENT_TYPES = new Set<SentinelEvent['type']>([
+  'sentinel.started',
+  'sentinel.paused',
+  'sentinel.resumed',
+  'sentinel.stopped',
+  'task.activated',
+  'run.started',
+  'review.gate.waiting',
+  'merge.attempted',
+  'merge.succeeded',
+  'merge.failed',
+  'remediation.started',
+  'remediation.succeeded',
+  'remediation.failed'
+]);
 
 let schemaReady: Promise<void> | undefined;
 
@@ -141,7 +193,10 @@ async function ensureSchema(db: D1Database): Promise<void> {
         'user_api_tokens',
         'integration_configs',
         'jira_project_repo_mappings',
-        'slack_thread_bindings'
+        'slack_thread_bindings',
+        'repo_sentinel_configs',
+        'sentinel_runs',
+        'sentinel_events'
       ] as const;
       const quoted = requiredTables.map((table) => `'${table}'`).join(', ');
       const result = await db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (${quoted})`).all<{ name: string }>();
@@ -408,6 +463,181 @@ function normalizeSlackBindingInput(input: SlackThreadBindingInput): SlackThread
     threadTs,
     currentRunId: input.currentRunId?.trim(),
     latestReviewRound: Number.isFinite(input.latestReviewRound) ? input.latestReviewRound : 0
+  };
+}
+
+function parseSentinelScopeType(value: unknown): SentinelRun['scopeType'] {
+  const candidate = String(value ?? '').trim();
+  if (VALID_SENTINEL_SCOPE_TYPES.has(candidate as SentinelRun['scopeType'])) {
+    return candidate as SentinelRun['scopeType'];
+  }
+  throw badRequest('Invalid sentinel scope type.');
+}
+
+function parseSentinelRunStatus(value: unknown): SentinelRun['status'] {
+  const candidate = String(value ?? '').trim();
+  if (VALID_SENTINEL_RUN_STATUSES.has(candidate as SentinelRun['status'])) {
+    return candidate as SentinelRun['status'];
+  }
+  throw badRequest('Invalid sentinel run status.');
+}
+
+function parseSentinelEventLevel(value: unknown): SentinelEvent['level'] {
+  const candidate = String(value ?? '').trim();
+  if (VALID_SENTINEL_EVENT_LEVELS.has(candidate as SentinelEvent['level'])) {
+    return candidate as SentinelEvent['level'];
+  }
+  throw badRequest('Invalid sentinel event level.');
+}
+
+function parseSentinelEventType(value: unknown): SentinelEvent['type'] {
+  const candidate = String(value ?? '').trim();
+  if (VALID_SENTINEL_EVENT_TYPES.has(candidate as SentinelEvent['type'])) {
+    return candidate as SentinelEvent['type'];
+  }
+  throw badRequest('Invalid sentinel event type.');
+}
+
+function parseSentinelConfigJson(value: unknown): Partial<RepoSentinelConfig> {
+  if (typeof value !== 'string' || !value.trim()) {
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as Partial<RepoSentinelConfig>;
+    }
+  } catch {
+    // Ignore invalid JSON and fall through to defaults.
+  }
+  return {};
+}
+
+function parseEventMetadataJson(value: unknown): SentinelEvent['metadata'] {
+  if (typeof value !== 'string' || !value.trim()) {
+    return undefined;
+  }
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return undefined;
+    }
+    const metadata: Record<string, string | number | boolean> = {};
+    for (const [key, entry] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof entry === 'string' || typeof entry === 'number' || typeof entry === 'boolean') {
+        metadata[key] = entry;
+      }
+    }
+    return Object.keys(metadata).length ? metadata : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function normalizeRepoSentinelConfigInput(input: RepoSentinelConfigInput): RepoSentinelConfigInput {
+  const repoId = input.repoId.trim();
+  if (!repoId) {
+    throw badRequest('repoId is required.');
+  }
+  const normalized = normalizeRepoSentinelConfig({
+    sentinelConfig: {
+      ...DEFAULT_REPO_SENTINEL_CONFIG,
+      ...input.config,
+      reviewGate: {
+        ...DEFAULT_REPO_SENTINEL_CONFIG.reviewGate,
+        ...(input.config?.reviewGate ?? {})
+      },
+      mergePolicy: {
+        ...DEFAULT_REPO_SENTINEL_CONFIG.mergePolicy,
+        ...(input.config?.mergePolicy ?? {})
+      },
+      conflictPolicy: {
+        ...DEFAULT_REPO_SENTINEL_CONFIG.conflictPolicy,
+        ...(input.config?.conflictPolicy ?? {})
+      }
+    }
+  }).sentinelConfig;
+  return {
+    tenantId: input.tenantId,
+    repoId,
+    config: normalized
+  };
+}
+
+function mapRepoSentinelConfig(row: Record<string, unknown>): RepoSentinelConfig {
+  return normalizeRepoSentinelConfig({
+    sentinelConfig: parseSentinelConfigJson(row.config_json)
+  }).sentinelConfig;
+}
+
+function normalizeSentinelRunInput(input: SentinelRunInput): Required<Omit<SentinelRun, 'scopeValue' | 'currentTaskId' | 'currentRunId'>> & Pick<SentinelRun, 'scopeValue' | 'currentTaskId' | 'currentRunId'> {
+  const scopeValue = input.scopeValue?.trim();
+  const currentTaskId = input.currentTaskId?.trim();
+  const currentRunId = input.currentRunId?.trim();
+  const startedAt = input.startedAt ?? new Date().toISOString();
+  const updatedAt = input.updatedAt ?? startedAt;
+  const attemptCount = Number.isInteger(input.attemptCount) && Number(input.attemptCount) >= 0 ? Number(input.attemptCount) : 0;
+  return {
+    id: input.id?.trim() || `sentinel_run_${crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2, 10)}`,
+    tenantId: input.tenantId,
+    repoId: input.repoId.trim(),
+    scopeType: parseSentinelScopeType(input.scopeType),
+    scopeValue: scopeValue || undefined,
+    status: input.status ? parseSentinelRunStatus(input.status) : 'running',
+    currentTaskId: currentTaskId || undefined,
+    currentRunId: currentRunId || undefined,
+    attemptCount,
+    startedAt,
+    updatedAt
+  };
+}
+
+function mapSentinelRun(row: Record<string, unknown>): SentinelRun {
+  return {
+    id: externalId(row),
+    tenantId: String(row.tenant_id),
+    repoId: String(row.repo_id),
+    scopeType: parseSentinelScopeType(row.scope_type),
+    scopeValue: row.scope_value ? String(row.scope_value) : undefined,
+    status: parseSentinelRunStatus(row.status),
+    currentTaskId: row.current_task_id ? String(row.current_task_id) : undefined,
+    currentRunId: row.current_run_id ? String(row.current_run_id) : undefined,
+    attemptCount: Number(row.attempt_count ?? 0),
+    startedAt: String(row.started_at),
+    updatedAt: String(row.updated_at)
+  };
+}
+
+function normalizeSentinelEventInput(input: SentinelEventInput): Required<Omit<SentinelEvent, 'metadata'>> & Pick<SentinelEvent, 'metadata'> {
+  const at = input.at ?? new Date().toISOString();
+  const message = input.message.trim();
+  if (!message) {
+    throw badRequest('Sentinel event message is required.');
+  }
+  return {
+    id: input.id?.trim() || `sentinel_event_${crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2, 10)}`,
+    sentinelRunId: input.sentinelRunId.trim(),
+    tenantId: input.tenantId,
+    repoId: input.repoId.trim(),
+    at,
+    level: parseSentinelEventLevel(input.level),
+    type: parseSentinelEventType(input.type),
+    message,
+    metadata: input.metadata && Object.keys(input.metadata).length ? input.metadata : undefined
+  };
+}
+
+function mapSentinelEvent(row: Record<string, unknown>): SentinelEvent {
+  return {
+    id: externalId(row),
+    sentinelRunId: String(row.sentinel_run_id),
+    tenantId: String(row.tenant_id),
+    repoId: String(row.repo_id),
+    at: String(row.at),
+    level: parseSentinelEventLevel(row.level),
+    type: parseSentinelEventType(row.type),
+    message: String(row.message),
+    metadata: parseEventMetadataJson(row.metadata_json)
   };
 }
 
@@ -882,6 +1112,185 @@ export async function deleteSlackThreadBinding(
     'DELETE FROM slack_thread_bindings WHERE tenant_id = ? AND task_id = ? AND channel_id = ?'
   ).bind(tenantId, taskId.trim(), channelId.trim()).run();
   return { ok: true };
+}
+
+export async function upsertRepoSentinelConfig(env: Env, input: RepoSentinelConfigInput): Promise<RepoSentinelConfig> {
+  const db = getDb(env);
+  await ensureSchema(db);
+  const normalized = normalizeRepoSentinelConfigInput(input);
+  const now = new Date().toISOString();
+  const id = `repo_sentinel_config_${crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2, 10)}`;
+  await db.prepare(
+    `INSERT INTO repo_sentinel_configs
+     (external_id, tenant_id, repo_id, config_json, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT (tenant_id, repo_id) DO UPDATE SET
+       config_json = excluded.config_json,
+       updated_at = excluded.updated_at`
+  ).bind(
+    id,
+    normalized.tenantId,
+    normalized.repoId,
+    JSON.stringify(normalized.config ?? DEFAULT_REPO_SENTINEL_CONFIG),
+    now,
+    now
+  ).run();
+  return getRepoSentinelConfig(env, normalized.tenantId, normalized.repoId);
+}
+
+export async function getRepoSentinelConfig(env: Env, tenantId: string, repoId: string): Promise<RepoSentinelConfig> {
+  const db = getDb(env);
+  await ensureSchema(db);
+  const row = await db.prepare(
+    'SELECT * FROM repo_sentinel_configs WHERE tenant_id = ? AND repo_id = ? LIMIT 1'
+  ).bind(tenantId, repoId.trim()).first<Record<string, unknown>>();
+  if (!row) {
+    return normalizeRepoSentinelConfig({ sentinelConfig: DEFAULT_REPO_SENTINEL_CONFIG }).sentinelConfig;
+  }
+  return mapRepoSentinelConfig(row);
+}
+
+export async function createSentinelRun(env: Env, input: SentinelRunInput): Promise<SentinelRun> {
+  const db = getDb(env);
+  await ensureSchema(db);
+  const normalized = normalizeSentinelRunInput(input);
+  await db.prepare(
+    `INSERT INTO sentinel_runs
+     (external_id, tenant_id, repo_id, scope_type, scope_value, status, current_task_id, current_run_id, attempt_count, started_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).bind(
+    normalized.id,
+    normalized.tenantId,
+    normalized.repoId,
+    normalized.scopeType,
+    normalized.scopeValue ?? null,
+    normalized.status,
+    normalized.currentTaskId ?? null,
+    normalized.currentRunId ?? null,
+    normalized.attemptCount,
+    normalized.startedAt,
+    normalized.updatedAt
+  ).run();
+  return getSentinelRun(env, normalized.tenantId, normalized.id);
+}
+
+export async function getSentinelRun(env: Env, tenantId: string, runId: string): Promise<SentinelRun> {
+  const db = getDb(env);
+  await ensureSchema(db);
+  const row = await db.prepare(
+    'SELECT * FROM sentinel_runs WHERE tenant_id = ? AND external_id = ? LIMIT 1'
+  ).bind(tenantId, runId.trim()).first<Record<string, unknown>>();
+  if (!row) {
+    throw notFound(`Sentinel run ${runId} not found.`);
+  }
+  return mapSentinelRun(row);
+}
+
+export async function updateSentinelRun(env: Env, tenantId: string, runId: string, patch: SentinelRunPatch): Promise<SentinelRun> {
+  const db = getDb(env);
+  await ensureSchema(db);
+  const existing = await getSentinelRun(env, tenantId, runId);
+  const updated: SentinelRun = {
+    ...existing,
+    status: patch.status ? parseSentinelRunStatus(patch.status) : existing.status,
+    currentTaskId: patch.currentTaskId?.trim() || (Object.prototype.hasOwnProperty.call(patch, 'currentTaskId') ? undefined : existing.currentTaskId),
+    currentRunId: patch.currentRunId?.trim() || (Object.prototype.hasOwnProperty.call(patch, 'currentRunId') ? undefined : existing.currentRunId),
+    attemptCount: Number.isInteger(patch.attemptCount) && Number(patch.attemptCount) >= 0
+      ? Number(patch.attemptCount)
+      : existing.attemptCount,
+    updatedAt: patch.updatedAt ?? new Date().toISOString()
+  };
+  await db.prepare(
+    `UPDATE sentinel_runs
+     SET status = ?, current_task_id = ?, current_run_id = ?, attempt_count = ?, updated_at = ?
+     WHERE tenant_id = ? AND external_id = ?`
+  ).bind(
+    updated.status,
+    updated.currentTaskId ?? null,
+    updated.currentRunId ?? null,
+    updated.attemptCount,
+    updated.updatedAt,
+    tenantId,
+    runId
+  ).run();
+  return getSentinelRun(env, tenantId, runId);
+}
+
+export async function listSentinelRuns(env: Env, tenantId: string, filters?: { repoId?: string; status?: SentinelRun['status'] }): Promise<SentinelRun[]> {
+  const db = getDb(env);
+  await ensureSchema(db);
+  const clauses = ['tenant_id = ?'];
+  const values: unknown[] = [tenantId];
+  if (filters?.repoId) {
+    clauses.push('repo_id = ?');
+    values.push(filters.repoId.trim());
+  }
+  if (filters?.status) {
+    clauses.push('status = ?');
+    values.push(parseSentinelRunStatus(filters.status));
+  }
+  const query = `SELECT * FROM sentinel_runs WHERE ${clauses.join(' AND ')} ORDER BY started_at DESC`;
+  const result = await db.prepare(query).bind(...values).all<Record<string, unknown>>();
+  return (result.results ?? []).map(mapSentinelRun);
+}
+
+export async function appendSentinelEvent(env: Env, input: SentinelEventInput): Promise<SentinelEvent> {
+  const db = getDb(env);
+  await ensureSchema(db);
+  const normalized = normalizeSentinelEventInput(input);
+  await db.prepare(
+    `INSERT INTO sentinel_events
+     (external_id, sentinel_run_id, tenant_id, repo_id, at, level, type, message, metadata_json)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).bind(
+    normalized.id,
+    normalized.sentinelRunId,
+    normalized.tenantId,
+    normalized.repoId,
+    normalized.at,
+    normalized.level,
+    normalized.type,
+    normalized.message,
+    normalized.metadata ? JSON.stringify(normalized.metadata) : null
+  ).run();
+  return getSentinelEvent(env, normalized.tenantId, normalized.id);
+}
+
+export async function getSentinelEvent(env: Env, tenantId: string, eventId: string): Promise<SentinelEvent> {
+  const db = getDb(env);
+  await ensureSchema(db);
+  const row = await db.prepare(
+    'SELECT * FROM sentinel_events WHERE tenant_id = ? AND external_id = ? LIMIT 1'
+  ).bind(tenantId, eventId.trim()).first<Record<string, unknown>>();
+  if (!row) {
+    throw notFound(`Sentinel event ${eventId} not found.`);
+  }
+  return mapSentinelEvent(row);
+}
+
+export async function listSentinelEvents(
+  env: Env,
+  tenantId: string,
+  filters?: { repoId?: string; sentinelRunId?: string; limit?: number }
+): Promise<SentinelEvent[]> {
+  const db = getDb(env);
+  await ensureSchema(db);
+  const clauses = ['tenant_id = ?'];
+  const values: unknown[] = [tenantId];
+  if (filters?.repoId) {
+    clauses.push('repo_id = ?');
+    values.push(filters.repoId.trim());
+  }
+  if (filters?.sentinelRunId) {
+    clauses.push('sentinel_run_id = ?');
+    values.push(filters.sentinelRunId.trim());
+  }
+  const limit = Number.isInteger(filters?.limit) && Number(filters?.limit) > 0
+    ? Math.min(Number(filters?.limit), 500)
+    : 200;
+  const query = `SELECT * FROM sentinel_events WHERE ${clauses.join(' AND ')} ORDER BY at DESC LIMIT ${limit}`;
+  const result = await db.prepare(query).bind(...values).all<Record<string, unknown>>();
+  return (result.results ?? []).map(mapSentinelEvent);
 }
 
 export async function signup(env: Env, input: {

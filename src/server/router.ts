@@ -70,6 +70,24 @@ function parsePathParam(value: string | undefined) {
   return decodeURIComponent(value ?? '');
 }
 
+function normalizeTagFilters(searchParams: URLSearchParams) {
+  const values = [
+    ...searchParams.getAll('tag'),
+    ...searchParams.getAll('tags').flatMap((value) => value.split(','))
+  ];
+  const seen = new Set<string>();
+  const tags: string[] = [];
+  for (const value of values) {
+    const trimmed = value.trim();
+    if (!trimmed || seen.has(trimmed)) {
+      continue;
+    }
+    seen.add(trimmed);
+    tags.push(trimmed);
+  }
+  return tags;
+}
+
 export async function handleSlackCommands(request: Request, env: Env, ctx: ExecutionContext<unknown>): Promise<Response> {
   return handleSlackCommandsHandler(request, env, ctx);
 }
@@ -480,11 +498,16 @@ export async function handleListTasks(request: Request, env: Env): Promise<Respo
     const requestContext = await resolveRequestTenantContext(env, board, request, { requireSession: true });
     await requireActiveTenantAccess(env, board, requestContext);
     const repoId = url.searchParams.get('repoId');
+    const tags = normalizeTagFilters(url.searchParams);
     if (!repoId || repoId === 'all') {
-      return json((await board.getBoardSync('all', requestContext.activeTenantId)).tasks);
+      const tasks = (await board.getBoardSync('all', requestContext.activeTenantId)).tasks;
+      if (!tags.length) {
+        return json(tasks);
+      }
+      return json(tasks.filter((task) => tags.every((tag) => task.tags?.includes(tag))));
     }
     await assertRepoAccess(env, board, requestContext, repoId);
-    return json(await env.REPO_BOARD.getByName(repoId).listTasks(requestContext.activeTenantId));
+    return json(await env.REPO_BOARD.getByName(repoId).listTasks(requestContext.activeTenantId, { tags }));
   });
 }
 

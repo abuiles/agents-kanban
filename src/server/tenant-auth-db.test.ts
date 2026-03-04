@@ -1,19 +1,27 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
+  appendSentinelEvent,
   acceptTenantInvite,
+  createSentinelRun,
   deleteIntegrationConfig,
   deleteJiraProjectRepoMapping,
   deleteSlackThreadBinding,
   createTenantInvite,
+  getRepoSentinelConfig,
+  getSentinelRun,
   getIntegrationConfig,
   getSlackThreadBinding,
   createUserApiToken,
   listIntegrationConfigs,
   listJiraProjectRepoMappings,
   listJiraProjectRepoMappingsByProject,
+  listSentinelEvents,
+  listSentinelRuns,
   upsertIntegrationConfig,
   upsertJiraProjectRepoMapping,
+  upsertRepoSentinelConfig,
   upsertSlackThreadBinding,
+  updateSentinelRun,
   listTenantInvites,
   listUserApiTokens,
   login,
@@ -75,6 +83,9 @@ class FakeTenantAuthDb {
   integrationConfigs: Row[] = [];
   jiraProjectRepoMappings: Row[] = [];
   slackThreadBindings: Row[] = [];
+  repoSentinelConfigs: Row[] = [];
+  sentinelRuns: Row[] = [];
+  sentinelEvents: Row[] = [];
 
   prepare(sql: string) {
     return new FakeD1Statement(sql, (statement, bindings) => this.execute(statement, bindings));
@@ -99,7 +110,10 @@ class FakeTenantAuthDb {
           { name: 'security_audit_log' },
           { name: 'integration_configs' },
           { name: 'jira_project_repo_mappings' },
-          { name: 'slack_thread_bindings' }
+          { name: 'slack_thread_bindings' },
+          { name: 'repo_sentinel_configs' },
+          { name: 'sentinel_runs' },
+          { name: 'sentinel_events' }
         ]
       };
     }
@@ -276,6 +290,147 @@ class FakeTenantAuthDb {
       }
       if (sql.includes('LIMIT 1')) {
         rows = rows.slice(0, 1);
+      }
+      return { results: rows };
+    }
+
+    if (sql.includes('INSERT INTO repo_sentinel_configs')) {
+      const row = {
+        external_id: String(bindings[0]),
+        tenant_id: String(bindings[1]),
+        repo_id: String(bindings[2]),
+        config_json: String(bindings[3]),
+        created_at: String(bindings[4]),
+        updated_at: String(bindings[5])
+      };
+      const existingIndex = this.repoSentinelConfigs.findIndex((entry) => (
+        entry.tenant_id === row.tenant_id
+        && entry.repo_id === row.repo_id
+      ));
+      if (existingIndex >= 0) {
+        this.repoSentinelConfigs[existingIndex] = {
+          ...this.repoSentinelConfigs[existingIndex],
+          config_json: row.config_json,
+          updated_at: row.updated_at
+        };
+      } else {
+        this.repoSentinelConfigs.push(row);
+      }
+      return {};
+    }
+
+    if (sql.includes('SELECT * FROM repo_sentinel_configs')) {
+      const tenantId = String(bindings[0]);
+      const repoId = String(bindings[1]);
+      return {
+        results: this.repoSentinelConfigs.filter((row) => row.tenant_id === tenantId && row.repo_id === repoId).slice(0, 1)
+      };
+    }
+
+    if (sql.includes('INSERT INTO sentinel_runs')) {
+      this.sentinelRuns.push({
+        external_id: String(bindings[0]),
+        tenant_id: String(bindings[1]),
+        repo_id: String(bindings[2]),
+        scope_type: String(bindings[3]),
+        scope_value: bindings[4] ? String(bindings[4]) : null,
+        status: String(bindings[5]),
+        current_task_id: bindings[6] ? String(bindings[6]) : null,
+        current_run_id: bindings[7] ? String(bindings[7]) : null,
+        attempt_count: Number(bindings[8]),
+        started_at: String(bindings[9]),
+        updated_at: String(bindings[10])
+      });
+      return {};
+    }
+
+    if (sql.includes('UPDATE sentinel_runs')) {
+      const status = String(bindings[0]);
+      const currentTaskId = bindings[1] ? String(bindings[1]) : null;
+      const currentRunId = bindings[2] ? String(bindings[2]) : null;
+      const attemptCount = Number(bindings[3]);
+      const updatedAt = String(bindings[4]);
+      const tenantId = String(bindings[5]);
+      const runId = String(bindings[6]);
+      this.sentinelRuns = this.sentinelRuns.map((row) => (
+        row.tenant_id === tenantId && row.external_id === runId
+          ? {
+              ...row,
+              status,
+              current_task_id: currentTaskId,
+              current_run_id: currentRunId,
+              attempt_count: attemptCount,
+              updated_at: updatedAt
+            }
+          : row
+      ));
+      return {};
+    }
+
+    if (sql.includes('SELECT * FROM sentinel_runs')) {
+      const tenantId = String(bindings[0]);
+      let index = 1;
+      let rows = this.sentinelRuns.filter((row) => row.tenant_id === tenantId);
+      if (sql.includes('external_id = ?')) {
+        const runId = String(bindings[index]);
+        rows = rows.filter((row) => row.external_id === runId);
+      }
+      if (sql.includes('repo_id = ?')) {
+        const repoId = String(bindings[index++]);
+        rows = rows.filter((row) => row.repo_id === repoId);
+      }
+      if (sql.includes('status = ?')) {
+        const status = String(bindings[index++]);
+        rows = rows.filter((row) => row.status === status);
+      }
+      if (sql.includes('LIMIT 1')) {
+        rows = rows.slice(0, 1);
+      }
+      if (sql.includes('ORDER BY started_at DESC')) {
+        rows = [...rows].sort((a, b) => String(b.started_at).localeCompare(String(a.started_at)));
+      }
+      return { results: rows };
+    }
+
+    if (sql.includes('INSERT INTO sentinel_events')) {
+      this.sentinelEvents.push({
+        external_id: String(bindings[0]),
+        sentinel_run_id: String(bindings[1]),
+        tenant_id: String(bindings[2]),
+        repo_id: String(bindings[3]),
+        at: String(bindings[4]),
+        level: String(bindings[5]),
+        type: String(bindings[6]),
+        message: String(bindings[7]),
+        metadata_json: bindings[8] ? String(bindings[8]) : null
+      });
+      return {};
+    }
+
+    if (sql.includes('SELECT * FROM sentinel_events')) {
+      const tenantId = String(bindings[0]);
+      let rows = this.sentinelEvents.filter((row) => row.tenant_id === tenantId);
+      let index = 1;
+      if (sql.includes('external_id = ?')) {
+        const eventId = String(bindings[index++]);
+        rows = rows.filter((row) => row.external_id === eventId);
+      }
+      if (sql.includes('repo_id = ?')) {
+        const repoId = String(bindings[index++]);
+        rows = rows.filter((row) => row.repo_id === repoId);
+      }
+      if (sql.includes('sentinel_run_id = ?')) {
+        const runId = String(bindings[index++]);
+        rows = rows.filter((row) => row.sentinel_run_id === runId);
+      }
+      if (sql.includes('ORDER BY at DESC')) {
+        rows = [...rows].sort((a, b) => String(b.at).localeCompare(String(a.at)));
+      }
+      if (sql.includes('LIMIT ')) {
+        const limitMatch = sql.match(/LIMIT\s+(\d+)/i);
+        if (limitMatch) {
+          rows = rows.slice(0, Number(limitMatch[1]));
+        }
       }
       return { results: rows };
     }
@@ -795,5 +950,86 @@ describe('tenant-auth-db single-tenant auth store', () => {
     await deleteSlackThreadBinding(env, tenantId, 'task_1', 'C123');
     const afterDelete = await getSlackThreadBinding(env, tenantId, 'task_1', 'C123');
     expect(afterDelete).toBeUndefined();
+  });
+
+  it('persists repo sentinel config and returns deterministic defaults when missing', async () => {
+    const tenantId = 'tenant_local';
+    const repoId = 'repo_alpha';
+
+    const defaultConfig = await getRepoSentinelConfig(env, tenantId, repoId);
+    expect(defaultConfig).toMatchObject({
+      enabled: false,
+      globalMode: false,
+      reviewGate: { requireChecksGreen: true, requireAutoReviewPass: true },
+      mergePolicy: { autoMergeEnabled: true, method: 'squash', deleteBranch: true },
+      conflictPolicy: { rebaseBeforeMerge: true, remediationEnabled: true, maxAttempts: 2 }
+    });
+
+    const updated = await upsertRepoSentinelConfig(env, {
+      tenantId,
+      repoId,
+      config: {
+        enabled: true,
+        globalMode: true,
+        defaultGroupTag: 'p1',
+        mergePolicy: { method: 'merge', autoMergeEnabled: false, deleteBranch: false },
+        conflictPolicy: { maxAttempts: 5, remediationEnabled: false, rebaseBeforeMerge: false }
+      }
+    });
+
+    expect(updated.enabled).toBe(true);
+    expect(updated.globalMode).toBe(true);
+    expect(updated.defaultGroupTag).toBe('p1');
+    expect(updated.mergePolicy.method).toBe('merge');
+    expect(updated.conflictPolicy.maxAttempts).toBe(5);
+  });
+
+  it('persists sentinel runs and events with roundtrip reads', async () => {
+    const tenantId = 'tenant_local';
+    const repoId = 'repo_alpha';
+
+    const run = await createSentinelRun(env, {
+      tenantId,
+      repoId,
+      scopeType: 'group',
+      scopeValue: 'p1',
+      status: 'running'
+    });
+    expect(run.repoId).toBe(repoId);
+    expect(run.scopeType).toBe('group');
+    expect(run.scopeValue).toBe('p1');
+
+    const updatedRun = await updateSentinelRun(env, tenantId, run.id, {
+      status: 'paused',
+      currentTaskId: 'task_1',
+      currentRunId: 'run_1',
+      attemptCount: 2
+    });
+    expect(updatedRun.status).toBe('paused');
+    expect(updatedRun.currentTaskId).toBe('task_1');
+    expect(updatedRun.currentRunId).toBe('run_1');
+    expect(updatedRun.attemptCount).toBe(2);
+
+    const fetchedRun = await getSentinelRun(env, tenantId, run.id);
+    expect(fetchedRun.status).toBe('paused');
+
+    const event = await appendSentinelEvent(env, {
+      tenantId,
+      repoId,
+      sentinelRunId: run.id,
+      level: 'info',
+      type: 'sentinel.started',
+      message: 'Sentinel started',
+      metadata: { source: 'test', attempt: 1 }
+    });
+    expect(event.sentinelRunId).toBe(run.id);
+    expect(event.metadata?.source).toBe('test');
+
+    const runEvents = await listSentinelEvents(env, tenantId, { sentinelRunId: run.id });
+    expect(runEvents).toHaveLength(1);
+    expect(runEvents[0].id).toBe(event.id);
+
+    const repoRuns = await listSentinelRuns(env, tenantId, { repoId });
+    expect(repoRuns.map((entry) => entry.id)).toContain(run.id);
   });
 });

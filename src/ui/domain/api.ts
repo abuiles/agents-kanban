@@ -8,6 +8,7 @@ import type {
   LlmAdapter,
   LlmReasoningEffort,
   Repo,
+  RepoSentinelConfig,
   RunCommand,
   RunEvent,
   RunLogEntry,
@@ -27,6 +28,14 @@ export type RepoAutoReviewInput = {
   prompt?: string;
   provider?: AutoReviewProvider;
   postInline?: boolean;
+};
+export type RepoSentinelConfigInput = {
+  enabled?: boolean;
+  globalMode?: boolean;
+  defaultGroupTag?: string;
+  reviewGate?: Partial<RepoSentinelConfig['reviewGate']>;
+  mergePolicy?: Partial<RepoSentinelConfig['mergePolicy']>;
+  conflictPolicy?: Partial<RepoSentinelConfig['conflictPolicy']>;
 };
 
 export type RequestRunChangesSelection = {
@@ -49,6 +58,7 @@ export type CreateRepoInput = {
   baselineUrl: string;
   enabled?: boolean;
   autoReview?: RepoAutoReviewInput;
+  sentinelConfig?: RepoSentinelConfigInput;
   previewMode?: Repo['previewMode'];
   evidenceMode?: Repo['evidenceMode'];
   previewAdapter?: Repo['previewAdapter'];
@@ -91,6 +101,7 @@ export type CreateTaskInput = {
   llmReasoningEffort?: LlmReasoningEffort;
   codexModel?: CodexModel;
   codexReasoningEffort?: CodexReasoningEffort;
+  tags?: string[];
 };
 
 export type UpdateTaskInput = Partial<Omit<CreateTaskInput, 'repoId'>> & {
@@ -189,7 +200,7 @@ export interface AgentBoardApi {
   getScmCredential(scmProvider: UpsertScmCredentialInput['scmProvider'], host: string): Promise<ScmCredential | undefined>;
   upsertScmCredential(input: UpsertScmCredentialInput): Promise<ScmCredential>;
   createTask(input: CreateTaskInput): Promise<Task>;
-  listTasks(filter?: { repoId?: string }): Promise<Task[]>;
+  listTasks(filter?: { repoId?: string; tags?: string[] }): Promise<Task[]>;
   getTask(taskId: string): Promise<TaskDetail>;
   updateTask(taskId: string, patch: UpdateTaskInput): Promise<Task>;
   startRun(taskId: string): Promise<AgentRun>;
