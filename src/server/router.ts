@@ -38,6 +38,7 @@ import {
   handleSlackEvents as handleSlackEventsHandler,
   handleSlackInteractions as handleSlackInteractionsHandler
 } from './integrations/slack/handlers';
+import { handleGitlabWebhook as handleGitlabWebhookHandler } from './integrations/gitlab/handlers';
 
 const BOARD_OBJECT_NAME = 'agentboard';
 
@@ -99,6 +100,10 @@ export async function handleSlackEvents(request: Request, env: Env): Promise<Res
 
 export async function handleSlackInteractions(request: Request, env: Env, ctx: ExecutionContext<unknown>): Promise<Response> {
   return handleSlackInteractionsHandler(request, env, ctx);
+}
+
+export async function handleGitlabWebhook(request: Request, env: Env): Promise<Response> {
+  return handleGitlabWebhookHandler(request, env);
 }
 
 export async function handleAuthSignup(request: Request, env: Env): Promise<Response> {

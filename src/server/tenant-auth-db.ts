@@ -1100,6 +1100,29 @@ export async function getSlackThreadBinding(
   return mapSlackThreadBinding(result);
 }
 
+export async function listSlackThreadBindings(
+  env: Env,
+  tenantId: string,
+  filters?: { taskId?: string; currentRunId?: string }
+): Promise<SlackThreadBinding[]> {
+  const db = getDb(env);
+  await ensureSchema(db);
+  const clauses: string[] = ['tenant_id = ?'];
+  const values: unknown[] = [tenantId];
+  if (filters?.taskId?.trim()) {
+    clauses.push('task_id = ?');
+    values.push(filters.taskId.trim());
+  }
+  if (filters?.currentRunId?.trim()) {
+    clauses.push('current_run_id = ?');
+    values.push(filters.currentRunId.trim());
+  }
+
+  const query = `SELECT * FROM slack_thread_bindings WHERE ${clauses.join(' AND ')} ORDER BY updated_at DESC`;
+  const result = await db.prepare(query).bind(...values).all<Record<string, unknown>>();
+  return (result.results ?? []).map(mapSlackThreadBinding);
+}
+
 export async function deleteSlackThreadBinding(
   env: Env,
   tenantId: string,

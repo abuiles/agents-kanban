@@ -11,6 +11,7 @@ import {
   type ParsedSlackInteraction
 } from './payload';
 import { resolveThreadTenant, verifySlackRequest } from './verification';
+import { mirrorRunLifecycleMilestone } from './timeline';
 
 const DEFAULT_TASK_ID_PREFIX = 'issue';
 const DEFAULT_REVIEW_ROUND = 0;
@@ -243,6 +244,9 @@ async function startRunForTask(
   await repoBoard.transitionRun(run.runId, {
     workflowInstanceId: workflow.id,
     orchestrationMode: workflow.id.startsWith('local-alarm-') ? 'local_alarm' : 'workflow'
+  });
+  await mirrorRunLifecycleMilestone(env, run, 'queued', `${run.runId}:queued`).catch(() => {
+    // Slack timeline mirroring is best effort.
   });
   return { taskId: task.taskId, runId: run.runId };
 }

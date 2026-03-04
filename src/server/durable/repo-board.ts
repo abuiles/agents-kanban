@@ -26,6 +26,7 @@ import { resolveRunSource } from '../shared/run-source-resolution';
 import { normalizeOperatorSession, normalizeRunLlmState, normalizeTaskUiMeta } from '../../shared/llm';
 import { hasRunReview, normalizeDependencyReviewMetadata, normalizeRunReviewMetadata, normalizeTaskBranchSourceReviewMetadata } from '../../shared/scm';
 import { DEFAULT_TENANT_ID, normalizeTenantId } from '../../shared/tenant';
+import { mapRunStatusToLifecycleMilestone, mirrorRunLifecycleMilestone } from '../integrations/slack/timeline';
 
 const STORAGE_KEY = 'repo-board-state';
 const LOCAL_JOBS_KEY = 'repo-board-local-jobs';
@@ -547,6 +548,13 @@ export class RepoBoardDO extends DurableObject<Env> {
       await this.emit({ type: 'run.events_appended', payload: { runId, events } }, updated.repoId);
     }
     await this.emitDependencyRefreshUpdates(updated.repoId, refreshedTasks, [finalTask.taskId]);
+    const previousMilestone = mapRunStatusToLifecycleMilestone(run.status);
+    const nextMilestone = mapRunStatusToLifecycleMilestone(updated.status);
+    if (nextMilestone && nextMilestone !== previousMilestone) {
+      await mirrorRunLifecycleMilestone(this.env, updated, nextMilestone, `${updated.runId}:${nextMilestone}:${nowIso}`).catch(() => {
+        // Slack timeline mirroring is best effort.
+      });
+    }
     return updated;
   }
 
