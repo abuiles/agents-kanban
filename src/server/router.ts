@@ -77,8 +77,8 @@ export async function handleSlackEvents(request: Request, env: Env): Promise<Res
   return handleSlackEventsHandler(request, env);
 }
 
-export async function handleSlackInteractions(request: Request, env: Env): Promise<Response> {
-  return handleSlackInteractionsHandler(request, env);
+export async function handleSlackInteractions(request: Request, env: Env, ctx: ExecutionContext<unknown>): Promise<Response> {
+  return handleSlackInteractionsHandler(request, env, ctx);
 }
 
 export async function handleAuthSignup(request: Request, env: Env): Promise<Response> {

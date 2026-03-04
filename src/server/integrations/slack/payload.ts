@@ -21,6 +21,10 @@ export type SlackInteractionValue = {
   currentRunId?: string;
   latestReviewRound?: number;
   repoId?: string;
+  issueKey?: string;
+  issueTitle?: string;
+  issueBody?: string;
+  issueUrl?: string;
 };
 
 export type ParsedSlackInteraction = {
@@ -33,6 +37,10 @@ export type ParsedSlackInteraction = {
   currentRunId?: string;
   latestReviewRound?: number;
   repoId?: string;
+  issueKey?: string;
+  issueTitle?: string;
+  issueBody?: string;
+  issueUrl?: string;
 };
 
 type SlackEventPayload = {
@@ -74,6 +82,17 @@ function parseInteractionValue(raw: string | undefined): SlackInteractionValue {
     throw badRequest('Invalid Slack interaction action value.');
   }
   throw badRequest('Invalid Slack interaction action value.');
+}
+
+function readOptionalString(value: unknown, field: string): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed ? trimmed : undefined;
+  }
+  throw badRequest(`Invalid Slack interaction value ${field}.`);
 }
 
 function readOptionalNumber(value: unknown, field: string): number | undefined {
@@ -173,10 +192,14 @@ export function parseSlackInteractionBody(rawBody: string): ParsedSlackInteracti
       ? value.threadTs.trim()
       : typeof (container?.thread_ts) === 'string' && container?.thread_ts.trim()
         ? String(container.thread_ts).trim()
-        : (() => { throw badRequest('Missing Slack interaction thread.'); })(),
+        : '',
     currentRunId: typeof value.currentRunId === 'string' && value.currentRunId.trim() ? value.currentRunId.trim() : undefined,
     latestReviewRound: readOptionalNumber(value.latestReviewRound, 'latestReviewRound'),
-    repoId: typeof value.repoId === 'string' && value.repoId.trim() ? value.repoId.trim() : undefined
+    repoId: readOptionalString(value.repoId, 'repoId'),
+    issueKey: readOptionalString(value.issueKey, 'issueKey'),
+    issueTitle: readOptionalString(value.issueTitle, 'issueTitle'),
+    issueBody: readOptionalString(value.issueBody, 'issueBody'),
+    issueUrl: readOptionalString(value.issueUrl, 'issueUrl')
   };
 }
 
