@@ -1,6 +1,6 @@
 # Stage: Slack Free-Text Intent Intake + Model-Selectable Parser (One-Shot Execution)
 
-**Status:** Planned
+**Status:** In progress (S10 implementation landed)
 
 ## Goal
 

@@ -12,6 +12,7 @@ import {
   getSentinelRun,
   getIntegrationConfig,
   getSlackThreadBinding,
+  getSlackIntakeSession,
   createUserApiToken,
   listIntegrationConfigs,
   listJiraProjectRepoMappings,
@@ -22,6 +23,7 @@ import {
   upsertIntegrationConfig,
   upsertJiraProjectRepoMapping,
   upsertRepoSentinelConfig,
+  upsertSlackIntakeSession,
   upsertSlackThreadBinding,
   updateSentinelRun,
   listTenantInvites,
@@ -86,6 +88,7 @@ class FakeTenantAuthDb {
   integrationConfigs: Row[] = [];
   jiraProjectRepoMappings: Row[] = [];
   slackThreadBindings: Row[] = [];
+  slackIntakeSessions: Row[] = [];
   repoSentinelConfigs: Row[] = [];
   sentinelRuns: Row[] = [];
   sentinelEvents: Row[] = [];
@@ -114,6 +117,7 @@ class FakeTenantAuthDb {
           { name: 'integration_configs' },
           { name: 'jira_project_repo_mappings' },
           { name: 'slack_thread_bindings' },
+          { name: 'slack_intake_sessions' },
           { name: 'repo_sentinel_configs' },
           { name: 'sentinel_runs' },
           { name: 'sentinel_events' }
@@ -299,6 +303,54 @@ class FakeTenantAuthDb {
         rows = rows.slice(0, 1);
       }
       return { results: rows };
+    }
+
+    if (sql.includes('INSERT INTO slack_intake_sessions')) {
+      const row = {
+        external_id: String(bindings[0]),
+        tenant_id: String(bindings[1]),
+        channel_id: String(bindings[2]),
+        thread_ts: String(bindings[3]),
+        status: String(bindings[4]),
+        turn_count: Number(bindings[5]),
+        last_confidence: bindings[6] === null ? null : Number(bindings[6]),
+        session_json: String(bindings[7]),
+        last_activity_at: String(bindings[8]),
+        created_at: String(bindings[9]),
+        updated_at: String(bindings[10])
+      };
+      const existingIndex = this.slackIntakeSessions.findIndex((entry) => (
+        entry.tenant_id === row.tenant_id
+        && entry.channel_id === row.channel_id
+        && entry.thread_ts === row.thread_ts
+      ));
+      if (existingIndex >= 0) {
+        this.slackIntakeSessions[existingIndex] = {
+          ...this.slackIntakeSessions[existingIndex],
+          status: row.status,
+          turn_count: row.turn_count,
+          last_confidence: row.last_confidence,
+          session_json: row.session_json,
+          last_activity_at: row.last_activity_at,
+          updated_at: row.updated_at
+        };
+      } else {
+        this.slackIntakeSessions.push(row);
+      }
+      return {};
+    }
+
+    if (sql === 'SELECT * FROM slack_intake_sessions WHERE tenant_id = ? AND channel_id = ? AND thread_ts = ? LIMIT 1') {
+      const tenantId = String(bindings[0]);
+      const channelId = String(bindings[1]);
+      const threadTs = String(bindings[2]);
+      return {
+        results: this.slackIntakeSessions.filter((row) => (
+          row.tenant_id === tenantId
+          && row.channel_id === channelId
+          && row.thread_ts === threadTs
+        )).slice(0, 1)
+      };
     }
 
     if (sql.includes('INSERT INTO repo_sentinel_configs')) {
@@ -1073,6 +1125,46 @@ describe('tenant-auth-db single-tenant auth store', () => {
     await deleteSlackThreadBinding(env, tenantId, 'task_1', 'C123');
     const afterDelete = await getSlackThreadBinding(env, tenantId, 'task_1', 'C123');
     expect(afterDelete).toBeUndefined();
+  });
+
+  it('persists slack intake sessions with upsert/lookup by thread identity', async () => {
+    const tenantId = 'tenant_local';
+    const initial = await upsertSlackIntakeSession(env, {
+      tenantId,
+      channelId: 'C123',
+      threadTs: '123.456',
+      status: 'active',
+      turnCount: 1,
+      lastConfidence: 0.61,
+      data: {
+        intent: 'create_task',
+        taskPrompt: 'Update README and docs.',
+        missingFields: ['repo']
+      }
+    });
+    expect(initial.status).toBe('active');
+    expect(initial.turnCount).toBe(1);
+
+    await upsertSlackIntakeSession(env, {
+      tenantId,
+      channelId: 'C123',
+      threadTs: '123.456',
+      status: 'completed',
+      turnCount: 2,
+      lastConfidence: 0.91,
+      data: {
+        intent: 'create_task',
+        repoId: 'repo_alpha',
+        taskTitle: 'Docs cleanup',
+        taskPrompt: 'Refine Slack docs',
+        acceptanceCriteria: ['Docs updated']
+      }
+    });
+    const lookedUp = await getSlackIntakeSession(env, tenantId, 'C123', '123.456');
+    expect(lookedUp?.status).toBe('completed');
+    expect(lookedUp?.turnCount).toBe(2);
+    expect(lookedUp?.lastConfidence).toBe(0.91);
+    expect(lookedUp?.data.repoId).toBe('repo_alpha');
   });
 
   it('persists repo sentinel config and returns deterministic defaults when missing', async () => {

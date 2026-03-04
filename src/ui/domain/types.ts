@@ -61,6 +61,33 @@ export type SlackThreadBinding = {
   createdAt: string;
   updatedAt: string;
 };
+export type SlackIntakeSessionStatus = 'active' | 'completed' | 'cancelled' | 'expired';
+export type SlackIntakeSessionData = {
+  intent?: 'fix_jira' | 'create_task' | 'unknown';
+  confidence?: number;
+  jiraKey?: string;
+  repoHint?: string;
+  repoId?: string;
+  taskTitle?: string;
+  taskPrompt?: string;
+  acceptanceCriteria?: string[];
+  missingFields?: string[];
+  clarifyingQuestion?: string;
+  lastUserText?: string;
+};
+export type SlackIntakeSession = {
+  id: string;
+  tenantId: string;
+  channelId: string;
+  threadTs: string;
+  status: SlackIntakeSessionStatus;
+  turnCount: number;
+  lastConfidence?: number;
+  data: SlackIntakeSessionData;
+  lastActivityAt: string;
+  createdAt: string;
+  updatedAt: string;
+};
 export type RepoPreviewConfig = {
   checkName?: string;
   promptRecipe?: string;

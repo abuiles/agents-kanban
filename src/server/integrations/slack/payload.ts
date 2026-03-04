@@ -10,14 +10,7 @@ type SlackSlashCommandPayloadBase = {
   responseUrl: string | undefined;
 };
 
-export type SlackSlashCommandPayload =
-  | (SlackSlashCommandPayloadBase & {
-    intent: 'help';
-  })
-  | (SlackSlashCommandPayloadBase & {
-    intent: 'fix';
-    issueKey: string;
-  });
+export type SlackSlashCommandPayload = SlackSlashCommandPayloadBase;
 
 export type SlackInteractionAction = 'repo_disambiguation' | 'approve_rerun' | 'pause' | 'close';
 
@@ -54,12 +47,20 @@ export type ParsedSlackInteraction = {
 type SlackEventPayload = {
   type: string;
   challenge?: string;
+  eventId?: string;
   teamId?: string;
+  event?: {
+    type?: string;
+    channelId?: string;
+    threadTs?: string;
+    text?: string;
+    userId?: string;
+    botId?: string;
+    ts?: string;
+  };
 };
 
 const ISSUE_KEY_PATTERN = /^[A-Z][A-Z0-9_]*-\d+$/i;
-const FIX_COMMAND_PATTERN = /^fix\s+([A-Z][A-Z0-9_]*-\d+)\s*$/i;
-const HELP_COMMAND_PATTERN = /^help\s*$/i;
 const SUPPORTED_SLACK_COMMAND = '/kanvy';
 const SUPPORTED_ACTION_IDS: Set<string> = new Set([
   'repo_disambiguation',
@@ -128,42 +129,15 @@ export function parseSlackSlashCommandBody(rawBody: string): SlackSlashCommandPa
     throw badRequest('Unknown Slack slash command.');
   }
   const text = readFormValue(params, 'text', false) ?? '';
-  const teamId = readFormValue(params, 'team_id', false);
-  const channelId = readFormValue(params, 'channel_id', true);
-  const threadTs = readFormValue(params, 'thread_ts', false);
-  const userId = readFormValue(params, 'user_id', false) ?? 'unknown';
-  const responseUrl = readFormValue(params, 'response_url', false);
-  if (HELP_COMMAND_PATTERN.test(text)) {
-    return {
-      intent: 'help',
-      command,
-      text,
-      teamId,
-      channelId,
-      threadTs,
-      userId,
-      responseUrl
-    };
-  }
-  const match = FIX_COMMAND_PATTERN.exec(text);
-  if (!match || !match[1]) {
-    throw badRequest('Invalid slash command format. Expected: /kanvy fix <JIRA_KEY> or /kanvy help.');
-  }
-  const issueKey = match[1].toUpperCase();
-  if (!ISSUE_KEY_PATTERN.test(issueKey)) {
-    throw badRequest('Invalid issue key.');
-  }
 
   return {
-    intent: 'fix',
     command,
     text,
-    issueKey,
-    teamId,
-    channelId,
-    threadTs,
-    userId,
-    responseUrl
+    teamId: readFormValue(params, 'team_id', false),
+    channelId: readFormValue(params, 'channel_id', true),
+    threadTs: readFormValue(params, 'thread_ts', false),
+    userId: readFormValue(params, 'user_id', false) ?? 'unknown',
+    responseUrl: readFormValue(params, 'response_url', false)
   };
 }
 
@@ -243,6 +217,7 @@ export function parseSlackEventBody(rawBody: string): SlackEventPayload {
   return {
     type: payload.type,
     challenge: typeof payload.challenge === 'string' ? payload.challenge : undefined,
+    eventId: typeof payload.event_id === 'string' && payload.event_id.trim() ? payload.event_id.trim() : undefined,
     teamId: (() => {
       const event = payload as Record<string, unknown>;
       if (typeof event.team_id === 'string' && event.team_id.trim()) {
@@ -250,6 +225,31 @@ export function parseSlackEventBody(rawBody: string): SlackEventPayload {
       }
       const team = event.team as Record<string, unknown> | undefined;
       return typeof team?.id === 'string' && team.id.trim() ? team.id.trim() : undefined;
+    })(),
+    event: (() => {
+      const event = payload.event as Record<string, unknown> | undefined;
+      if (!event || typeof event !== 'object') {
+        return undefined;
+      }
+      const read = (value: unknown) => (typeof value === 'string' && value.trim() ? value.trim() : undefined);
+      return {
+        type: read(event.type),
+        channelId: read(event.channel),
+        threadTs: read(event.thread_ts),
+        text: read(event.text),
+        userId: read(event.user),
+        botId: read(event.bot_id),
+        ts: read(event.ts)
+      };
     })()
   };
+}
+
+export function parseJiraFastPathIssueKey(text: string): string | undefined {
+  const match = /^fix\s+([A-Z][A-Z0-9_]*-\d+)\s*$/i.exec(text.trim());
+  if (!match?.[1]) {
+    return undefined;
+  }
+  const issueKey = match[1].toUpperCase();
+  return ISSUE_KEY_PATTERN.test(issueKey) ? issueKey : undefined;
 }
