@@ -9,6 +9,7 @@ This folder is the source of truth for active planning and execution.
 - [P3: Scale and Scheduling](./p3-scale-and-scheduling.md)
 - [P4: Security and Governance](./p4-security-and-governance.md)
 - [P5: Slack + Jira + GitLab Operator Loop (Strict MVP)](./p5-slack-jira-gitlab-mvp.md)
+- [P6: Auto Review + Selective Change Loop](./p6-auto-review-and-change-loop.md)
 - [Migration Status](./migration-status.md)
 
 ## How to use
