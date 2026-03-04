@@ -40,9 +40,10 @@ AgentsKanban helps you run AI-assisted software work the same way you already ma
 ### Auto Review and Selective Change Loop
 
 - Runs can auto-trigger review when `autoReview` is enabled and the run reaches review state.
-- Review findings are posted to GitLab or Jira with marker-based idempotency.
+- Review findings are posted to GitHub, GitLab, or Jira with marker-based idempotency.
 - Operators can request changes against all findings or a selected subset (`all`, `include`, `exclude`, `freeform`).
 - Replies from providers can be included in follow-up prompts when `reviewSelection.includeReplies = true`.
+- For GitHub, reply context is merged from webhook-ingested hints (`POST /api/integrations/github/webhook`) and on-demand provider fetch with deterministic dedupe.
 - Manual reruns are available via `POST /api/runs/:runId/review`.
 
 ### Native Sentinel Orchestration

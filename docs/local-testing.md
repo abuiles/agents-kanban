@@ -14,7 +14,7 @@ Use this flow to verify:
 - Stage 6 auto-review/change-loop behavior:
   - run reaches review state
   - review auto-posting executes and writes review artifacts
-  - selective request-changes with provider-reply context
+  - selective request-changes with merged provider-reply context (webhook + on-demand for GitHub)
   - manual review rerun keeps execution metadata updated
 - Stage 7 native sentinel behavior:
   - start/pause/resume/stop control actions
@@ -52,6 +52,12 @@ npx wrangler secret put OPENAI_API_KEY
 ```
 
 Set only the providers you use (`GITHUB_TOKEN` for GitHub repos, `GITLAB_TOKEN` for GitLab repos, `JIRA_TOKEN` when review provider is Jira).
+
+Set GitHub webhook verification secret in KV when validating GitHub reply-context ingestion:
+
+```bash
+npx wrangler kv key put --binding SECRETS_KV github/webhook-secret "<shared-webhook-secret>"
+```
 
 ## 3) Required infrastructure bindings
 
@@ -197,6 +203,11 @@ You can continue to use `npx wrangler dev` for Worker-only execution on the lega
    - `GET /api/runs/:runId` (verify `reviewExecution` fields and round count)
    - `GET /api/runs/:runId/artifacts` (verify `reviewFindingsJson` and `reviewMarkdown` review pointers)
    - `POST /api/runs/:runId/request-changes` with `reviewSelection` payload
+   - for GitHub dogfood:
+     - ensure webhook target is configured: `POST /api/integrations/github/webhook`
+     - reply to a marker-bearing PR finding comment
+     - confirm webhook delivery status is `accepted`
+     - rerun `POST /api/runs/:runId/request-changes` with `includeReplies=true` and verify merged reply context in prompt
    - `POST /api/runs/:runId/review` to execute manual review-only rerun
 6.6 Validate native sentinel orchestration
    - `PATCH /api/repos/:repoId/sentinel/config` with `{ "enabled": true }` plus desired scope/gate/policy

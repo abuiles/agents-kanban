@@ -110,6 +110,41 @@ function formatReplyContext(id: string, replyContext?: ReviewReplyContext) {
   ];
 }
 
+function normalizeReplyBody(value: string) {
+  return value.replace(/\r\n/g, '\n').trim();
+}
+
+export function mergeReviewReplyContext(input: {
+  findingIds: string[];
+  sources: Array<ReviewReplyContext | undefined>;
+}): ReviewReplyContext {
+  const merged: ReviewReplyContext = {};
+
+  for (const findingId of input.findingIds) {
+    const dedupedByBody = new Map<string, { body: string; sourceIndex: number }>();
+    for (let sourceIndex = 0; sourceIndex < input.sources.length; sourceIndex += 1) {
+      const source = input.sources[sourceIndex];
+      const replies = source?.[findingId] ?? [];
+      for (const reply of replies) {
+        const normalized = normalizeReplyBody(reply);
+        if (!normalized || dedupedByBody.has(normalized)) {
+          continue;
+        }
+        dedupedByBody.set(normalized, { body: normalized, sourceIndex });
+      }
+    }
+
+    const entries = [...dedupedByBody.values()]
+      .sort((a, b) => a.sourceIndex - b.sourceIndex || a.body.localeCompare(b.body))
+      .map((entry) => entry.body);
+    if (entries.length) {
+      merged[findingId] = entries;
+    }
+  }
+
+  return merged;
+}
+
 export function buildRequestChangesPrompt(input: {
   operatorPrompt: string;
   selection?: ChangeRequestSelection;
