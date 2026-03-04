@@ -331,7 +331,11 @@ export class RepoBoardDO extends DurableObject<Env> {
     return this.startRun(run.taskId, { forceNew: true, baseRunId: run.runId, tenantId });
   }
 
-  async requestRunChanges(runId: string, prompt: string, tenantId?: string) {
+  async requestRunChanges(
+    runId: string,
+    request: Omit<NonNullable<AgentRun['changeRequest']>, 'requestedAt'>,
+    tenantId?: string
+  ) {
     await this.ready;
     const existingRun = await this.getRun(runId, tenantId);
     const task = this.state.tasks.find((candidate) => candidate.taskId === existingRun.taskId);
@@ -354,7 +358,7 @@ export class RepoBoardDO extends DurableObject<Env> {
       baseRunId: existingRun.runId,
       dependencyContext: existingRun.dependencyContext,
       changeRequest: {
-        prompt,
+        ...request,
         requestedAt: now.toISOString()
       }
     });

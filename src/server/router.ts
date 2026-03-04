@@ -33,18 +33,20 @@ import { parseBoardSnapshot } from '../ui/store/board-snapshot';
 import { scheduleRunJob } from './run-orchestrator';
 import { getRunUsage, getTenantRunUsage, getTenantUsageSummary } from './usage-reporting';
 import { normalizeTenantId, normalizeTenantIdStrict } from '../shared/tenant';
-import { hasRunReview } from '../shared/scm';
+import { getRepoHost, getRunReviewProvider, hasRunReview } from '../shared/scm';
 import * as tenantAuthDb from './tenant-auth-db';
 import { DEFAULT_REPO_SENTINEL_CONFIG } from '../shared/sentinel';
 import { SentinelController } from './sentinel';
+import { buildRequestChangesPrompt, resolveRequestRunChangesSelection } from './request-changes';
 import {
   handleSlackCommands as handleSlackCommandsHandler,
   handleSlackEvents as handleSlackEventsHandler,
   handleSlackInteractions as handleSlackInteractionsHandler
 } from './integrations/slack/handlers';
 import { handleGitlabWebhook as handleGitlabWebhookHandler } from './integrations/gitlab/handlers';
-import type { Repo, SentinelRun } from '../ui/domain/types';
+import type { AutoReviewProvider, Repo, SentinelRun } from '../ui/domain/types';
 import { getScmAdapter } from './scm/registry';
+import { getReviewPostingAdapter } from './review-posting/registry';
 
 const BOARD_OBJECT_NAME = 'agentboard';
 
@@ -1026,8 +1028,54 @@ export async function handleRequestChanges(request: Request, env: Env, params: R
     const runId = parsePathParam(params.runId);
     const body = parseRequestRunChangesInput(await readJson(request));
     const repoId = await resolveRepoIdForRun(board, runId);
-    await assertRepoAccess(env, board, requestContext, repoId);
-    const run = await env.REPO_BOARD.getByName(repoId).requestRunChanges(body.prompt, requestContext.activeTenantId);
+    const repo = await assertRepoAccess(env, board, requestContext, repoId);
+    const repoBoard = env.REPO_BOARD.getByName(repoId);
+    const existingRun = await repoBoard.getRun(runId, requestContext.activeTenantId);
+    const selection = resolveRequestRunChangesSelection({
+      findings: existingRun.reviewFindings ?? [],
+      reviewSelection: body.reviewSelection
+    });
+    const selectedFindingIds = new Set(selection?.selectedFindingIds);
+    const selectedFindings = existingRun.reviewFindings?.filter(
+      (finding) => finding.status === 'open' && selectedFindingIds.has(finding.findingId)
+    ) ?? [];
+    let replyContext;
+    if (selection?.includeReplies && selectedFindings.length) {
+      const reviewProvider = getRunReviewProvider(existingRun) as AutoReviewProvider | undefined;
+      if (reviewProvider !== 'gitlab' && reviewProvider !== 'jira') {
+        throw badRequest('Cannot include replies for this review provider.');
+      }
+      if (!repo.scmProvider) {
+        throw badRequest('Cannot include replies without SCM provider metadata for this repo.');
+      }
+      const token = await board.getScmCredentialSecret(repo.scmProvider, getRepoHost(repo));
+      if (!token) {
+        throw badRequest(`No SCM credential found for ${repo.scmProvider} host ${getRepoHost(repo)}.`);
+      }
+      const taskDetail = await repoBoard.getTask(existingRun.taskId, requestContext.activeTenantId);
+      replyContext = await getReviewPostingAdapter(reviewProvider).fetchReplyContext({
+        repo,
+        task: taskDetail.task,
+        run: existingRun,
+        credential: { token },
+        findingIds: selection.selectedFindingIds
+      });
+    }
+
+    const prompt = buildRequestChangesPrompt({
+      operatorPrompt: body.prompt,
+      selection,
+      selectedFindings,
+      replyContext
+    });
+    const run = await repoBoard.requestRunChanges(
+      runId,
+      {
+        prompt,
+        ...(selection ? { selection } : {})
+      },
+      requestContext.activeTenantId
+    );
     const workflow = await scheduleRunJob(env, ctx as unknown as ExecutionContext, {
       tenantId: requestContext.activeTenantId,
       repoId,

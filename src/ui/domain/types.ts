@@ -152,6 +152,16 @@ export type ReviewFinding = {
   status: ReviewFindingStatus;
   replyContext?: string[];
 };
+export type ReviewSelectionMode = 'all' | 'include' | 'exclude' | 'freeform';
+
+export type ChangeRequestSelection = {
+  mode: ReviewSelectionMode;
+  requestedFindingIds?: string[];
+  selectedFindingIds: string[];
+  unknownFindingIds?: string[];
+  includeReplies?: boolean;
+  instruction?: string;
+};
 export type RunReviewExecution = {
   enabled: boolean;
   trigger: ReviewExecutionTrigger;
@@ -512,6 +522,7 @@ export type AgentRun = {
   changeRequest?: {
     prompt: string;
     requestedAt: string;
+    selection?: ChangeRequestSelection;
   };
   headSha?: string;
   reviewUrl?: string;

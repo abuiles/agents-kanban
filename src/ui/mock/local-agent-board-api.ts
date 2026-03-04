@@ -696,6 +696,16 @@ export class LocalAgentBoardApi implements AgentBoardApi {
       throw new Error(`Task ${run.taskId} not found.`);
     }
 
+    const selection = input.reviewSelection
+      ? {
+          mode: input.reviewSelection.mode,
+          requestedFindingIds: input.reviewSelection.findingIds,
+          selectedFindingIds: input.reviewSelection.findingIds ?? [],
+          includeReplies: input.reviewSelection.includeReplies,
+          instruction: input.reviewSelection.instruction?.trim()
+        }
+      : undefined;
+
     return this.simulator.createRun(
       {
         ...task,
@@ -707,7 +717,11 @@ export class LocalAgentBoardApi implements AgentBoardApi {
         prUrl: run.prUrl,
         prNumber: run.prNumber,
         baseRunId: run.runId,
-        changeRequest: { prompt: input.prompt, requestedAt: nowIso() }
+        changeRequest: {
+          prompt: input.prompt,
+          requestedAt: nowIso(),
+          ...(selection ? { selection } : {})
+        }
       }
     );
   }
