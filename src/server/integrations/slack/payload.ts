@@ -3,7 +3,7 @@ import { badRequest } from '../../http/errors';
 export type SlackSlashCommandPayload = {
   command: string;
   text: string;
-  issueKey: string;
+  issueKey?: string;
   teamId: string | undefined;
   channelId: string;
   threadTs: string | undefined;
@@ -11,7 +11,14 @@ export type SlackSlashCommandPayload = {
   responseUrl: string | undefined;
 };
 
-export type SlackInteractionAction = 'repo_disambiguation' | 'approve_rerun' | 'pause' | 'close';
+export type SlackInteractionAction =
+  | 'repo_disambiguation'
+  | 'approve_rerun'
+  | 'pause'
+  | 'close'
+  | 'intent_repo_select'
+  | 'intent_confirm_create'
+  | 'intent_cancel';
 
 export type SlackInteractionValue = {
   tenantId?: string;
@@ -25,6 +32,7 @@ export type SlackInteractionValue = {
   issueTitle?: string;
   issueBody?: string;
   issueUrl?: string;
+  sessionKey?: string;
 };
 
 export type ParsedSlackInteraction = {
@@ -41,12 +49,20 @@ export type ParsedSlackInteraction = {
   issueTitle?: string;
   issueBody?: string;
   issueUrl?: string;
+  sessionKey?: string;
 };
 
 type SlackEventPayload = {
   type: string;
   challenge?: string;
   teamId?: string;
+  eventId?: string;
+  eventType?: string;
+  channelId?: string;
+  threadTs?: string;
+  text?: string;
+  userId?: string;
+  botId?: string;
 };
 
 const ISSUE_KEY_PATTERN = /^[A-Z][A-Z0-9_]*-\d+$/i;
@@ -56,7 +72,10 @@ const SUPPORTED_ACTION_IDS: Set<string> = new Set([
   'repo_disambiguation',
   'approve_rerun',
   'pause',
-  'close'
+  'close',
+  'intent_repo_select',
+  'intent_confirm_create',
+  'intent_cancel'
 ]);
 
 function readFormValue(params: URLSearchParams, key: string, required: true): string;
@@ -120,18 +139,18 @@ export function parseSlackSlashCommandBody(rawBody: string): SlackSlashCommandPa
   }
   const text = readFormValue(params, 'text', false) ?? '';
   const match = FIX_COMMAND_PATTERN.exec(text);
-  if (!match || !match[1]) {
-    throw badRequest('Invalid slash command format. Expected: /kanvy fix <JIRA_KEY>.');
-  }
-  const issueKey = match[1].toUpperCase();
-  if (!ISSUE_KEY_PATTERN.test(issueKey)) {
-    throw badRequest('Invalid issue key.');
+  let issueKey: string | undefined;
+  if (match?.[1]) {
+    issueKey = match[1].toUpperCase();
+    if (!ISSUE_KEY_PATTERN.test(issueKey)) {
+      throw badRequest('Invalid issue key.');
+    }
   }
 
   return {
     command,
     text,
-    issueKey,
+    ...(issueKey ? { issueKey } : {}),
     teamId: readFormValue(params, 'team_id', false),
     channelId: readFormValue(params, 'channel_id', true),
     threadTs: readFormValue(params, 'thread_ts', false),
@@ -174,15 +193,20 @@ export function parseSlackInteractionBody(rawBody: string): ParsedSlackInteracti
   const team = payload.team as Record<string, unknown> | undefined;
   const tenantId = (value.tenantId ?? undefined) as string | undefined;
 
+  const parsedTaskId = typeof value.taskId === 'string' && value.taskId.trim()
+    ? value.taskId.trim()
+    : typeof payload.callback_id === 'string' && payload.callback_id.trim()
+      ? payload.callback_id.trim()
+      : '';
+  if (!parsedTaskId && !actionId.startsWith('intent_')) {
+    throw badRequest('Missing Slack interaction task id.');
+  }
+
   return {
     actionId,
     teamId: typeof team?.id === 'string' && team.id.trim() ? team.id.trim() : undefined,
     tenantId,
-    taskId: typeof value.taskId === 'string' && value.taskId.trim()
-      ? value.taskId.trim()
-      : typeof payload.callback_id === 'string' && payload.callback_id.trim()
-        ? payload.callback_id.trim()
-        : undefined!,
+    taskId: parsedTaskId,
     channelId: typeof value.channelId === 'string' && value.channelId.trim()
       ? value.channelId.trim()
       : typeof (container?.channel_id) === 'string' && container?.channel_id.trim()
@@ -199,7 +223,8 @@ export function parseSlackInteractionBody(rawBody: string): ParsedSlackInteracti
     issueKey: readOptionalString(value.issueKey, 'issueKey'),
     issueTitle: readOptionalString(value.issueTitle, 'issueTitle'),
     issueBody: readOptionalString(value.issueBody, 'issueBody'),
-    issueUrl: readOptionalString(value.issueUrl, 'issueUrl')
+    issueUrl: readOptionalString(value.issueUrl, 'issueUrl'),
+    sessionKey: readOptionalString(value.sessionKey, 'sessionKey')
   };
 }
 
@@ -213,9 +238,11 @@ export function parseSlackEventBody(rawBody: string): SlackEventPayload {
   if (!payload || typeof payload.type !== 'string') {
     throw badRequest('Invalid Slack event payload.');
   }
+  const event = payload.event as Record<string, unknown> | undefined;
   return {
     type: payload.type,
     challenge: typeof payload.challenge === 'string' ? payload.challenge : undefined,
+    eventId: typeof payload.event_id === 'string' ? payload.event_id : undefined,
     teamId: (() => {
       const event = payload as Record<string, unknown>;
       if (typeof event.team_id === 'string' && event.team_id.trim()) {
@@ -223,6 +250,16 @@ export function parseSlackEventBody(rawBody: string): SlackEventPayload {
       }
       const team = event.team as Record<string, unknown> | undefined;
       return typeof team?.id === 'string' && team.id.trim() ? team.id.trim() : undefined;
-    })()
+    })(),
+    eventType: typeof event?.type === 'string' ? event.type : undefined,
+    channelId: typeof event?.channel === 'string' ? event.channel : undefined,
+    threadTs: typeof event?.thread_ts === 'string'
+      ? event.thread_ts
+      : typeof event?.ts === 'string'
+        ? event.ts
+        : undefined,
+    text: typeof event?.text === 'string' ? event.text : undefined,
+    userId: typeof event?.user === 'string' ? event.user : undefined,
+    botId: typeof event?.bot_id === 'string' ? event.bot_id : undefined
   };
 }

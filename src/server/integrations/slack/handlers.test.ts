@@ -5,6 +5,7 @@ import { handleSlackCommands, handleSlackEvents, handleSlackInteractions } from 
 const tenantAuthDbMocks = vi.hoisted(() => ({
   deleteSlackThreadBinding: vi.fn(),
   getPrimaryTenantId: vi.fn(),
+  listIntegrationConfigs: vi.fn(),
   listJiraProjectRepoMappingsByProject: vi.fn(),
   upsertSlackThreadBinding: vi.fn()
 }));
@@ -118,6 +119,7 @@ describe('slack handlers', () => {
     fetchSpy.mockReset();
     fetchSpy.mockResolvedValue(new Response('{}', { status: 200 }));
     tenantAuthDbMocks.getPrimaryTenantId.mockResolvedValue('tenant_local');
+    tenantAuthDbMocks.listIntegrationConfigs.mockResolvedValue([]);
     tenantAuthDbMocks.upsertSlackThreadBinding.mockImplementation(async (input: {
       taskId: string;
       channelId: string;
@@ -167,7 +169,7 @@ describe('slack handlers', () => {
       repoId: 'repo_alpha',
       sourceRef: 'main',
       llmAdapter: 'codex',
-      codexModel: 'gpt-5.3-codex-spark',
+      codexModel: 'gpt-5.1-codex-mini',
       codexReasoningEffort: 'high'
     }));
     expect(repoBoard.startRun).toHaveBeenCalledWith('task_single', { tenantId: 'team_one' });
@@ -706,5 +708,110 @@ describe('slack handlers', () => {
     const response = await handleSlackEvents(request, makeEnv('secret'));
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ challenge: 'challenge-123' });
+  });
+
+  it('accepts free-text /kanvy commands and starts task/run when a single repo is available', async () => {
+    const boardIndex = makeBoardIndex([
+      { repoId: 'repo_alpha', slug: 'abuiles/agents-kanban' }
+    ]);
+    const repoBoard = makeRepoBoard({ taskId: 'task_intake', runId: 'run_intake' });
+    const rawBody = new URLSearchParams({
+      command: '/kanvy',
+      text: 'draft a rollout plan for retry safety and checkpoint cleanup',
+      channel_id: 'C123',
+      thread_ts: '1672531200.5678',
+      team_id: 'team_one',
+      user_id: 'U1',
+      response_url: 'https://hooks.slack.com/commands/intent'
+    }).toString();
+    const timestamp = nowTs;
+    const signature = await buildSlackSignature('secret', timestamp, rawBody);
+    const request = new Request('https://example.test/api/integrations/slack/commands', {
+      method: 'POST',
+      headers: slackHeaders(timestamp, signature),
+      body: rawBody
+    });
+    const waitUntilTasks: Array<Promise<unknown>> = [];
+    const waitUntil = vi.fn((task: Promise<unknown>) => {
+      waitUntilTasks.push(task);
+    });
+
+    const response = await handleSlackCommands(
+      request,
+      makeEnv('secret', repoBoard, boardIndex),
+      { waitUntil } as unknown as ExecutionContext<unknown>
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      ok: true,
+      text: 'Accepted /kanvy free-text intake command.'
+    });
+    await waitUntilTasks[0];
+    expect(repoBoard.createTask).toHaveBeenCalledWith(expect.objectContaining({
+      repoId: 'repo_alpha',
+      sourceRef: 'main',
+      llmAdapter: 'codex',
+      codexModel: 'gpt-5.1-codex-mini',
+      codexReasoningEffort: 'medium'
+    }));
+    expect(repoBoard.startRun).toHaveBeenCalledWith('task_intake', { tenantId: 'team_one' });
+  });
+
+  it('continues intake sessions from Slack thread replies', async () => {
+    const boardIndex = makeBoardIndex([
+      { repoId: 'repo_alpha', slug: 'abuiles/agents-kanban' }
+    ]);
+    const repoBoard = makeRepoBoard({ taskId: 'task_event_intake', runId: 'run_event_intake' });
+
+    const slashBody = new URLSearchParams({
+      command: '/kanvy',
+      text: 'help',
+      channel_id: 'C123',
+      thread_ts: '1672531200.9999',
+      team_id: 'team_one',
+      user_id: 'U1',
+      response_url: 'https://hooks.slack.com/commands/intent-followup'
+    }).toString();
+    const slashTimestamp = nowTs;
+    const slashSignature = await buildSlackSignature('secret', slashTimestamp, slashBody);
+    const slashRequest = new Request('https://example.test/api/integrations/slack/commands', {
+      method: 'POST',
+      headers: slackHeaders(slashTimestamp, slashSignature),
+      body: slashBody
+    });
+    const waitUntilTasks: Array<Promise<unknown>> = [];
+    await handleSlackCommands(
+      slashRequest,
+      makeEnv('secret', repoBoard, boardIndex),
+      { waitUntil: (task: Promise<unknown>) => waitUntilTasks.push(task) } as unknown as ExecutionContext<unknown>
+    );
+    await waitUntilTasks[0];
+    expect(repoBoard.createTask).not.toHaveBeenCalled();
+
+    const eventBody = JSON.stringify({
+      type: 'event_callback',
+      event_id: 'Ev123',
+      team_id: 'team_one',
+      event: {
+        type: 'message',
+        user: 'U1',
+        channel: 'C123',
+        thread_ts: '1672531200.9999',
+        text: 'Create a task to implement retry logs and acceptance criteria'
+      }
+    });
+    const eventTs = (Number(nowTs) + 1).toString();
+    const eventSig = await buildSlackSignature('secret', eventTs, eventBody);
+    const eventRequest = new Request('https://example.test/api/integrations/slack/events', {
+      method: 'POST',
+      headers: slackHeaders(eventTs, eventSig),
+      body: eventBody
+    });
+    const eventResponse = await handleSlackEvents(eventRequest, makeEnv('secret', repoBoard, boardIndex));
+
+    expect(eventResponse.status).toBe(200);
+    expect(repoBoard.createTask).toHaveBeenCalledTimes(1);
+    expect(repoBoard.startRun).toHaveBeenCalledTimes(1);
   });
 });

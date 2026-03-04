@@ -7,6 +7,7 @@ This document is the operator and agent handoff artifact for the P5 MVP vertical
 In scope (MVP):
 
 - Slack-triggered task start from Jira key (`/kanvy fix <JIRA_KEY>`)
+- Slack free-text intake (`/kanvy <intent>`) with clarification loop
 - Jira issue load and repo resolution (mapping and disambiguation)
 - Task/run start from `main`
 - GitLab MR lifecycle and feedback mirrored to Slack thread
@@ -38,8 +39,10 @@ Out of scope (this phase):
 
 ## Operator day-to-day flow (no dashboard required)
 
-1. In Slack, run `/kanvy fix ABC-123`.
-2. If multiple repo mappings are available, click a repo disambiguation button.
+1. In Slack, run either:
+   - `/kanvy fix ABC-123` (deterministic Jira fast-path), or
+   - `/kanvy <free-text request>` (intent intake path).
+2. If disambiguation is needed, click the repo selection button or reply with repo context in-thread.
 3. Monitor status and MR feedback in the same Slack thread.
 4. When feedback arrives and run enters `DECISION_REQUIRED`, click `Approve rerun`.
 5. Continue the thread loop until `DONE`, `PAUSED`, or `FAILED`.
@@ -120,5 +123,5 @@ Execution sequencing for task pack remains strict:
 Model config standard for task creation:
 
 - `codex`
-- `gpt-5.3-codex-spark`
-- `high`
+- `gpt-5.1-codex-mini`
+- `high` for Jira fast-path, `medium` for free-text intake-created tasks

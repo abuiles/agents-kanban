@@ -280,17 +280,23 @@ Use this when validating day-to-day operator flow without dashboard actions.
 2. Configure Jira project -> repo mapping for the tenant.
 3. Trigger slash command:
    - `/kanvy fix ABC-123`
+   - `/kanvy draft rollout plan for retry safety`
 4. Confirm slash command ack is immediate and async processing posts one of:
    - run start confirmation
    - repo disambiguation buttons
+   - clarification follow-up question for incomplete free-text intent
    - failure message (for example Jira read failure)
-5. Confirm run thread binding stores:
+5. For free-text intake sessions, reply in the same Slack thread until the parser has:
+   - repository target
+   - task objective/prompt
+   - enough confidence to auto-create task/run
+6. Confirm run thread binding stores:
    - `taskId`, `channelId`, `threadTs`, `currentRunId`, `latestReviewRound`
-6. Simulate or receive GitLab webhook events:
+7. Simulate or receive GitLab webhook events:
    - MR open/update -> `REVIEW_PENDING`
    - MR note feedback -> `DECISION_REQUIRED`
-7. Click `Approve rerun` in the same Slack thread.
-8. Confirm exactly one rerun is queued and thread binding updates to the new `currentRunId`.
+8. Click `Approve rerun` in the same Slack thread.
+9. Confirm exactly one rerun is queued and thread binding updates to the new `currentRunId`.
 
 Ingress/idempotency checks to verify in local logs:
 

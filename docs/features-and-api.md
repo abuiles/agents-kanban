@@ -79,10 +79,15 @@ Operational notes:
 
 - `POST /api/integrations/slack/commands`
   - Verified with Slack signing secret and replay window checks.
-  - Accepts `/kanvy fix <JIRA_KEY>`.
+  - Accepts `/kanvy fix <JIRA_KEY>` and free-text `/kanvy <intent>`.
   - Acknowledges immediately and continues Jira/repo/run processing asynchronously.
+- Free-text intake behavior:
+  - Deterministic Jira fast-path remains unchanged for `fix <JIRA_KEY>`.
+  - Non-fast-path requests run through strict-JSON intent parsing with scoped model defaults.
+  - Thread-scoped clarification sessions persist in KV and continue through Slack thread replies.
+  - Auto-create starts task/run when intent confidence is high and required fields are complete.
 - `POST /api/integrations/slack/interactions`
-  - Supports actions: `repo_disambiguation`, `approve_rerun`, `pause`, `close`.
+  - Supports actions: `repo_disambiguation`, `intent_repo_select`, `approve_rerun`, `pause`, `close`.
   - Uses thread binding context (`taskId`, `channelId`, `threadTs`, `currentRunId`, `latestReviewRound`) to keep decisions in one thread.
 - `POST /api/integrations/gitlab/webhook`
   - Verified with GitLab webhook token.
