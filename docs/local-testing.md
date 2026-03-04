@@ -207,6 +207,22 @@ You can continue to use `npx wrangler dev` for Worker-only execution on the lega
      - event timeline includes `task.activated`, `run.started`, and merge/gate/remediation events
    - `POST /api/repos/:repoId/sentinel/pause`, `resume`, and `stop`
    - `GET /api/repos/:repoId/sentinel/events?limit=50` for operator timeline review
+6.7 Validate checkpoint lifecycle and recovery fallback
+   - Ensure repo checkpoint config is enabled (default):
+     - `checkpointConfig.enabled = true`
+     - `checkpointConfig.triggerMode = "phase_boundary"`
+   - Run one full task and confirm checkpoints exist:
+     - `GET /api/runs/:runId/checkpoints`
+   - Confirm task-level latest checkpoint read:
+     - `GET /api/tasks/:taskId/checkpoints?latest=true`
+   - Verify retry defaults to latest checkpoint:
+     - `POST /api/runs/:runId/retry` (no request body)
+   - Verify explicit fallback path:
+     - `POST /api/runs/:runId/retry` with `{ "recoveryMode": "latest_checkpoint", "checkpointId": "missing-id" }`
+     - confirm run timeline includes `reason=checkpoint_not_found` fallback note
+   - Verify disable behavior is no-op/safe:
+     - `PATCH /api/repos/:repoId` with `{ "checkpointConfig": { "enabled": false } }`
+     - run again and confirm `GET /api/runs/:runId/checkpoints` returns an empty list
 
 ## 7) Operator attach smoke test
 
@@ -297,6 +313,7 @@ Keep this guide aligned with:
 - [docs/sandbox-capacity-and-scheduling.md](sandbox-capacity-and-scheduling.md)
 - [docs/integrations/slack-jira-gitlab-mvp.md](integrations/slack-jira-gitlab-mvp.md)
 - [docs/integrations/sentinel-orchestration.md](integrations/sentinel-orchestration.md)
+- [docs/integrations/checkpoint-recovery.md](integrations/checkpoint-recovery.md)
 
 ## 13) Script-to-native sentinel migration
 

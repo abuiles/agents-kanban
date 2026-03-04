@@ -1148,6 +1148,12 @@ async function createPhaseBoundaryCheckpoint(input: {
     return;
   }
 
+  const runAtStart = await input.repoBoard.getRun(input.runId);
+  const existingCheckpointForPhase = findCheckpointForPhase(runAtStart.checkpoints, input.phase);
+  if (existingCheckpointForPhase) {
+    return;
+  }
+
   const statusResult = await emitCommandLifecycle(
     input.repoBoard,
     input.runId,
@@ -1162,10 +1168,9 @@ async function createPhaseBoundaryCheckpoint(input: {
     return;
   }
 
-  const run = await input.repoBoard.getRun(input.runId);
-  const sequence = (run.checkpoints?.length ?? 0) + 1;
-  const checkpointId = buildCheckpointId(run.runId, input.phase, sequence);
-  const commitMessage = buildCheckpointCommitMessage(run.runId, input.phase, sequence);
+  const sequence = (runAtStart.checkpoints?.length ?? 0) + 1;
+  const checkpointId = buildCheckpointId(runAtStart.runId, input.phase, sequence);
+  const commitMessage = buildCheckpointCommitMessage(runAtStart.runId, input.phase, sequence);
   const contextNotesPath = normalizedRepo.checkpointConfig.contextNotes.filePath;
 
   if (normalizedRepo.checkpointConfig.contextNotes.enabled) {
@@ -1187,7 +1192,7 @@ async function createPhaseBoundaryCheckpoint(input: {
       buildRunContextNote({
         task: input.task,
         repo: input.repo,
-        run,
+        run: runAtStart,
         phase: input.phase,
         sequence,
         contextNotesPath
@@ -1195,15 +1200,26 @@ async function createPhaseBoundaryCheckpoint(input: {
     );
   }
 
-  const commitResult = await emitCommandLifecycle(
-    input.repoBoard,
-    input.runId,
-    input.phase,
-    `cd /workspace/repo && git add -A && git commit -m ${shellQuote(commitMessage)}`,
-    () => input.sandbox.exec(`cd /workspace/repo && git add -A && git commit -m ${shellQuote(commitMessage)}`)
+  const commitResult = await emitCommandLifecycle(input.repoBoard, input.runId, input.phase, `cd /workspace/repo && git add -A && git commit -m ${shellQuote(commitMessage)}`, () =>
+    input.sandbox.exec(`cd /workspace/repo && git add -A && git commit -m ${shellQuote(commitMessage)}`)
   );
   if (!commitResult.success) {
-    throw new Error(commitResult.stderr || 'Failed to create checkpoint commit.');
+    if (!looksLikeNoChangesToCommit(commitResult.stderr, commitResult.stdout)) {
+      throw new Error(commitResult.stderr || 'Failed to create checkpoint commit.');
+    }
+    const headMessage = await emitCommandLifecycle(
+      input.repoBoard,
+      input.runId,
+      input.phase,
+      'cd /workspace/repo && git log -1 --pretty=%s',
+      () => input.sandbox.exec('cd /workspace/repo && git log -1 --pretty=%s')
+    );
+    if (!headMessage.success) {
+      throw new Error(headMessage.stderr || 'Failed to read HEAD commit message while reconciling checkpoint creation.');
+    }
+    if (headMessage.stdout.trim() !== commitMessage) {
+      return;
+    }
   }
 
   const shaResult = await emitCommandLifecycle(
@@ -1220,16 +1236,23 @@ async function createPhaseBoundaryCheckpoint(input: {
   const createdAt = new Date().toISOString();
   const checkpoint = {
     checkpointId,
-    runId: run.runId,
-    repoId: run.repoId,
-    taskId: run.taskId,
+    runId: runAtStart.runId,
+    repoId: runAtStart.repoId,
+    taskId: runAtStart.taskId,
     phase: input.phase,
     commitSha,
     commitMessage,
     contextNotesPath: normalizedRepo.checkpointConfig.contextNotes.enabled ? contextNotesPath : undefined,
     createdAt
   } as const;
-  const checkpoints = [...(run.checkpoints ?? []), checkpoint];
+  const runLatest = await input.repoBoard.getRun(input.runId);
+  if (findCheckpoint(runLatest.checkpoints, checkpointId, commitSha)) {
+    return;
+  }
+  if (findCheckpointForPhase(runLatest.checkpoints, input.phase)) {
+    return;
+  }
+  const checkpoints = [...(runLatest.checkpoints ?? []), checkpoint];
   const updatedRun = await input.repoBoard.transitionRun(input.runId, {
     checkpoints,
     appendTimelineNote: `Checkpoint created (${input.phase}): ${commitSha.slice(0, 12)}.`
@@ -1249,6 +1272,28 @@ async function createPhaseBoundaryCheckpoint(input: {
       }
     )
   ]);
+}
+
+function looksLikeNoChangesToCommit(stderr: string | undefined, stdout: string | undefined) {
+  const message = `${stderr ?? ''}\n${stdout ?? ''}`;
+  return message.includes('nothing to commit') || message.includes('working tree clean');
+}
+
+function findCheckpoint(checkpoints: Awaited<ReturnType<RepoBoardDO['getRun']>>['checkpoints'], checkpointId: string, commitSha: string) {
+  if (!Array.isArray(checkpoints)) {
+    return undefined;
+  }
+  return checkpoints.find((candidate) => candidate?.checkpointId === checkpointId || candidate?.commitSha === commitSha);
+}
+
+function findCheckpointForPhase(
+  checkpoints: Awaited<ReturnType<RepoBoardDO['getRun']>>['checkpoints'],
+  phase: 'bootstrap' | 'codex' | 'tests' | 'push'
+) {
+  if (!Array.isArray(checkpoints)) {
+    return undefined;
+  }
+  return checkpoints.find((candidate) => candidate?.phase === phase);
 }
 
 async function prepareReviewBranchForFirstReview(input: {

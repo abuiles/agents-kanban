@@ -73,4 +73,46 @@ describe('resolveRetryRecoveryDecision', () => {
       timelineNote: 'Checkpoint recovery unavailable (reason=no_checkpoints); falling back to fresh retry from standard source resolution.'
     });
   });
+
+  it('prefers the highest checkpoint sequence when createdAt ordering is stale', () => {
+    const decision = resolveRetryRecoveryDecision(buildRun([
+      buildCheckpoint(2, { createdAt: '2026-03-02T00:00:00.000Z' }),
+      buildCheckpoint(1, { createdAt: '2026-03-02T00:00:09.000Z' })
+    ]));
+
+    expect(decision.strategy).toBe('checkpoint');
+    if (decision.strategy !== 'checkpoint') {
+      return;
+    }
+    expect(decision.resumedFromCheckpointId).toBe('run_1:cp:002:codex');
+  });
+
+  it('deduplicates duplicate checkpoint ids and keeps the newest usable entry', () => {
+    const decision = resolveRetryRecoveryDecision(buildRun([
+      buildCheckpoint(2, { commitSha: 'a'.repeat(40), createdAt: '2026-03-02T00:00:02.000Z' }),
+      buildCheckpoint(2, { commitSha: 'b'.repeat(40), createdAt: '2026-03-02T00:00:03.000Z' })
+    ]), {
+      recoveryMode: 'latest_checkpoint',
+      checkpointId: 'run_1:cp:002:codex'
+    });
+
+    expect(decision.strategy).toBe('checkpoint');
+    if (decision.strategy !== 'checkpoint') {
+      return;
+    }
+    expect(decision.resumedFromCommitSha).toBe('b'.repeat(40));
+  });
+
+  it('ignores checkpoints with malformed commit SHAs', () => {
+    const decision = resolveRetryRecoveryDecision(buildRun([
+      buildCheckpoint(2, { commitSha: 'not-a-real-sha' }),
+      buildCheckpoint(1)
+    ]));
+
+    expect(decision.strategy).toBe('checkpoint');
+    if (decision.strategy !== 'checkpoint') {
+      return;
+    }
+    expect(decision.resumedFromCheckpointId).toBe('run_1:cp:001:codex');
+  });
 });

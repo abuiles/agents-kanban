@@ -1023,6 +1023,66 @@ describe('executeRunJob LLM adapter coverage', () => {
     expect(harness.commands.some((command) => command.command.includes('agentskanban checkpoint'))).toBe(false);
   });
 
+  it('treats already-committed checkpoint writes as idempotent when git commit reports nothing to commit', async () => {
+    const task = buildTask();
+    const repo = buildRepo({
+      checkpointConfig: {
+        enabled: true,
+        triggerMode: 'phase_boundary',
+        contextNotes: {
+          enabled: true,
+          filePath: '.agentskanban/context/run-context.md',
+          cleanupBeforeReview: true
+        },
+        reviewPrep: {
+          squashBeforeFirstReviewOpen: true,
+          rewriteOnChangeRequestRerun: false
+        }
+      }
+    });
+    const harness = createHarness(task, repo);
+    const sandbox = buildSandbox([
+      { type: 'stdout', data: 'Applied fix.\n' },
+      { type: 'exit', exitCode: 0 }
+    ]);
+    const baseExec = sandbox.exec.bind(sandbox);
+    let statusCall = 0;
+    sandbox.exec = async (command) => {
+      if (command.includes('git status --short')) {
+        statusCall += 1;
+        if (statusCall === 2 || statusCall === 4) {
+          return { success: true, exitCode: 0, stdout: 'M src/index.ts\n' };
+        }
+        return { success: true, exitCode: 0, stdout: '' };
+      }
+      if (command.includes("git add -A && git commit -m 'agentskanban checkpoint 001 (codex) [run_1]'")) {
+        return {
+          success: false,
+          exitCode: 1,
+          stdout: 'On branch agent/task_1/run_1\nnothing to commit, working tree clean\n'
+        };
+      }
+      if (command.includes('git log -1 --pretty=%s')) {
+        return { success: true, exitCode: 0, stdout: 'agentskanban checkpoint 001 (codex) [run_1]\n' };
+      }
+      if (command.includes('git rev-parse HEAD')) {
+        return { success: true, exitCode: 0, stdout: 'c'.repeat(40) };
+      }
+      return baseExec(command);
+    };
+    sandboxState.current = sandbox;
+
+    await executeRunJob(harness.env, { tenantId: 'tenant_legacy', repoId: repo.repoId, taskId: task.taskId, runId: 'run_1', mode: 'full_run' }, async () => {});
+
+    expect(harness.getRun().status).toBe('DONE');
+    expect(harness.getRun().checkpoints).toHaveLength(1);
+    expect(harness.getRun().checkpoints?.[0]).toMatchObject({
+      checkpointId: 'run_1:cp:001:codex',
+      commitSha: 'c'.repeat(40)
+    });
+    expect(harness.events.some((event) => event.eventType === 'run.checkpoint.created')).toBe(true);
+  });
+
   it('prepares first review push with context cleanup and checkpoint-history squash', async () => {
     const task = buildTask();
     const repo = buildRepo({

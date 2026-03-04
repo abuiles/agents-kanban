@@ -12,6 +12,7 @@
 | SCM credentials | 2, 3.5 | ✅ Implemented | `GET /api/scm/credentials`; `POST /api/scm/credentials`; `GET /api/scm/credentials/:provider/:providerRepoName` | _none_ | Provider credential registry exists, including get/list/upsert. Supports GitHub and GitLab SCM providers. |
 | Tasks | 2, 3 | ✅ Implemented | `GET /api/tasks?repoId=all|<repoId>`; `POST /api/tasks`; `GET /api/tasks/:taskId`; `PATCH /api/tasks/:taskId`; `DELETE /api/tasks/:taskId` | _none_ | Full task lifecycle and mutation APIs are in place. |
 | Run execution | 3, 3.1, 3.5, 6 | ✅ Implemented | `POST /api/tasks/:taskId/run`; `GET /api/runs/:runId`; `POST /api/runs/:runId/retry`; `POST /api/runs/:runId/preview`; `POST /api/runs/:runId/evidence`; `POST /api/runs/:runId/request-changes`; `POST /api/runs/:runId/review` | `GET /api/runs/:runId/audit` *(Stage 5 target)* | Runtime includes auto review on review entry, manual review rerun endpoint, stable posting and retry metadata. |
+| Checkpoint recovery | P8/C1-C6 | ✅ Implemented | `GET /api/runs/:runId/checkpoints`; `GET /api/tasks/:taskId/checkpoints?latest=true`; `POST /api/runs/:runId/retry` with optional `{ recoveryMode, checkpointId }` body | _none_ | Retry defaults to `latest_checkpoint`, recovery metadata is persisted (`resumedFromCheckpointId`, `resumedFromCommitSha`), and selection/write paths are race/idempotency hardened. |
 | Slack/Jira/GitLab integrations | P5 | ✅ Implemented (MVP) | `POST /api/integrations/slack/commands`; `POST /api/integrations/slack/events`; `POST /api/integrations/slack/interactions`; `POST /api/integrations/gitlab/webhook` | _none in MVP scope_ | Slack ingress uses signature verification + replay protection. GitLab webhook ingress uses token verification + delivery idempotency. Slack thread binding remains the primary operator surface across reruns. |
 | Logs and artifacts | 3, 4 | ✅ Implemented | `GET /api/runs/:runId/logs`; `GET /api/runs/:runId/artifacts` | _none_ | Includes tailing behavior for logs and artifact listing per run. |
 | Operator observe | 4 | ✅ Implemented | `GET /api/runs/:runId/events`; `GET /api/runs/:runId/commands` | _none_ | Runtime event and structured command history are exposed. |
@@ -45,6 +46,7 @@
 - Historical Stage 4.6 doc: `docs/plans/archive/stage_4_6.md`
 - Auto-review + selective change-loop runbook: `docs/integrations/auto-review-change-loop.md`
 - Native sentinel orchestration runbook: `docs/integrations/sentinel-orchestration.md`
+- Checkpoint recovery runbook: `docs/integrations/checkpoint-recovery.md`
 
 ## Stage 6 surface notes
 

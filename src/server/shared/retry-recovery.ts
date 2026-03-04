@@ -35,11 +35,18 @@ export function resolveRetryRecoveryDecision(
   }
 
   if (input?.checkpointId) {
-    const explicit = checkpoints.find((checkpoint) => checkpoint.checkpointId === input.checkpointId);
-    if (!explicit) {
+    const explicitCandidates = checkpoints.filter((checkpoint) => checkpoint.checkpointId === input.checkpointId);
+    if (!explicitCandidates.length) {
       return {
         strategy: 'fresh',
         timelineNote: `Checkpoint recovery unavailable (reason=checkpoint_not_found, checkpointId=${input.checkpointId}); falling back to fresh retry from standard source resolution.`
+      };
+    }
+    const explicit = selectLatestCheckpoint(explicitCandidates);
+    if (!explicit) {
+      return {
+        strategy: 'fresh',
+        timelineNote: `Checkpoint recovery unavailable (reason=checkpoint_invalid, checkpointId=${input.checkpointId}); falling back to fresh retry from standard source resolution.`
       };
     }
     return {
@@ -72,7 +79,18 @@ function normalizeCheckpoints(checkpoints: AgentRun['checkpoints']) {
   if (!Array.isArray(checkpoints)) {
     return [];
   }
-  return checkpoints.filter((checkpoint): checkpoint is RunCheckpoint => Boolean(checkpoint));
+
+  const latestById = new Map<string, RunCheckpoint>();
+  for (const checkpoint of checkpoints) {
+    if (!isUsableCheckpoint(checkpoint)) {
+      continue;
+    }
+    const existing = latestById.get(checkpoint.checkpointId);
+    if (!existing || compareCheckpoints(checkpoint, existing) > 0) {
+      latestById.set(checkpoint.checkpointId, checkpoint);
+    }
+  }
+  return [...latestById.values()];
 }
 
 function selectLatestCheckpoint(checkpoints: RunCheckpoint[]) {
@@ -82,15 +100,53 @@ function selectLatestCheckpoint(checkpoints: RunCheckpoint[]) {
       latest = checkpoint;
       continue;
     }
-    if (checkpoint.createdAt > latest.createdAt) {
-      latest = checkpoint;
-      continue;
-    }
-    if (checkpoint.createdAt === latest.createdAt && checkpoint.checkpointId > latest.checkpointId) {
+    if (compareCheckpoints(checkpoint, latest) > 0) {
       latest = checkpoint;
     }
   }
   return latest;
+}
+
+function compareCheckpoints(left: RunCheckpoint, right: RunCheckpoint) {
+  const sequenceDiff = extractCheckpointSequence(left.checkpointId) - extractCheckpointSequence(right.checkpointId);
+  if (sequenceDiff !== 0) {
+    return sequenceDiff;
+  }
+  const createdAtDiff = left.createdAt.localeCompare(right.createdAt);
+  if (createdAtDiff !== 0) {
+    return createdAtDiff;
+  }
+  const idDiff = left.checkpointId.localeCompare(right.checkpointId);
+  if (idDiff !== 0) {
+    return idDiff;
+  }
+  return left.commitSha.localeCompare(right.commitSha);
+}
+
+function extractCheckpointSequence(checkpointId: string) {
+  const match = checkpointId.match(/:cp:(\d{3,}):/);
+  if (!match) {
+    return Number.MIN_SAFE_INTEGER;
+  }
+  const sequence = Number.parseInt(match[1], 10);
+  return Number.isFinite(sequence) ? sequence : Number.MIN_SAFE_INTEGER;
+}
+
+function isUsableCheckpoint(checkpoint: unknown): checkpoint is RunCheckpoint {
+  if (!checkpoint || typeof checkpoint !== 'object') {
+    return false;
+  }
+  const candidate = checkpoint as Partial<RunCheckpoint>;
+  if (typeof candidate.checkpointId !== 'string' || !candidate.checkpointId.trim()) {
+    return false;
+  }
+  if (typeof candidate.createdAt !== 'string' || !candidate.createdAt.trim()) {
+    return false;
+  }
+  if (typeof candidate.commitSha !== 'string' || !/^[a-f0-9]{40}$/i.test(candidate.commitSha)) {
+    return false;
+  }
+  return true;
 }
 
 function shortSha(commitSha: string) {
