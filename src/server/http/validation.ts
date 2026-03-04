@@ -3,6 +3,7 @@ import type {
   CreateTaskInput,
   RepoSentinelConfigInput,
   RequestRunChangesInput,
+  RetryRunInput,
   UpdateRepoInput,
   UpdateTaskInput,
   UpsertScmCredentialInput
@@ -16,6 +17,7 @@ const LLM_ADAPTERS = new Set(['codex', 'cursor_cli'] as const);
 const AUTO_REVIEW_PROVIDERS = new Set(['gitlab', 'jira'] as const);
 const AUTO_REVIEW_MODES = new Set(['inherit', 'on', 'off'] as const);
 const AUTO_REVIEW_SELECTION_MODES = new Set(['all', 'include', 'exclude', 'freeform'] as const);
+const RETRY_RECOVERY_MODES = new Set(['latest_checkpoint', 'fresh'] as const);
 const PREVIEW_ADAPTERS = new Set(['cloudflare_checks', 'prompt_recipe'] as const);
 const SENTINEL_MERGE_METHODS = new Set(['merge', 'squash', 'rebase'] as const);
 const CHECKPOINT_TRIGGER_MODES = new Set(['phase_boundary'] as const);
@@ -808,6 +810,28 @@ export function parseRequestRunChangesInput(body: unknown): RequestRunChangesInp
     prompt,
     reviewSelection: readRequestRunChangesSelection(body.reviewSelection, 'reviewSelection')
   };
+}
+
+export function parseRetryRunInput(body: unknown): RetryRunInput {
+  if (!isRecord(body)) {
+    throw badRequest('Invalid retry payload.');
+  }
+
+  const retryInput: RetryRunInput = { recoveryMode: 'latest_checkpoint' };
+  if (hasOwn(body, 'recoveryMode')) {
+    retryInput.recoveryMode = readEnumValue(body.recoveryMode, 'recoveryMode', RETRY_RECOVERY_MODES, false);
+  }
+  if (hasOwn(body, 'checkpointId')) {
+    const checkpointId = readTrimmedString(body.checkpointId, 'checkpointId', false);
+    if (!checkpointId) {
+      throw badRequest('Invalid checkpointId.');
+    }
+    retryInput.checkpointId = checkpointId;
+  }
+  if (retryInput.recoveryMode === 'fresh' && retryInput.checkpointId) {
+    throw badRequest('checkpointId cannot be provided when recoveryMode is fresh.');
+  }
+  return retryInput;
 }
 
 export function parseUpdateRepoSentinelConfigInput(body: unknown): RepoSentinelConfigInput {

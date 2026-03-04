@@ -7,6 +7,7 @@ import {
   parseCreateTaskInput,
   parseCreateUserApiTokenInput,
   parseStartRepoSentinelInput,
+  parseRetryRunInput,
   parseRequestRunChangesInput,
   parseUpdateRepoSentinelConfigInput,
   parseUpdateRepoInput,
@@ -624,6 +625,29 @@ describe('request run validation', () => {
       mode: 'freeform',
       instruction: 'Address accessibility blockers first.'
     });
+  });
+
+  it('defaults retry payload to latest-checkpoint mode when empty', () => {
+    expect(parseRetryRunInput({})).toEqual({ recoveryMode: 'latest_checkpoint' });
+  });
+
+  it('parses retry payload with explicit checkpoint recovery', () => {
+    expect(parseRetryRunInput({
+      recoveryMode: 'latest_checkpoint',
+      checkpointId: 'run_1:cp:002:codex'
+    })).toEqual({
+      recoveryMode: 'latest_checkpoint',
+      checkpointId: 'run_1:cp:002:codex'
+    });
+  });
+
+  it('rejects checkpointId with fresh recovery mode', () => {
+    expect(() =>
+      parseRetryRunInput({
+        recoveryMode: 'fresh',
+        checkpointId: 'run_1:cp:002:codex'
+      })
+    ).toThrow('checkpointId cannot be provided when recoveryMode is fresh.');
   });
 });
 

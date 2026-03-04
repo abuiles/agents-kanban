@@ -19,6 +19,7 @@ import {
   parseCreateTenantMemberInput,
   parsePlatformAuthLoginInput,
   parsePlatformSupportAssumeTenantInput,
+  parseRetryRunInput,
   parseSetActiveTenantInput,
   parseRequestRunChangesInput,
   parseUpdateRepoSentinelConfigInput,
@@ -975,7 +976,11 @@ export async function handleRetryRun(request: Request, env: Env, params: RoutePa
     const runId = parsePathParam(params.runId);
     const repoId = await resolveRepoIdForRun(board, runId);
     await assertRepoAccess(env, board, requestContext, repoId);
-    const run = await env.REPO_BOARD.getByName(repoId).retryRun(runId, requestContext.activeTenantId);
+    const retryInput = parseRetryRunInput(await readJson(request).catch(() => ({})));
+    const run = await env.REPO_BOARD.getByName(repoId).retryRun(runId, {
+      tenantId: requestContext.activeTenantId,
+      ...retryInput
+    });
     const workflow = await scheduleRunJob(env, ctx as unknown as ExecutionContext, {
       tenantId: requestContext.activeTenantId,
       repoId,

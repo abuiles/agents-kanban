@@ -59,6 +59,30 @@ describe('resolveRunSource', () => {
     expect(source.dependencyContext.sourceMode).toBe('explicit_source_ref');
   });
 
+  it('prefers explicit source override over task source ref and dependencies', () => {
+    const upstreamTask = buildTask('task_up', { status: 'REVIEW' });
+    const downstreamTask = buildTask('task_down', {
+      sourceRef: 'feature/task-source',
+      dependencies: [{ upstreamTaskId: 'task_up', mode: 'review_ready' }]
+    });
+    const upstreamRun = buildRun('task_up', 'WAITING_PREVIEW', { headSha: 'a'.repeat(40), prNumber: 11 });
+
+    const source = resolveRunSource({
+      task: downstreamTask,
+      tasks: [upstreamTask, downstreamTask],
+      runs: [upstreamRun],
+      defaultBranch: 'main',
+      resolvedAt,
+      sourceRefOverride: 'b'.repeat(40)
+    });
+
+    expect(source.branchSource).toMatchObject({
+      kind: 'explicit_source_ref',
+      resolvedRef: 'b'.repeat(40)
+    });
+    expect(source.dependencyContext.sourceMode).toBe('explicit_source_ref');
+  });
+
   it('uses dependency review head when no explicit source exists', () => {
     const upstreamTask = buildTask('task_up', { status: 'REVIEW' });
     const downstreamTask = buildTask('task_down', {

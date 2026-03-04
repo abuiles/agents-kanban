@@ -1,4 +1,4 @@
-import type { CreateTaskInput, UpdateTaskInput } from '../../ui/domain/api';
+import type { CreateTaskInput, RetryRunInput, UpdateTaskInput } from '../../ui/domain/api';
 import type {
   AgentRun,
   IntegrationLoopState,
@@ -28,6 +28,7 @@ import { normalizeOperatorSession, normalizeRunLlmState, normalizeTaskUiMeta } f
 import { hasRunReview, normalizeDependencyReviewMetadata, normalizeRunReviewMetadata, normalizeTaskBranchSourceReviewMetadata } from '../../shared/scm';
 import { DEFAULT_TENANT_ID, normalizeTenantId } from '../../shared/tenant';
 import { mapRunStatusToLifecycleMilestone, mirrorRunLifecycleMilestone } from '../integrations/slack/timeline';
+import { resolveRetryRecoveryDecision } from '../shared/retry-recovery';
 
 const STORAGE_KEY = 'repo-board-state';
 const LOCAL_JOBS_KEY = 'repo-board-local-jobs';
@@ -242,7 +243,15 @@ export class RepoBoardDO extends DurableObject<Env> {
 
   async startRun(
     taskId: string,
-    options?: { forceNew?: boolean; baseRunId?: string; dependencyAutoStart?: boolean; tenantId?: string }
+    options?: {
+      forceNew?: boolean;
+      baseRunId?: string;
+      dependencyAutoStart?: boolean;
+      tenantId?: string;
+      sourceRefOverride?: string;
+      resumedFromCheckpointId?: string;
+      resumedFromCommitSha?: string;
+    }
   ): Promise<AgentRun> {
     await this.ready;
     const task = this.state.tasks.find((candidate) => candidate.taskId === taskId);
@@ -271,7 +280,8 @@ export class RepoBoardDO extends DurableObject<Env> {
       tasks: this.state.tasks,
       runs: this.state.runs,
       defaultBranch: repo.defaultBranch,
-      resolvedAt: nowIso
+      resolvedAt: nowIso,
+      sourceRefOverride: options?.sourceRefOverride
     });
     const run = createRealRun(
       {
@@ -282,7 +292,9 @@ export class RepoBoardDO extends DurableObject<Env> {
       now,
       {
         baseRunId: options?.baseRunId,
-        dependencyContext: resolvedSource.dependencyContext
+        dependencyContext: resolvedSource.dependencyContext,
+        resumedFromCheckpointId: options?.resumedFromCheckpointId,
+        resumedFromCommitSha: options?.resumedFromCommitSha
       }
     );
 
@@ -326,10 +338,19 @@ export class RepoBoardDO extends DurableObject<Env> {
     return run;
   }
 
-  async retryRun(runId: string, tenantId?: string) {
+  async retryRun(runId: string, options?: RetryRunInput & { tenantId?: string }) {
     await this.ready;
-    const run = await this.getRun(runId, tenantId);
-    return this.startRun(run.taskId, { forceNew: true, baseRunId: run.runId, tenantId });
+    const run = await this.getRun(runId, options?.tenantId);
+    const recovery = resolveRetryRecoveryDecision(run, options);
+    const nextRun = await this.startRun(run.taskId, {
+      forceNew: true,
+      baseRunId: run.runId,
+      tenantId: options?.tenantId,
+      sourceRefOverride: recovery.strategy === 'checkpoint' ? recovery.resumedFromCommitSha : undefined,
+      resumedFromCheckpointId: recovery.strategy === 'checkpoint' ? recovery.resumedFromCheckpointId : undefined,
+      resumedFromCommitSha: recovery.strategy === 'checkpoint' ? recovery.resumedFromCommitSha : undefined
+    });
+    return this.transitionRun(nextRun.runId, { appendTimelineNote: recovery.timelineNote }, options?.tenantId);
   }
 
   async requestRunChanges(
