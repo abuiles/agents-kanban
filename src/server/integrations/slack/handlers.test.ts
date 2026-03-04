@@ -55,6 +55,18 @@ function taskBinding(taskId: string, channelId: string, threadTs: string) {
   };
 }
 
+function baseRunStub(taskId: string, runId: string) {
+  return {
+    runId,
+    taskId,
+    repoId: 'repo_alpha',
+    tenantId: 'tenant_local',
+    status: 'WAITING_PREVIEW',
+    timeline: [],
+    startedAt: '2026-01-01T00:00:00.000Z'
+  };
+}
+
 function makeRepoBoard(stub: { taskId: string; runId: string }) {
   return {
     createTask: vi.fn().mockResolvedValue({
@@ -65,14 +77,20 @@ function makeRepoBoard(stub: { taskId: string; runId: string }) {
       runId: stub.runId,
       taskId: stub.taskId
     }),
-    transitionRun: vi.fn()
+    transitionRun: vi.fn(),
+    transitionRunFromLoopState: vi.fn(async () => ({ run: baseRunStub(stub.taskId, stub.runId), transitioned: false })),
+    requestRunChanges: vi.fn(async () => baseRunStub(stub.taskId, `${stub.runId}_rerun`))
   };
 };
 
-function makeBoardIndex(repos: Array<{ repoId: string; slug: string }>) {
+function makeBoardIndex(
+  repos: Array<{ repoId: string; slug: string }>,
+  runToRepoId: Map<string, string> = new Map()
+) {
   return {
     getByName: vi.fn(() => ({
-      listRepos: vi.fn(async () => repos)
+      listRepos: vi.fn(async () => repos),
+      findRunRepoId: async (runId: string) => runToRepoId.get(runId)
     }))
   };
 }
@@ -367,35 +385,23 @@ describe('slack handlers', () => {
     });
   });
 
-  it('handles repo disambiguation and approve_rerun/pause actions in interactions', async () => {
-    const repoDisambiguationPayload = {
+  it('starts a rerun when approve_rerun is clicked in decision-required state', async () => {
+    const repoBoard = makeRepoBoard({ taskId: 'task_1', runId: 'run_1' });
+    repoBoard.transitionRunFromLoopState.mockResolvedValueOnce({
+      run: baseRunStub('task_1', 'run_1'),
+      transitioned: true
+    });
+    repoBoard.requestRunChanges.mockResolvedValueOnce(baseRunStub('task_1', 'run_2'));
+
+    const payload = {
       type: 'block_actions',
       user: { id: 'U1' },
       container: { channel_id: 'C123', thread_ts: '1672531200.1234' },
       actions: [
         {
-          action_id: 'repo_disambiguation',
-          value: JSON.stringify({
-            tenantId: 'tenant_local',
-            taskId: 'issue:ABC-100',
-            channelId: 'C123',
-            threadTs: '1672531200.1234',
-            issueKey: 'ABC-100',
-            issueTitle: 'Cannot login',
-            issueBody: 'Button fails',
-            issueUrl: 'https://jira.test.com/browse/ABC-100',
-            latestReviewRound: 1,
-            repoId: 'repo_alpha'
-          })
-        }
-      ]
-    };
-    const approvePayload = {
-      ...repoDisambiguationPayload,
-      actions: [
-        {
           action_id: 'approve_rerun',
           value: JSON.stringify({
+            tenantId: 'tenant_local',
             taskId: 'task_1',
             channelId: 'C123',
             threadTs: '1672531200.1234',
@@ -405,65 +411,139 @@ describe('slack handlers', () => {
         }
       ]
     };
-    const pausePayload = {
-      ...repoDisambiguationPayload,
+    const rawBody = new URLSearchParams({ payload: JSON.stringify(payload) }).toString();
+    const signature = await buildSlackSignature('secret', nowTs, rawBody);
+    const request = new Request('https://example.test/api/integrations/slack/interactions', {
+      method: 'POST',
+      headers: slackHeaders(nowTs, signature),
+      body: rawBody
+    });
+    const response = await handleSlackInteractions(
+      request,
+      makeEnv('secret', repoBoard, makeBoardIndex([], new Map([['run_1', 'repo_alpha']])),
+      {} as unknown as ExecutionContext<unknown>
+    );
+    expect(await response.json()).toMatchObject({ ok: true, action: 'approve_rerun' });
+    expect(repoBoard.transitionRunFromLoopState).toHaveBeenCalledWith(
+      'run_1',
+      'DECISION_REQUIRED',
+      { loopState: 'RERUN_QUEUED' },
+      'tenant_local'
+    );
+    expect(repoBoard.requestRunChanges).toHaveBeenCalledWith(
+      'run_1',
+      { prompt: 'Slack approved rerun for review round 3.' },
+      'tenant_local'
+    );
+    expect(runOrchestratorMocks.scheduleRunJob).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      {
+        tenantId: 'tenant_local',
+        repoId: 'repo_alpha',
+        taskId: 'task_1',
+        runId: 'run_2',
+        mode: 'full_run'
+      }
+    );
+    expect(repoBoard.transitionRun).toHaveBeenCalledWith('run_2', {
+      loopState: 'RERUN_QUEUED',
+      workflowInstanceId: 'workflow_1',
+      orchestrationMode: 'workflow'
+    });
+    expect(tenantAuthDbMocks.upsertSlackThreadBinding).toHaveBeenCalledWith(expect.anything(), {
+      tenantId: 'tenant_local',
+      taskId: 'task_1',
+      channelId: 'C123',
+      threadTs: '1672531200.1234',
+      currentRunId: 'run_2',
+      latestReviewRound: 3
+    });
+  });
+
+  it('does not start a duplicate rerun when approve_rerun is not in DECISION_REQUIRED', async () => {
+    const repoBoard = makeRepoBoard({ taskId: 'task_1', runId: 'run_1' });
+    repoBoard.transitionRunFromLoopState.mockResolvedValueOnce({
+      run: baseRunStub('task_1', 'run_1'),
+      transitioned: false
+    });
+
+    const payload = {
+      type: 'block_actions',
+      user: { id: 'U1' },
+      container: { channel_id: 'C123', thread_ts: '1672531200.1234' },
+      actions: [
+        {
+          action_id: 'approve_rerun',
+          value: JSON.stringify({
+            tenantId: 'tenant_local',
+            taskId: 'task_1',
+            channelId: 'C123',
+            threadTs: '1672531200.1234',
+            currentRunId: 'run_1',
+            latestReviewRound: 2
+          })
+        }
+      ]
+    };
+    const rawBody = new URLSearchParams({ payload: JSON.stringify(payload) }).toString();
+    const signature = await buildSlackSignature('secret', nowTs, rawBody);
+    const request = new Request('https://example.test/api/integrations/slack/interactions', {
+      method: 'POST',
+      headers: slackHeaders(nowTs, signature),
+      body: rawBody
+    });
+    const response = await handleSlackInteractions(
+      request,
+      makeEnv('secret', repoBoard, makeBoardIndex([], new Map([['run_1', 'repo_alpha']])),
+      {} as unknown as ExecutionContext<unknown>
+    );
+    expect(await response.json()).toMatchObject({ ok: true, action: 'approve_rerun' });
+    expect(repoBoard.requestRunChanges).not.toHaveBeenCalled();
+    expect(runOrchestratorMocks.scheduleRunJob).not.toHaveBeenCalled();
+    expect(repoBoard.transitionRun).not.toHaveBeenCalled();
+    expect(tenantAuthDbMocks.upsertSlackThreadBinding).not.toHaveBeenCalled();
+  });
+
+  it('pauses current run and preserves the Slack thread binding', async () => {
+    const repoBoard = makeRepoBoard({ taskId: 'task_1', runId: 'run_1' });
+    const payload = {
+      type: 'block_actions',
+      container: { channel_id: 'C123', thread_ts: '1672531200.1234' },
       actions: [
         {
           action_id: 'pause',
           value: JSON.stringify({
+            tenantId: 'tenant_local',
             taskId: 'task_1',
             channelId: 'C123',
             threadTs: '1672531200.1234',
+            currentRunId: 'run_1',
             latestReviewRound: 3
           })
         }
       ]
     };
-
-    const repoBody = new URLSearchParams({ payload: JSON.stringify(repoDisambiguationPayload) }).toString();
-    const repoSig = await buildSlackSignature('secret', nowTs, repoBody);
-
-    const repoRequest = new Request('https://example.test/api/integrations/slack/interactions', {
+    const rawBody = new URLSearchParams({ payload: JSON.stringify(payload) }).toString();
+    const signature = await buildSlackSignature('secret', nowTs, rawBody);
+    const request = new Request('https://example.test/api/integrations/slack/interactions', {
       method: 'POST',
-      headers: slackHeaders(nowTs, repoSig),
-      body: repoBody
+      headers: slackHeaders(nowTs, signature),
+      body: rawBody
     });
-    const repoResponse = await handleSlackInteractions(repoRequest, makeEnv('secret'), {} as unknown as ExecutionContext<unknown>);
-    expect(await repoResponse.json()).toMatchObject({ ok: true, action: 'repo_disambiguation' });
-
-    const approveBody = new URLSearchParams({ payload: JSON.stringify(approvePayload) }).toString();
-    const approveSig = await buildSlackSignature('secret', nowTs, approveBody);
-    const approveRequest = new Request('https://example.test/api/integrations/slack/interactions', {
-      method: 'POST',
-      headers: slackHeaders(nowTs, approveSig),
-      body: approveBody
-    });
-    const approveResponse = await handleSlackInteractions(approveRequest, makeEnv('secret'), {} as unknown as ExecutionContext<unknown>);
-    expect(await approveResponse.json()).toMatchObject({ ok: true, action: 'approve_rerun' });
-    expect(tenantAuthDbMocks.upsertSlackThreadBinding).toHaveBeenNthCalledWith(2, expect.anything(), {
+    const response = await handleSlackInteractions(
+      request,
+      makeEnv('secret', repoBoard, makeBoardIndex([], new Map([['run_1', 'repo_alpha']])),
+      {} as unknown as ExecutionContext<unknown>
+    );
+    expect(await response.json()).toMatchObject({ ok: true, action: 'pause' });
+    expect(repoBoard.transitionRun).toHaveBeenCalledWith('run_1', { loopState: 'PAUSED' }, 'tenant_local');
+    expect(tenantAuthDbMocks.upsertSlackThreadBinding).toHaveBeenCalledWith(expect.anything(), {
       tenantId: 'tenant_local',
       taskId: 'task_1',
       channelId: 'C123',
       threadTs: '1672531200.1234',
       currentRunId: 'run_1',
-      latestReviewRound: 3
-    });
-
-    const pauseBody = new URLSearchParams({ payload: JSON.stringify(pausePayload) }).toString();
-    const pauseSig = await buildSlackSignature('secret', nowTs, pauseBody);
-    const pauseRequest = new Request('https://example.test/api/integrations/slack/interactions', {
-      method: 'POST',
-      headers: slackHeaders(nowTs, pauseSig),
-      body: pauseBody
-    });
-    const pauseResponse = await handleSlackInteractions(pauseRequest, makeEnv('secret'), {} as unknown as ExecutionContext<unknown>);
-    expect(await pauseResponse.json()).toMatchObject({ ok: true, action: 'pause' });
-    expect(tenantAuthDbMocks.upsertSlackThreadBinding).toHaveBeenNthCalledWith(3, expect.anything(), {
-      tenantId: 'tenant_local',
-      taskId: 'task_1',
-      channelId: 'C123',
-      threadTs: '1672531200.1234',
-      currentRunId: undefined,
       latestReviewRound: 3
     });
   });

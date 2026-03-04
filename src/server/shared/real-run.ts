@@ -1,4 +1,4 @@
-import type { ArtifactManifest, AgentRun, Repo, RunError, RunLogEntry, RunStatus, Task } from '../../ui/domain/types';
+import type { ArtifactManifest, AgentRun, IntegrationLoopState, Repo, RunError, RunLogEntry, RunStatus, Task } from '../../ui/domain/types';
 import { DEFAULT_SUPPORTS_RESUME_BY_ADAPTER, normalizeRunLlmState, normalizeTaskUiMeta } from '../../shared/llm';
 import { normalizeRunReviewMetadata } from '../../shared/scm';
 import { normalizeTenantId } from '../../shared/tenant';
@@ -15,6 +15,7 @@ export type RunJobParams = {
 
 export type RunTransitionPatch = {
   status?: RunStatus;
+  loopState?: IntegrationLoopState;
   branchName?: string;
   headSha?: string;
   reviewUrl?: string;
@@ -59,6 +60,7 @@ export type RunTransitionPatch = {
 };
 
 type CreateRealRunOptions = {
+  loopState?: IntegrationLoopState;
   branchName?: string;
   reviewUrl?: string;
   reviewNumber?: number;
@@ -84,6 +86,7 @@ export function createRealRun(task: Task, runId: string, now = new Date(), optio
     taskId: task.taskId,
     repoId: task.repoId,
     status: 'QUEUED',
+    loopState: options?.loopState ?? 'QUEUED',
     branchName: options?.branchName ?? `agent/${task.taskId}/${runId}`,
     baseRunId: options?.baseRunId,
     changeRequest: options?.changeRequest,
@@ -117,13 +120,16 @@ export function createRealRun(task: Task, runId: string, now = new Date(), optio
 
 export function applyRunTransition(run: AgentRun, patch: RunTransitionPatch, nowIso: string): AgentRun {
   const nextStatus = patch.status ?? run.status;
-  const timeline = nextStatus !== run.status || patch.appendTimelineNote
+  const nextLoopState = patch.loopState ?? run.loopState;
+  const loopStateChanged = nextLoopState !== run.loopState;
+  const timeline = (nextStatus !== run.status || loopStateChanged || patch.appendTimelineNote)
     ? [...run.timeline, { status: nextStatus, at: nowIso, note: patch.appendTimelineNote }]
     : run.timeline;
 
   return normalizeRunLlmState(normalizeRunReviewMetadata({
     ...run,
     ...patch,
+    loopState: nextLoopState,
     status: nextStatus,
     timeline,
     currentStepStartedAt: patch.currentStepStartedAt ?? (nextStatus !== run.status ? nowIso : run.currentStepStartedAt),
