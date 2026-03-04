@@ -15,7 +15,29 @@ const orchestratorMocks = vi.hoisted(() => ({
 vi.mock('./tenant-auth-db', () => tenantAuthDbMocks);
 vi.mock('./run-orchestrator', () => orchestratorMocks);
 
-import { handleRerunReview } from './router';
+import { handleRerunReview, handleRequestChanges } from './router';
+import type { ReviewFinding } from '../ui/domain/types';
+
+const reviewFindings: ReviewFinding[] = [
+  {
+    findingId: 'rf_1',
+    severity: 'high',
+    title: 'Database input validation',
+    description: 'Validate external payload keys before insert.',
+    filePath: 'src/db.ts',
+    lineStart: 42,
+    status: 'open'
+  },
+  {
+    findingId: 'rf_2',
+    severity: 'low',
+    title: 'Whitespace formatting',
+    description: 'Formatting rules are inconsistent.',
+    filePath: 'src/utils.ts',
+    lineStart: 8,
+    status: 'addressed'
+  }
+];
 
 function createEnv(runOverrides: Record<string, unknown> = {}): Env {
   let run = {
@@ -24,6 +46,7 @@ function createEnv(runOverrides: Record<string, unknown> = {}): Env {
     taskId: 'task_1',
     reviewUrl: 'https://github.com/acme/demo/pull/7',
     reviewNumber: 7,
+    reviewFindings,
     reviewExecution: {
       enabled: true,
       trigger: 'auto_on_review',
@@ -39,12 +62,41 @@ function createEnv(runOverrides: Record<string, unknown> = {}): Env {
     transitionRun: vi.fn(async (_runId: string, patch: Record<string, unknown>) => {
       run = { ...run, ...patch };
       return run;
-    })
+    }),
+    requestRunChanges: vi.fn(async (_runId: string, request: { prompt: string; selection?: Record<string, unknown> }) => {
+      (run as Record<string, unknown>).changeRequest = {
+        prompt: request.prompt,
+        requestedAt: '2026-03-02T01:00:00.000Z',
+        ...(request.selection ? { selection: request.selection } : {})
+      };
+      return run;
+    }),
+    getTask: vi.fn(async () => ({
+      task: {
+        taskId: 'task_1',
+        repoId: 'repo_1',
+        title: 'Auto-review task',
+        taskPrompt: 'Keep this task focused.',
+        acceptanceCriteria: ['No regression.'],
+        context: { links: [] },
+        status: 'ACTIVE',
+        tenantId: 'tenant_local',
+        createdAt: '2026-03-02T00:00:00.000Z',
+        updatedAt: '2026-03-02T00:00:00.000Z'
+      }
+    }))
   };
 
   const board = {
     findRunRepoId: vi.fn(async () => 'repo_1'),
-    getRepo: vi.fn(async () => ({ repoId: 'repo_1', tenantId: 'tenant_local' }))
+    getRepo: vi.fn(async () => ({
+      repoId: 'repo_1',
+      tenantId: 'tenant_local',
+      scmProvider: 'github',
+      scmBaseUrl: 'https://github.com',
+      projectPath: 'acme/demo'
+    })),
+    getScmCredentialSecret: vi.fn(async () => 'SCM_TOKEN')
   };
 
   return {
@@ -56,6 +108,72 @@ function createEnv(runOverrides: Record<string, unknown> = {}): Env {
     }
   } as unknown as Env;
 }
+
+describe('handleRequestChanges', () => {
+  const markerA = '<!-- agentboard-review:finding:rf_1:run_repo_1_demo -->';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    tenantAuthDbMocks.resolveSessionByToken.mockResolvedValue({
+      user: { id: 'user_1' },
+      session: { id: 'sess_1', activeTenantId: 'tenant_local' }
+    });
+    tenantAuthDbMocks.hasActiveTenantAccess.mockResolvedValue(true);
+    orchestratorMocks.scheduleRunJob.mockResolvedValue({ id: 'wf_review_request_1' });
+  });
+
+  it('selects findings and includes reply context for selective request-changes', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/rest/api/2/issue/ABC-123/comment')) {
+        return new Response(JSON.stringify({
+          comments: [
+            { body: `${markerA} Reviewer requested stronger null checks.` }
+          ]
+        }), { status: 200 });
+      }
+      throw new Error(`Unexpected fetch URL: ${url}`);
+    }));
+
+    const response = await handleRequestChanges(
+      new Request('https://minions.example.test/api/runs/run_repo_1_demo/request-changes', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-session-token': 'session-token' },
+        body: JSON.stringify({
+          prompt: 'Please focus on these findings only.',
+          reviewSelection: {
+            mode: 'include',
+            findingIds: ['rf_1', 'rf_unknown'],
+            includeReplies: true
+          }
+        })
+      }),
+      createEnv({
+        reviewProvider: 'jira',
+        reviewUrl: 'https://jira.example.com/browse/ABC-123',
+        reviewFindings
+      } as Record<string, unknown>),
+      { runId: 'run_repo_1_demo' },
+      {} as ExecutionContext<unknown>
+    );
+
+    const body = await response.json() as { changeRequest?: { prompt?: string; selection?: Record<string, unknown> } };
+    expect(response.status).toBe(200);
+    expect(orchestratorMocks.scheduleRunJob).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({ mode: 'full_run', runId: 'run_repo_1_demo' })
+    );
+    expect(body.changeRequest).toMatchObject({ prompt: expect.any(String) });
+    expect((body.changeRequest?.selection as Record<string, unknown> | undefined)?.selectedFindingIds).toEqual(['rf_1']);
+    expect(body.changeRequest?.prompt).toContain('Review change request context:');
+    expect(body.changeRequest?.prompt).toContain('Mode: include');
+    expect(body.changeRequest?.prompt).toContain('Selected findings: rf_1');
+    expect(body.changeRequest?.prompt).toContain('Requested findings: rf_1, rf_unknown');
+    expect(body.changeRequest?.prompt).toContain('Unknown findings: rf_unknown');
+    expect(body.changeRequest?.prompt).toContain('Provider replies for rf_1:');
+  });
+});
 
 describe('handleRerunReview', () => {
   beforeEach(() => {

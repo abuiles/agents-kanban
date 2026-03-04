@@ -10,7 +10,7 @@
 | Repositories | 2 | ✅ Implemented | `GET /api/repos`; `POST /api/repos`; `PATCH /api/repos/:repoId` | _none_ | Repo edit and listing are in place. |
 | SCM credentials | 2, 3.5 | ✅ Implemented | `GET /api/scm/credentials`; `POST /api/scm/credentials`; `GET /api/scm/credentials/:provider/:providerRepoName` | _none_ | Provider credential registry exists, including get/list/upsert. Supports GitHub and GitLab SCM providers. |
 | Tasks | 2, 3 | ✅ Implemented | `GET /api/tasks?repoId=all|<repoId>`; `POST /api/tasks`; `GET /api/tasks/:taskId`; `PATCH /api/tasks/:taskId`; `DELETE /api/tasks/:taskId` | _none_ | Full task lifecycle and mutation APIs are in place. |
-| Run execution | 3, 3.1, 3.5 | ✅ Implemented | `POST /api/tasks/:taskId/run`; `GET /api/runs/:runId`; `POST /api/runs/:runId/retry`; `POST /api/runs/:runId/preview`; `POST /api/runs/:runId/evidence`; `POST /api/runs/:runId/request-changes` | `GET /api/runs/:runId/audit` *(Stage 5 target)* | Runtime, retry, preview/evidence orchestration and change-request flows are implemented. |
+| Run execution | 3, 3.1, 3.5, 6 | ✅ Implemented | `POST /api/tasks/:taskId/run`; `GET /api/runs/:runId`; `POST /api/runs/:runId/retry`; `POST /api/runs/:runId/preview`; `POST /api/runs/:runId/evidence`; `POST /api/runs/:runId/request-changes`; `POST /api/runs/:runId/review` | `GET /api/runs/:runId/audit` *(Stage 5 target)* | Runtime includes auto review on review entry, manual review rerun endpoint, stable posting and retry metadata. |
 | Logs and artifacts | 3, 4 | ✅ Implemented | `GET /api/runs/:runId/logs`; `GET /api/runs/:runId/artifacts` | _none_ | Includes tailing behavior for logs and artifact listing per run. |
 | Operator observe | 4 | ✅ Implemented | `GET /api/runs/:runId/events`; `GET /api/runs/:runId/commands` | _none_ | Runtime event and structured command history are exposed. |
 | Operator attach | 4 | ✅ Implemented | `GET /api/runs/:runId/terminal`; `GET /api/runs/:runId/ws` | _none_ | Websocket attach endpoint requires `Upgrade: websocket`. |
@@ -41,6 +41,20 @@
 - Tenant/auth API guide: `docs/tenant-auth-api.md`
 - Active plans index: `docs/plans/current/README.md`
 - Historical Stage 4.6 doc: `docs/plans/archive/stage_4_6.md`
+- Auto-review + selective change-loop runbook: `docs/integrations/auto-review-change-loop.md`
+
+## Stage 6 surface notes
+
+- Added to run model:
+  - `reviewExecution`: enabled/trigger/prompt source/round/timing.
+  - `reviewFindingsSummary`: total/open/posted counts and provider.
+  - `reviewPostState`: posting status, round, errors, and provider metadata.
+  - `reviewArtifacts`: stable `findings.json` and markdown artifact pointers.
+- Added routing:
+  - `POST /api/runs/:runId/review` for manual review rerun (`review_only` orchestration mode).
+- Enhanced request-changes input:
+  - `reviewSelection.mode`: `all` / `include` / `exclude` / `freeform`.
+  - Optional provider-reply stitching via `includeReplies`.
 
 ## Sync template
 

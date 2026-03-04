@@ -36,6 +36,14 @@ AgentsKanban helps you run AI-assisted software work the same way you already ma
 - Automatically discover preview URLs and gather before/after evidence
 - Review logs and outputs for every run
 
+### Auto Review and Selective Change Loop
+
+- Runs can auto-trigger review when `autoReview` is enabled and the run reaches review state.
+- Review findings are posted to GitLab or Jira with marker-based idempotency.
+- Operators can request changes against all findings or a selected subset (`all`, `include`, `exclude`, `freeform`).
+- Replies from providers can be included in follow-up prompts when `reviewSelection.includeReplies = true`.
+- Manual reruns are available via `POST /api/runs/:runId/review`.
+
 ### Operator Controls
 
 - Watch live run events and command history
@@ -86,6 +94,7 @@ This project is inspired by Stripe's Minions work on one-shot, end-to-end coding
 - Runtime provider/API credentials, depending on your repos:
   - `GITHUB_TOKEN` (GitHub repos)
   - `GITLAB_TOKEN` (GitLab repos)
+  - `JIRA_TOKEN` (Jira provider for review posting)
   - `OPENAI_API_KEY` (LLM execution)
 - Cloudflare bindings configured in `wrangler.jsonc`:
   - Durable Objects: `Sandbox`, `BOARD_INDEX`, `REPO_BOARD`
@@ -143,6 +152,7 @@ npm install
 ```bash
 npx wrangler secret put GITHUB_TOKEN
 npx wrangler secret put GITLAB_TOKEN
+npx wrangler secret put JIRA_TOKEN
 npx wrangler secret put OPENAI_API_KEY
 ```
 
@@ -197,7 +207,7 @@ npx wrangler d1 migrations apply TENANT_DB --remote
 npm run bootstrap:single-tenant -- --input ./scripts/bootstrap-single-tenant.example.json --remote
 ```
 
-For deeper setup and troubleshooting, see [docs/local-testing.md](docs/local-testing.md) and [docs/features-and-api.md](docs/features-and-api.md).
+For deeper setup and troubleshooting, see [docs/local-testing.md](docs/local-testing.md), [docs/features-and-api.md](docs/features-and-api.md), and [docs/integrations/auto-review-change-loop.md](docs/integrations/auto-review-change-loop.md).
 
 ## Onboarding Prompts
 
