@@ -1,4 +1,4 @@
-import type { AgentRun, Repo, ScmProvider, TaskBranchSource } from '../ui/domain/types';
+import type { AgentRun, AutoReviewProvider, Repo, ScmProvider, TaskBranchSource } from '../ui/domain/types';
 import { normalizeRepoCheckpointConfig } from './checkpoint';
 import { normalizeRepoPreviewConfig } from './preview';
 import { normalizeRepoSentinelConfig } from './sentinel';
@@ -48,6 +48,10 @@ export function normalizeCredentialHost(value: string): string {
     throw new Error('Invalid SCM credential host.');
   }
   return trimmed;
+}
+
+export function getAutoReviewProviderDefaultForScm(scmProvider?: string): AutoReviewProvider {
+  return scmProvider === 'github' ? 'github' : 'gitlab';
 }
 
 export function normalizeRepo(repo: RepoScmLike & Omit<Repo, 'slug' | 'scmProvider' | 'scmBaseUrl' | 'projectPath'>): Repo {

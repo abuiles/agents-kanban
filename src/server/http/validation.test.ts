@@ -436,6 +436,74 @@ describe('repo validation', () => {
     });
   });
 
+  it('accepts github as an explicit repo auto-review provider', () => {
+    const parsed = parseCreateRepoInput({
+      slug: 'abuiles/minions',
+      baselineUrl: 'https://example.com',
+      autoReview: {
+        enabled: true,
+        provider: 'github',
+        postInline: true
+      }
+    });
+
+    expect(parsed.autoReview).toEqual({
+      enabled: true,
+      provider: 'github',
+      postInline: true
+    });
+  });
+
+  it('defaults enabled auto-review provider to github for github repos', () => {
+    const parsed = parseCreateRepoInput({
+      scmProvider: 'github',
+      slug: 'abuiles/minions',
+      baselineUrl: 'https://example.com',
+      autoReview: {
+        enabled: true,
+        postInline: false
+      }
+    });
+
+    expect(parsed.autoReview).toEqual({
+      enabled: true,
+      provider: 'github',
+      postInline: false
+    });
+  });
+
+  it('defaults enabled auto-review provider to gitlab for gitlab repos', () => {
+    const parsed = parseCreateRepoInput({
+      scmProvider: 'gitlab',
+      slug: 'abuiles/minions',
+      baselineUrl: 'https://example.com',
+      autoReview: {
+        enabled: true,
+        postInline: false
+      }
+    });
+
+    expect(parsed.autoReview).toEqual({
+      enabled: true,
+      provider: 'gitlab',
+      postInline: false
+    });
+  });
+
+  it('defaults update auto-review provider when enabled and scmProvider are provided', () => {
+    const parsed = parseUpdateRepoInput({
+      scmProvider: 'github',
+      autoReview: {
+        enabled: true
+      }
+    });
+
+    expect(parsed.autoReview).toEqual({
+      enabled: true,
+      provider: 'github'
+    });
+  });
+
   it('parses partial repo auto-review update patches without injecting create defaults', () => {
     const parsed = parseUpdateRepoInput({
       autoReview: {

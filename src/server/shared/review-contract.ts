@@ -9,6 +9,7 @@ import type {
   RunReviewArtifacts,
   Task
 } from '../../ui/domain/types';
+import { getAutoReviewProviderDefaultForScm } from '../../shared/scm';
 import { normalizeTenantId } from '../../shared/tenant';
 import { DEFAULT_AUTO_REVIEW_MODE } from '../../shared/llm';
 
@@ -83,10 +84,10 @@ export type AutoReviewResolution = {
   postInline: boolean;
 };
 
-export function resolveAutoReviewConfig(repo: Pick<Repo, 'autoReview'> | undefined, task: Pick<Task, 'uiMeta'> | undefined): AutoReviewResolution {
+export function resolveAutoReviewConfig(repo: Pick<Repo, 'autoReview' | 'scmProvider'> | undefined, task: Pick<Task, 'uiMeta'> | undefined): AutoReviewResolution {
   const repoAutoReview = repo?.autoReview ?? {
     enabled: false,
-    provider: 'gitlab',
+    provider: getAutoReviewProviderDefaultForScm(repo?.scmProvider),
     postInline: false
   };
   const taskMode = task?.uiMeta?.autoReviewMode ?? DEFAULT_AUTO_REVIEW_MODE;

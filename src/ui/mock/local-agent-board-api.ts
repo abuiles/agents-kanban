@@ -28,7 +28,7 @@ import { parseImportedBoard } from '../store/import-export';
 import { RunSimulator } from './run-simulator';
 import { normalizeOperatorSession, normalizeRunLlmState, normalizeTaskUiMeta } from '../../shared/llm';
 import { DEFAULT_REPO_CHECKPOINT_CONFIG, normalizeRepoCheckpointConfig } from '../../shared/checkpoint';
-import { normalizeCredentialHost, normalizeRepo } from '../../shared/scm';
+import { getAutoReviewProviderDefaultForScm, normalizeCredentialHost, normalizeRepo } from '../../shared/scm';
 import { DEFAULT_REPO_SENTINEL_CONFIG, normalizeRepoSentinelConfig } from '../../shared/sentinel';
 
 function nowIso() {
@@ -213,9 +213,10 @@ export class LocalAgentBoardApi implements AgentBoardApi {
 
   async createRepo(input: CreateRepoInput): Promise<Repo> {
     const timestamp = nowIso();
+    const autoReviewEnabled = input.autoReview?.enabled ?? false;
     const normalizedAutoReview = {
-      enabled: input.autoReview?.enabled ?? false,
-      provider: input.autoReview?.provider ?? 'gitlab',
+      enabled: autoReviewEnabled,
+      provider: input.autoReview?.provider ?? (autoReviewEnabled ? getAutoReviewProviderDefaultForScm(input.scmProvider) : 'gitlab'),
       postInline: input.autoReview?.postInline ?? false,
       ...(input.autoReview?.prompt ? { prompt: input.autoReview.prompt.trim() } : {})
     };
@@ -285,7 +286,11 @@ export class LocalAgentBoardApi implements AgentBoardApi {
         const hasCheckpointConfigPatch = Object.prototype.hasOwnProperty.call(patch, 'checkpointConfig');
         const mergedAutoReview = hasAutoReviewPatch
           ? {
-              ...(repo.autoReview ?? { enabled: false, provider: 'gitlab', postInline: false }),
+              ...(repo.autoReview ?? {
+                enabled: false,
+                provider: getAutoReviewProviderDefaultForScm(repo.scmProvider),
+                postInline: false
+              }),
               ...patch.autoReview
             }
           : repo.autoReview;

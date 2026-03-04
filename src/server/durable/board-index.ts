@@ -6,7 +6,7 @@ import { createRepoId } from '../shared/ids';
 import type { BoardEvent } from '../shared/events';
 import { stringifyBoardEvent } from '../shared/events';
 import { buildBoardSnapshot, type BoardSyncResponse } from '../shared/state';
-import { buildRepoScmKey, getRepoHost, getRepoProjectPath, normalizeCredentialHost, normalizeRepo } from '../../shared/scm';
+import { buildRepoScmKey, getAutoReviewProviderDefaultForScm, getRepoHost, getRepoProjectPath, normalizeCredentialHost, normalizeRepo } from '../../shared/scm';
 import { DEFAULT_REPO_CHECKPOINT_CONFIG, normalizeRepoCheckpointConfig } from '../../shared/checkpoint';
 import { DEFAULT_REPO_SENTINEL_CONFIG, normalizeRepoSentinelConfig } from '../../shared/sentinel';
 import { DEFAULT_TENANT_ID, normalizeTenantId } from '../../shared/tenant';
@@ -763,7 +763,11 @@ export class BoardIndexDO extends DurableObject<Env> {
     const hasCheckpointConfigPatch = Object.prototype.hasOwnProperty.call(patch, 'checkpointConfig');
     const mergedAutoReview = hasAutoReviewPatch
       ? {
-          ...(existing.autoReview ?? { enabled: false, provider: 'gitlab', postInline: false }),
+          ...(existing.autoReview ?? {
+            enabled: false,
+            provider: getAutoReviewProviderDefaultForScm(existing.scmProvider),
+            postInline: false
+          }),
           ...patch.autoReview
         }
       : existing.autoReview;
@@ -1210,9 +1214,10 @@ export class BoardIndexDO extends DurableObject<Env> {
 }
 
 function buildRepoRecord(input: CreateRepoInput | Repo): Repo {
+  const autoReviewEnabled = input.autoReview?.enabled ?? false;
   const normalizedAutoReview = {
-    enabled: input.autoReview?.enabled ?? false,
-    provider: input.autoReview?.provider ?? 'gitlab',
+    enabled: autoReviewEnabled,
+    provider: input.autoReview?.provider ?? (autoReviewEnabled ? getAutoReviewProviderDefaultForScm(input.scmProvider) : 'gitlab'),
     postInline: input.autoReview?.postInline ?? false,
     ...(input.autoReview?.prompt ? { prompt: input.autoReview.prompt.trim() } : {})
   };

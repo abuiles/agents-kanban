@@ -21,6 +21,10 @@ const DEFAULT_SCM_BASE_URLS: Record<ScmProvider, string> = {
   gitlab: 'https://gitlab.com'
 };
 
+function getAutoReviewProviderDefaultForScm(scmProvider: ScmProvider): AutoReviewProvider {
+  return scmProvider === 'github' ? 'github' : 'gitlab';
+}
+
 const CODEX_MODELS: Array<{ value: CodexModel; label: string }> = [
   { value: 'gpt-5.1-codex-mini', label: 'gpt-5.1-codex-mini (default)' },
   { value: 'gpt-5.3-codex', label: 'gpt-5.3-codex' },
@@ -86,7 +90,7 @@ export function RepoForm({
     previewCheckName: initialValues?.previewCheckName
   });
   const initialAutoReviewEnabled = initialValues?.autoReview?.enabled ?? false;
-  const initialAutoReviewProvider = initialValues?.autoReview?.provider ?? 'gitlab';
+  const initialAutoReviewProvider = initialValues?.autoReview?.provider ?? getAutoReviewProviderDefaultForScm(initialScmProvider);
   const initialAutoReviewPostInline = initialValues?.autoReview?.postInline ?? false;
   const initialAutoReviewPrompt = initialValues?.autoReview?.prompt ?? '';
   const initialPreviewMode = initialValues?.previewMode ?? 'auto';
@@ -304,7 +308,7 @@ export function RepoForm({
         setLlmAuthBundleR2Key('');
         setPromptRecipe('');
         setAutoReviewEnabled(false);
-        setAutoReviewProvider('gitlab');
+        setAutoReviewProvider(getAutoReviewProviderDefaultForScm('github'));
         setAutoReviewPostInline(false);
         setAutoReviewPrompt('');
         setCodexAuthBundleR2Key('');
@@ -338,6 +342,12 @@ export function RepoForm({
                   return DEFAULT_SCM_BASE_URLS[nextProvider];
                 }
                 return currentValue;
+              });
+              setAutoReviewProvider((currentProvider) => {
+                const currentDefault = getAutoReviewProviderDefaultForScm(scmProvider);
+                return currentProvider === currentDefault
+                  ? getAutoReviewProviderDefaultForScm(nextProvider)
+                  : currentProvider;
               });
             }}
           >
@@ -426,6 +436,7 @@ export function RepoForm({
         </FieldShell>
         <FieldShell label="Auto-review provider" hint="Which integration should handle review automation.">
           <select className={inputClass()} value={autoReviewProvider} onChange={(event) => setAutoReviewProvider(event.target.value as AutoReviewProvider)}>
+            <option value="github">GitHub</option>
             <option value="gitlab">GitLab</option>
             <option value="jira">Jira</option>
           </select>
