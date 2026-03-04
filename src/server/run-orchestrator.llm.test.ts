@@ -19,20 +19,19 @@ type FakeSandbox = {
 };
 
 const sandboxState: { current: FakeSandbox | undefined } = { current: undefined };
+type FakeScmAdapter = {
+  provider: 'github' | 'gitlab';
+  buildCloneUrl: (repo: Repo, credential: { token: string }) => string;
+  inferSourceRefFromTask: () => undefined;
+  normalizeSourceRef: (sourceRef: string) => { kind: 'branch'; value: string; label: string };
+  createReviewRequest: () => Promise<{ provider: 'github' | 'gitlab'; number: number; url: string }>;
+  upsertRunComment: () => Promise<void>;
+  getReviewState: () => Promise<{ exists: boolean }>;
+  listCommitChecks: () => Promise<[]>;
+  isCommitOnDefaultBranch: () => Promise<boolean>;
+};
 const scmState: {
-  current:
-    | {
-        provider: 'github';
-        buildCloneUrl: (repo: Repo, credential: { token: string }) => string;
-        inferSourceRefFromTask: () => undefined;
-        normalizeSourceRef: (sourceRef: string) => { kind: 'branch'; value: string; label: string };
-        createReviewRequest: () => Promise<{ provider: 'github'; number: number; url: string }>;
-        upsertRunComment: () => Promise<void>;
-        getReviewState: () => Promise<{ exists: boolean }>;
-        listCommitChecks: () => Promise<[]>;
-        isCommitOnDefaultBranch: () => Promise<boolean>;
-      }
-    | undefined;
+  current: FakeScmAdapter | undefined;
 } = { current: undefined };
 const usageLedgerWritesState: { entries: Array<Record<string, unknown>> } = { entries: [] };
 
@@ -391,6 +390,158 @@ describe('executeRunJob LLM adapter coverage', () => {
     expect(harness.getRun().timeline.some((entry) => entry.note?.includes('Review completed (round 1; 1 findings, 1 posted).'))).toBe(true);
     expect(harness.getRun().timeline.some((entry) => entry.status === 'PR_OPEN')).toBe(true);
     expect(harness.getRun().timeline.some((entry) => entry.note?.includes('Pull request opened.'))).toBe(true);
+  });
+
+  it('executes GitHub auto-review posting when provider is github', async () => {
+    const task = buildTask({
+      uiMeta: {
+        llmAdapter: 'codex',
+        llmModel: 'gpt-5.3-codex',
+        llmReasoningEffort: 'medium'
+      }
+    });
+    const repo = buildRepo({
+      autoReview: {
+        enabled: true,
+        provider: 'github',
+        postInline: true
+      }
+    });
+    const harness = createHarness(task, repo);
+    const sandbox = buildSandbox([
+      { type: 'stdout', data: 'Applied fix.\n' },
+      { type: 'exit', exitCode: 0 }
+    ]);
+    const baseExec = sandbox.exec.bind(sandbox);
+    sandbox.exec = async (command) => {
+      if (command.includes('/workspace/prompt-last-message.txt')) {
+        return {
+          success: true,
+          exitCode: 0,
+          stdout: '\n===CODEX_LAST_MESSAGE===\n{"findings":[{"severity":"high","title":"Missing null guard","description":"Guard undefined payloads before access.","filePath":"src/index.ts","lineStart":12}]}\n'
+        };
+      }
+      return baseExec(command);
+    };
+    sandboxState.current = sandbox;
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify([]), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([]), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ head: { sha: 'a'.repeat(40) } }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([]), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([]), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        id: 501,
+        html_url: 'https://github.com/abuiles/minions/pull/17#discussion_r501'
+      }), { status: 201 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await executeRunJob(harness.env, { tenantId: 'tenant_legacy', repoId: repo.repoId, taskId: task.taskId, runId: 'run_1', mode: 'full_run' }, async () => {});
+
+    expect(harness.getRun().reviewExecution).toMatchObject({
+      enabled: true,
+      trigger: 'auto_on_review',
+      status: 'completed',
+      round: 1
+    });
+    expect(harness.getRun().reviewFindingsSummary).toMatchObject({
+      total: 1,
+      open: 1,
+      posted: 1,
+      provider: 'github'
+    });
+    expect(harness.getRun().reviewPostState).toMatchObject({
+      provider: 'github',
+      status: 'completed',
+      postedCount: 1,
+      findingsCount: 1,
+      errors: []
+    });
+    expect(harness.getRun().timeline.some((entry) => entry.note?.includes('Posting via github succeeded.'))).toBe(true);
+    expect(fetchMock.mock.calls.some((call) => String(call[0]).includes('/pulls/17/comments'))).toBe(true);
+  });
+
+  it('handles missing GITHUB_TOKEN gracefully when github posting is configured', async () => {
+    const task = buildTask({
+      uiMeta: {
+        llmAdapter: 'codex',
+        llmModel: 'gpt-5.3-codex',
+        llmReasoningEffort: 'medium'
+      }
+    });
+    const repo = buildRepo({
+      scmProvider: 'gitlab',
+      scmBaseUrl: 'https://gitlab.example.com',
+      slug: 'acme/minions',
+      projectPath: 'acme/minions',
+      autoReview: {
+        enabled: true,
+        provider: 'github',
+        postInline: true
+      }
+    });
+    scmState.current = {
+      provider: 'gitlab',
+      buildCloneUrl: (_repo, credential) => `https://oauth2:${credential.token}@gitlab.example.com/acme/minions.git`,
+      inferSourceRefFromTask: () => undefined,
+      normalizeSourceRef: (sourceRef) => ({ kind: 'branch', value: sourceRef, label: sourceRef }),
+      createReviewRequest: async () => ({
+        provider: 'gitlab',
+        number: 21,
+        url: 'https://gitlab.example.com/acme/minions/-/merge_requests/21'
+      }),
+      upsertRunComment: async () => {},
+      getReviewState: async () => ({ exists: true }),
+      listCommitChecks: async () => [],
+      isCommitOnDefaultBranch: async () => true
+    };
+    const harness = createHarness(task, repo);
+    (harness.env as unknown as { GITHUB_TOKEN?: string; GITLAB_TOKEN?: string }).GITHUB_TOKEN = undefined;
+    (harness.env as unknown as { GITHUB_TOKEN?: string; GITLAB_TOKEN?: string }).GITLAB_TOKEN = 'glpat_test_1234';
+
+    const sandbox = buildSandbox([
+      { type: 'stdout', data: 'Applied fix.\n' },
+      { type: 'exit', exitCode: 0 }
+    ]);
+    const baseExec = sandbox.exec.bind(sandbox);
+    sandbox.exec = async (command) => {
+      if (command.includes('/workspace/prompt-last-message.txt')) {
+        return {
+          success: true,
+          exitCode: 0,
+          stdout: '\n===CODEX_LAST_MESSAGE===\n{"findings":[{"severity":"medium","title":"Follow-up validation","description":"Add extra defensive check.","filePath":"src/index.ts","lineStart":42}]}\n'
+        };
+      }
+      return baseExec(command);
+    };
+    sandboxState.current = sandbox;
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    await executeRunJob(harness.env, { tenantId: 'tenant_legacy', repoId: repo.repoId, taskId: task.taskId, runId: 'run_1', mode: 'full_run' }, async () => {});
+
+    expect(harness.getRun().errors).toEqual([]);
+    expect(harness.getRun().reviewExecution).toMatchObject({
+      enabled: true,
+      trigger: 'auto_on_review',
+      status: 'completed',
+      round: 1
+    });
+    expect(harness.getRun().reviewFindingsSummary).toMatchObject({
+      total: 1,
+      open: 1,
+      posted: 0,
+      provider: 'github'
+    });
+    expect(harness.getRun().reviewPostState).toMatchObject({
+      provider: 'github',
+      status: 'failed',
+      postedCount: 0,
+      findingsCount: 1,
+      errors: ['Missing GITHUB_TOKEN: set this secret to enable github auto-review posting.']
+    });
+    expect(harness.getRun().timeline.some((entry) => entry.note?.includes('Posting via github failed: Missing GITHUB_TOKEN'))).toBe(true);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('supports manual review-only rerun and increments review round', async () => {
