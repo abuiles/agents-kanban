@@ -25,7 +25,8 @@ export type SlackIntentSettings = {
   defaultRepoId?: string;
 };
 
-export const DEFAULT_INTENT_MODEL = 'gpt-5.1-codex-mini';
+export const DEFAULT_INTENT_MODEL = 'gpt-5-nano';
+const INTENT_FALLBACK_MODELS = ['gpt-4.1-mini', 'gpt-4o-mini'] as const;
 
 const INTENT_JSON_SCHEMA = {
   name: 'slack_intent_parser',
@@ -44,10 +45,29 @@ const INTENT_JSON_SCHEMA = {
       missingFields: { type: 'array', items: { type: 'string' } },
       clarifyingQuestion: { type: 'string' }
     },
-    required: ['intent', 'confidence', 'acceptanceCriteria', 'missingFields']
+    required: [
+      'intent',
+      'confidence',
+      'jiraKey',
+      'repoHint',
+      'repoId',
+      'taskTitle',
+      'taskPrompt',
+      'acceptanceCriteria',
+      'missingFields',
+      'clarifyingQuestion'
+    ]
   },
   strict: true
 } as const;
+
+function previewText(value: string, max = 140) {
+  const normalized = value.replace(/\s+/g, ' ').trim();
+  if (normalized.length <= max) {
+    return normalized;
+  }
+  return `${normalized.slice(0, max - 3)}...`;
+}
 
 function readBoolean(settings: IntegrationConfigSettings, key: string, fallback: boolean): boolean {
   const value = settings[key];
@@ -170,6 +190,7 @@ export async function parseSlackIntentWithLlm(
     text: string;
     settings: SlackIntentSettings;
     priorTurns: number;
+    availableRepos?: string[];
   }
 ): Promise<SlackIntentParseResult> {
   const trimmed = input.text.trim();
@@ -178,53 +199,145 @@ export async function parseSlackIntentWithLlm(
   }
   const apiKey = (env as Env & { OPENAI_API_KEY?: string }).OPENAI_API_KEY?.trim();
   if (!apiKey || !input.settings.intentEnabled) {
+    console.info(JSON.stringify({
+      event: 'slack_intent_parse',
+      phase: 'fallback',
+      reason: !apiKey ? 'missing_api_key' : 'intent_disabled',
+      priorTurns: input.priorTurns
+    }));
     return fallbackIntent(trimmed);
   }
 
-  try {
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        model: input.settings.intentModel || DEFAULT_INTENT_MODEL,
-        messages: [
-          {
-            role: 'system',
-            content: [
-              'Parse Slack /kanvy free-text into a strict intent JSON object.',
-              'Prefer intent=create_task for generic requests.',
-              'Use intent=fix_jira only when user asks to fix a Jira issue.',
-              'Return one targeted clarifyingQuestion if needed.'
-            ].join(' ')
-          },
-          {
-            role: 'user',
-            content: `turn=${input.priorTurns}\ntext=${trimmed}`
-          }
-        ],
-        response_format: {
-          type: 'json_schema',
-          json_schema: INTENT_JSON_SCHEMA
+  const availableRepos = Array.isArray(input.availableRepos)
+    ? input.availableRepos.filter((repoId) => typeof repoId === 'string' && repoId.trim().length > 0)
+    : [];
+  const availableReposBlock = availableRepos.length > 0
+    ? `available_repos:\n${availableRepos.slice(0, 100).map((repoId) => `- ${repoId}`).join('\n')}`
+    : 'available_repos:\n- unknown';
+
+  const uniqueModels = Array.from(new Set([
+    input.settings.intentModel || DEFAULT_INTENT_MODEL,
+    ...INTENT_FALLBACK_MODELS
+  ]));
+
+  for (let index = 0; index < uniqueModels.length; index += 1) {
+    const model = uniqueModels[index]!;
+    const attempt = index + 1;
+    const isLastAttempt = attempt >= uniqueModels.length;
+    try {
+      console.info(JSON.stringify({
+        event: 'slack_intent_parse',
+        phase: 'request',
+        model,
+        priorTurns: input.priorTurns,
+        attempt,
+        textPreview: previewText(trimmed)
+      }));
+      const response = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json'
         },
-        temperature: 0
-      })
-    });
-    if (!response.ok) {
+        body: JSON.stringify({
+          model,
+          messages: [
+            {
+              role: 'system',
+              content: [
+                'Parse Slack /kanvy free-text into a strict intent JSON object.',
+                'Prefer intent=create_task for generic requests.',
+                'Use intent=fix_jira only when user asks to fix a Jira issue.',
+                'Use any provided prior context to fill missing fields.',
+                'If task goal is clear, do not require explicit acceptance criteria.',
+                'Return one targeted clarifyingQuestion only when truly needed.'
+              ].join(' ')
+            },
+            {
+              role: 'user',
+              content: `turn=${input.priorTurns}\n${availableReposBlock}\ntext=${trimmed}`
+            }
+          ],
+          response_format: {
+            type: 'json_schema',
+            json_schema: INTENT_JSON_SCHEMA
+          }
+        })
+      });
+      if (!response.ok) {
+        const rawError = await response.text().catch(() => '');
+        let errorCode: string | undefined;
+        let errorMessage: string | undefined;
+        try {
+          const parsedError = rawError ? JSON.parse(rawError) as { error?: { code?: string; message?: string } } : undefined;
+          errorCode = parsedError?.error?.code;
+          errorMessage = parsedError?.error?.message;
+        } catch {
+          errorMessage = rawError || undefined;
+        }
+        console.warn(JSON.stringify({
+          event: 'slack_intent_parse',
+          phase: 'response_error',
+          status: response.status,
+          model,
+          attempt,
+          priorTurns: input.priorTurns,
+          errorCode: errorCode ?? null,
+          errorMessage: errorMessage ? previewText(errorMessage, 220) : null
+        }));
+        if (!isLastAttempt && (response.status === 400 || response.status === 404)) {
+          continue;
+        }
+        return fallbackIntent(trimmed);
+      }
+      const payload = await response.json() as {
+        choices?: Array<{ message?: { content?: string } }>;
+      };
+      const rawContent = payload.choices?.[0]?.message?.content;
+      if (!rawContent) {
+        console.warn(JSON.stringify({
+          event: 'slack_intent_parse',
+          phase: 'response_empty',
+          model,
+          attempt,
+          priorTurns: input.priorTurns
+        }));
+        if (!isLastAttempt) {
+          continue;
+        }
+        return fallbackIntent(trimmed);
+      }
+      const parsed = JSON.parse(rawContent);
+      const normalized = normalizeResult(parsed);
+      console.info(JSON.stringify({
+        event: 'slack_intent_parse',
+        phase: 'response_ok',
+        model,
+        attempt,
+        priorTurns: input.priorTurns,
+        intent: normalized.intent,
+        confidence: normalized.confidence,
+        hasRepoHint: Boolean(normalized.repoHint),
+        hasRepoId: Boolean(normalized.repoId),
+        hasTaskTitle: Boolean(normalized.taskTitle),
+        hasTaskPrompt: Boolean(normalized.taskPrompt),
+        missingFields: normalized.missingFields
+      }));
+      return normalized;
+    } catch (error) {
+      console.warn(JSON.stringify({
+        event: 'slack_intent_parse',
+        phase: 'exception',
+        model,
+        attempt,
+        priorTurns: input.priorTurns,
+        errorMessage: error instanceof Error ? previewText(error.message, 220) : 'unknown'
+      }));
+      if (!isLastAttempt) {
+        continue;
+      }
       return fallbackIntent(trimmed);
     }
-    const payload = await response.json() as {
-      choices?: Array<{ message?: { content?: string } }>;
-    };
-    const rawContent = payload.choices?.[0]?.message?.content;
-    if (!rawContent) {
-      return fallbackIntent(trimmed);
-    }
-    const parsed = JSON.parse(rawContent);
-    return normalizeResult(parsed);
-  } catch {
-    return fallbackIntent(trimmed);
   }
+  return fallbackIntent(trimmed);
 }

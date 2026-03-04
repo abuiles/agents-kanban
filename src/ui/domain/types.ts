@@ -74,6 +74,13 @@ export type SlackIntakeSessionData = {
   missingFields?: string[];
   clarifyingQuestion?: string;
   lastUserText?: string;
+  repoChoices?: string[];
+  pendingConfirmation?: {
+    repoId: string;
+    title: string;
+    prompt: string;
+    acceptanceCriteria?: string[];
+  };
 };
 export type SlackIntakeSession = {
   id: string;

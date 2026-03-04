@@ -443,6 +443,25 @@ function parseSlackIntakeSessionData(value: unknown): SlackIntakeSessionData {
         ? raw.filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0).map((entry) => entry.trim())
         : undefined
     );
+    const readPendingConfirmation = (raw: unknown) => {
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+        return undefined;
+      }
+      const record = raw as Record<string, unknown>;
+      const repoId = readString(record.repoId);
+      const title = readString(record.title);
+      const prompt = readString(record.prompt);
+      if (!repoId || !title || !prompt) {
+        return undefined;
+      }
+      const acceptanceCriteria = readStringArray(record.acceptanceCriteria);
+      return {
+        repoId,
+        title,
+        prompt,
+        ...(acceptanceCriteria ? { acceptanceCriteria } : {})
+      };
+    };
     return {
       intent: data.intent === 'fix_jira' || data.intent === 'create_task' || data.intent === 'unknown' ? data.intent : undefined,
       confidence: typeof data.confidence === 'number' && Number.isFinite(data.confidence) ? data.confidence : undefined,
@@ -454,7 +473,9 @@ function parseSlackIntakeSessionData(value: unknown): SlackIntakeSessionData {
       acceptanceCriteria: readStringArray(data.acceptanceCriteria),
       missingFields: readStringArray(data.missingFields),
       clarifyingQuestion: readString(data.clarifyingQuestion),
-      lastUserText: readString(data.lastUserText)
+      lastUserText: readString(data.lastUserText),
+      repoChoices: readStringArray(data.repoChoices),
+      pendingConfirmation: readPendingConfirmation(data.pendingConfirmation)
     };
   } catch {
     return {};

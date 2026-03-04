@@ -423,6 +423,262 @@ function normalizeIntentMissingFields(fields: string[], repoResolved: boolean) {
   return fields;
 }
 
+function normalizeRepoChoicesFromSession(data: unknown): string[] {
+  if (!data || typeof data !== 'object') {
+    return [];
+  }
+  const record = data as Record<string, unknown>;
+  if (!Array.isArray(record.repoChoices)) {
+    return [];
+  }
+  return record.repoChoices
+    .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+    .map((value) => value.trim());
+}
+
+function resolveRepoFromNumberReply(text: string, choices: string[]): string | undefined {
+  const match = /^\s*(\d+)\s*$/.exec(text);
+  if (!match?.[1]) {
+    return undefined;
+  }
+  const index = Number.parseInt(match[1], 10);
+  if (!Number.isFinite(index) || index < 1 || index > choices.length) {
+    return undefined;
+  }
+  return choices[index - 1];
+}
+
+function rankRepoChoicesByHint(
+  choices: Array<{ repoId: string; haystack: string }>,
+  rawHint: string
+): Array<{ repoId: string; score: number }> {
+  const hint = rawHint
+    .toLowerCase()
+    .replace(/\brepo\b/g, ' ')
+    .replace(/[^a-z0-9/_-]+/g, ' ')
+    .trim();
+  if (!hint) {
+    return [];
+  }
+  const tokens = hint.split(/\s+/).filter(Boolean);
+  const scored = choices
+    .map((choice) => {
+      const lower = choice.haystack.toLowerCase();
+      let score = 0;
+      if (lower === hint) score += 1000;
+      if (lower.includes(hint)) score += 400;
+      for (const token of tokens) {
+        if (token.length >= 2 && lower.includes(token)) {
+          score += 100;
+        }
+      }
+      return { repoId: choice.repoId, score };
+    })
+    .filter((entry) => entry.score > 0)
+    .sort((a, b) => b.score - a.score);
+  return scored;
+}
+
+function extractRepoHintFromText(text: string): string | undefined {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  const explicit = /repo\s*[:=]\s*([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)/i.exec(trimmed);
+  if (explicit?.[1]) {
+    return explicit[1].trim();
+  }
+  const inferred = /\b([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\b/.exec(trimmed);
+  return inferred?.[1]?.trim();
+}
+
+function isLikelyRepoOnlyText(text: string): boolean {
+  const normalized = text.trim().toLowerCase();
+  if (!normalized) {
+    return true;
+  }
+  const stripped = normalized
+    .replace(/^repo\s*[:=]\s*/i, '')
+    .replace(/[().,\-]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return /^[a-z0-9_.-]+\/[a-z0-9_.-]+$/.test(stripped);
+}
+
+function deriveTaskTitleFromPrompt(prompt: string): string {
+  const compact = prompt.replace(/\s+/g, ' ').trim();
+  if (!compact) {
+    return 'Slack intake task';
+  }
+  const sentence = compact.split(/[.!?]/)[0]?.trim() || compact;
+  return sentence.length <= 80 ? sentence : `${sentence.slice(0, 77).trimEnd()}...`;
+}
+
+function isAffirmativeConfirmation(text: string): boolean {
+  const normalized = text.trim().toLowerCase();
+  return normalized === 'yes'
+    || normalized === 'y'
+    || normalized === 'confirm'
+    || normalized === 'go'
+    || normalized === 'go ahead'
+    || normalized === 'create'
+    || normalized === 'create it'
+    || normalized === 'ship it';
+}
+
+function normalizePendingConfirmation(data: unknown): {
+  repoId: string;
+  title: string;
+  prompt: string;
+  acceptanceCriteria: string[];
+} | undefined {
+  if (!data || typeof data !== 'object') {
+    return undefined;
+  }
+  const root = data as Record<string, unknown>;
+  const pending = root.pendingConfirmation;
+  if (!pending || typeof pending !== 'object') {
+    return undefined;
+  }
+  const record = pending as Record<string, unknown>;
+  const repoId = typeof record.repoId === 'string' && record.repoId.trim() ? record.repoId.trim() : undefined;
+  const title = typeof record.title === 'string' && record.title.trim() ? record.title.trim() : undefined;
+  const prompt = typeof record.prompt === 'string' && record.prompt.trim() ? record.prompt.trim() : undefined;
+  if (!repoId || !title || !prompt) {
+    return undefined;
+  }
+  const acceptanceCriteria = Array.isArray(record.acceptanceCriteria)
+    ? record.acceptanceCriteria
+      .filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+      .map((item) => item.trim())
+    : [];
+  return { repoId, title, prompt, acceptanceCriteria };
+}
+
+function normalizeSessionIntentData(data: unknown): Partial<SlackIntentParseResult> {
+  if (!data || typeof data !== 'object') {
+    return {};
+  }
+  const record = data as Record<string, unknown>;
+  const readString = (value: unknown) => (typeof value === 'string' && value.trim() ? value.trim() : undefined);
+  const readArray = (value: unknown) => Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0).map((item) => item.trim())
+    : [];
+  const intent = record.intent === 'fix_jira' || record.intent === 'create_task' || record.intent === 'unknown'
+    ? record.intent
+    : undefined;
+  const confidence = typeof record.confidence === 'number' && Number.isFinite(record.confidence)
+    ? Math.max(0, Math.min(1, record.confidence))
+    : undefined;
+  return {
+    ...(intent ? { intent } : {}),
+    ...(confidence !== undefined ? { confidence } : {}),
+    jiraKey: readString(record.jiraKey),
+    repoHint: readString(record.repoHint),
+    repoId: readString(record.repoId),
+    taskTitle: readString(record.taskTitle),
+    taskPrompt: readString(record.taskPrompt),
+    acceptanceCriteria: readArray(record.acceptanceCriteria),
+    missingFields: readArray(record.missingFields),
+    clarifyingQuestion: readString(record.clarifyingQuestion)
+  };
+}
+
+function buildIntentParseInputText(currentText: string, previous: Partial<SlackIntentParseResult>) {
+  const current = currentText.trim();
+  const normalizePromptForContext = (value: string | undefined) => {
+    if (!value) {
+      return undefined;
+    }
+    const normalized = value.trim();
+    if (!normalized) {
+      return undefined;
+    }
+    if (normalized.includes('prior_context:') || normalized.includes('latest_user_message:')) {
+      return undefined;
+    }
+    return normalized.length > 260 ? `${normalized.slice(0, 257)}...` : normalized;
+  };
+  const priorTaskPrompt = normalizePromptForContext(previous.taskPrompt);
+  if (!previous.taskPrompt && !previous.taskTitle && !previous.repoHint && !previous.repoId) {
+    return current;
+  }
+  const priorLines = [
+    previous.taskTitle ? `taskTitle=${previous.taskTitle}` : '',
+    priorTaskPrompt ? `taskPrompt=${priorTaskPrompt}` : '',
+    previous.repoId ? `repoId=${previous.repoId}` : '',
+    previous.repoHint ? `repoHint=${previous.repoHint}` : '',
+    previous.acceptanceCriteria && previous.acceptanceCriteria.length > 0
+      ? `acceptanceCriteria=${previous.acceptanceCriteria.join(' | ')}`
+      : ''
+  ].filter(Boolean);
+
+  return [
+    'prior_context:',
+    ...(priorLines.length > 0 ? priorLines : ['none']),
+    'latest_user_message:',
+    current
+  ].join('\n');
+}
+
+function mergeIntentWithSession(
+  parsed: SlackIntentParseResult,
+  previous: Partial<SlackIntentParseResult>,
+  latestText: string
+): SlackIntentParseResult {
+  const sanitizeTaskPrompt = (value: string | undefined): string | undefined => {
+    if (!value) {
+      return undefined;
+    }
+    const normalized = value.trim();
+    if (!normalized) {
+      return undefined;
+    }
+    if (normalized.includes('prior_context:') || normalized.includes('latest_user_message:')) {
+      return undefined;
+    }
+    return normalized;
+  };
+  const derivedRepoHint = extractRepoHintFromText(latestText);
+  const mergedAcceptanceCriteria = parsed.acceptanceCriteria.length > 0
+    ? parsed.acceptanceCriteria
+    : previous.acceptanceCriteria && previous.acceptanceCriteria.length > 0
+      ? previous.acceptanceCriteria
+      : [];
+
+  const merged: SlackIntentParseResult = {
+    intent: parsed.intent !== 'unknown'
+      ? parsed.intent
+      : previous.intent ?? 'unknown',
+    confidence: parsed.confidence > 0
+      ? parsed.confidence
+      : previous.confidence ?? 0,
+    jiraKey: parsed.jiraKey ?? previous.jiraKey,
+    repoHint: parsed.repoHint ?? derivedRepoHint ?? previous.repoHint,
+    repoId: parsed.repoId ?? previous.repoId,
+    taskTitle: parsed.taskTitle ?? previous.taskTitle,
+    taskPrompt: sanitizeTaskPrompt(parsed.taskPrompt) ?? sanitizeTaskPrompt(previous.taskPrompt),
+    acceptanceCriteria: mergedAcceptanceCriteria,
+    missingFields: parsed.missingFields,
+    clarifyingQuestion: parsed.clarifyingQuestion ?? previous.clarifyingQuestion
+  };
+
+  const resolvedMissing = new Set(merged.missingFields);
+  if (merged.repoId || merged.repoHint) {
+    resolvedMissing.delete('repo');
+  }
+  if (merged.taskPrompt) {
+    resolvedMissing.delete('taskPrompt');
+    resolvedMissing.delete('acceptanceCriteria');
+  }
+  if (merged.taskTitle) {
+    resolvedMissing.delete('title');
+    resolvedMissing.delete('taskTitle');
+  }
+  merged.missingFields = Array.from(resolvedMissing);
+  return merged;
+}
+
 async function resolveRepoIdForIntent(
   env: Env,
   tenantId: string,
@@ -432,6 +688,9 @@ async function resolveRepoIdForIntent(
   if (parsed.repoId?.trim()) {
     return { repoId: parsed.repoId.trim(), ambiguous: false, choices: [] as string[] };
   }
+  const explicitRepoHint = parsed.repoHint?.trim()
+    ? (extractRepoHintFromText(parsed.repoHint) ?? parsed.repoHint.trim())
+    : undefined;
 
   const { settings } = await resolveSlackIntentScopeConfig(env, tenantId, {
     channelId,
@@ -443,24 +702,50 @@ async function resolveRepoIdForIntent(
 
   const boardIndex = env.BOARD_INDEX?.getByName(BOARD_OBJECT_NAME);
   if (!boardIndex) {
+    if (explicitRepoHint?.includes('/')) {
+      return { repoId: explicitRepoHint, ambiguous: false, choices: [] as string[] };
+    }
     return { repoId: undefined, ambiguous: false, choices: [] as string[] };
   }
   try {
     const repos = await boardIndex.listRepos(tenantId);
+    if (repos.length === 0 && explicitRepoHint?.includes('/')) {
+      return { repoId: explicitRepoHint, ambiguous: false, choices: [] as string[] };
+    }
     if (repos.length === 1 && repos[0]?.repoId) {
       return { repoId: repos[0].repoId, ambiguous: false, choices: [] as string[] };
     }
     if (repos.length > 1) {
-      const choices = repos.map((repo) => repo.repoId).filter((repoId): repoId is string => Boolean(repoId));
+      const choiceObjects = repos
+        .filter((repo) => typeof repo.repoId === 'string' && repo.repoId.trim().length > 0)
+        .map((repo) => ({
+          repoId: repo.repoId.trim(),
+          slug: typeof repo.slug === 'string' ? repo.slug.trim() : ''
+        }));
+      const choices = choiceObjects.map((entry) => entry.repoId);
       if (parsed.repoHint?.trim()) {
         const hint = parsed.repoHint.trim().toLowerCase();
-        const exact = choices.find((repoId) => repoId.toLowerCase() === hint);
+        const exact = choiceObjects.find((entry) => entry.repoId.toLowerCase() === hint || entry.slug.toLowerCase() === hint);
         if (exact) {
-          return { repoId: exact, ambiguous: false, choices };
+          return { repoId: exact.repoId, ambiguous: false, choices };
         }
-        const partial = choices.find((repoId) => repoId.toLowerCase().includes(hint));
-        if (partial) {
-          return { repoId: partial, ambiguous: false, choices };
+        const ranked = rankRepoChoicesByHint(
+          choiceObjects.map((entry) => ({
+            repoId: entry.repoId,
+            haystack: `${entry.repoId} ${entry.slug}`.trim()
+          })),
+          parsed.repoHint
+        );
+        if (ranked.length === 1) {
+          return { repoId: ranked[0]?.repoId, ambiguous: false, choices };
+        }
+        if (ranked.length > 1) {
+          const best = ranked[0]!;
+          const second = ranked[1]!;
+          if (best.score >= second.score + 200) {
+            return { repoId: best.repoId, ambiguous: false, choices };
+          }
+          return { repoId: undefined, ambiguous: true, choices: ranked.slice(0, 9).map((entry) => entry.repoId) };
         }
       }
       return { repoId: undefined, ambiguous: true, choices };
@@ -468,7 +753,28 @@ async function resolveRepoIdForIntent(
   } catch {
     // Best effort.
   }
+  if (explicitRepoHint?.includes('/')) {
+    return { repoId: explicitRepoHint, ambiguous: false, choices: [] as string[] };
+  }
   return { repoId: undefined, ambiguous: false, choices: [] as string[] };
+}
+
+async function listAvailableRepoIdsForTenant(env: Env, tenantId: string): Promise<string[]> {
+  const boardIndex = env.BOARD_INDEX?.getByName(BOARD_OBJECT_NAME);
+  if (!boardIndex) {
+    return [];
+  }
+  try {
+    const repos = await boardIndex.listRepos(tenantId);
+    const values = repos.flatMap((repo) => {
+      const repoId = typeof repo.repoId === 'string' && repo.repoId.trim() ? repo.repoId.trim() : undefined;
+      const slug = typeof repo.slug === 'string' && repo.slug.trim() ? repo.slug.trim() : undefined;
+      return [repoId, slug].filter((entry): entry is string => Boolean(entry));
+    });
+    return Array.from(new Set(values));
+  } catch {
+    return [];
+  }
 }
 
 async function resolveRepoIdForRun(env: Env, runId: string): Promise<string | undefined> {
@@ -710,7 +1016,27 @@ async function processJiraIssueFlow(
 
 async function resolveThreadTenantId(env: Env, teamId: string | undefined) {
   const fallbackTenantId = await tenantAuthDb.getPrimaryTenantId(env);
-  return resolveThreadTenant(fallbackTenantId, teamId);
+  const resolved = resolveThreadTenant(fallbackTenantId, teamId);
+  if (!fallbackTenantId || resolved === fallbackTenantId) {
+    return resolved;
+  }
+  const boardIndex = env.BOARD_INDEX?.getByName(BOARD_OBJECT_NAME);
+  if (!boardIndex) {
+    return resolved;
+  }
+  try {
+    const candidateRepos = await boardIndex.listRepos(resolved);
+    if (candidateRepos.length > 0) {
+      return resolved;
+    }
+    const fallbackRepos = await boardIndex.listRepos(fallbackTenantId);
+    if (fallbackRepos.length > 0) {
+      return fallbackTenantId;
+    }
+  } catch {
+    // Best effort: keep the team-scoped tenant resolution when board index is unavailable.
+  }
+  return resolved;
 }
 
 async function updateBindingForAction(
@@ -787,34 +1113,22 @@ async function runIntentIntake(
   }
 
   const currentTurn = existing?.status === 'active' && !expired ? existing.turnCount : 0;
-  const { settings } = await resolveSlackIntentScopeConfig(env, input.tenantId, {
-    channelId: input.channelId
-  });
-  const parsed = await parseSlackIntentWithLlm(env, {
-    text: input.text,
-    settings,
-    priorTurns: currentTurn
-  });
-
-  const repoResolution = await resolveRepoIdForIntent(env, input.tenantId, input.channelId, parsed);
-  const missingFields = normalizeIntentMissingFields(parsed.missingFields, Boolean(repoResolution.repoId));
-  const isComplete = parsed.confidence >= AUTO_CREATE_CONFIDENCE_THRESHOLD
-    && parsed.intent === 'create_task'
-    && Boolean(parsed.taskPrompt?.trim())
-    && Boolean(parsed.taskTitle?.trim())
-    && missingFields.length === 0;
-
-  if (isComplete && settings.intentAutoCreate && repoResolution.repoId) {
+  const pendingConfirmation = existing?.status === 'active' && !expired
+    ? normalizePendingConfirmation(existing.data)
+    : undefined;
+  if (pendingConfirmation && isAffirmativeConfirmation(input.text)) {
     const payload = buildTaskPayloadFromIntent({
-      repoId: repoResolution.repoId,
-      title: parsed.taskTitle!.trim(),
-      prompt: parsed.taskPrompt!.trim(),
-      acceptanceCriteria: parsed.acceptanceCriteria.length > 0
-        ? parsed.acceptanceCriteria
+      repoId: pendingConfirmation.repoId,
+      title: pendingConfirmation.title,
+      prompt: pendingConfirmation.prompt,
+      acceptanceCriteria: pendingConfirmation.acceptanceCriteria.length > 0
+        ? pendingConfirmation.acceptanceCriteria
         : ['Task is complete and validated in the target repository.'],
-      model: toSupportedCodexModel(settings.intentModel)
+      model: toSupportedCodexModel((await resolveSlackIntentScopeConfig(env, input.tenantId, {
+        channelId: input.channelId
+      })).settings.intentModel)
     });
-    const started = await startRunForTask(env, ctx, input.tenantId, repoResolution.repoId, payload);
+    const started = await startRunForTask(env, ctx, input.tenantId, pendingConfirmation.repoId, payload);
     await tenantAuthDb.upsertSlackThreadBinding(env, {
       tenantId: input.tenantId,
       taskId: started.taskId,
@@ -829,31 +1143,114 @@ async function runIntentIntake(
       threadTs: input.threadTs,
       status: 'completed',
       turnCount: currentTurn,
+      data: {
+        lastUserText: input.text,
+        completedFromConfirmation: true
+      }
+    });
+    await postThreadPrompt(env, {
+      tenantId: input.tenantId,
+      channelId: input.channelId,
+      threadTs: input.threadTs,
+      text: `Created task ${started.taskId} and started run ${started.runId} in ${pendingConfirmation.repoId}.`
+    });
+    return started;
+  }
+  const previousIntent = existing?.status === 'active' && !expired
+    ? normalizeSessionIntentData(existing.data)
+    : {};
+  const sessionRepoChoices = existing?.status === 'active' && !expired
+    ? normalizeRepoChoicesFromSession(existing.data)
+    : [];
+  const selectedRepoFromNumber = resolveRepoFromNumberReply(input.text, sessionRepoChoices);
+  if (selectedRepoFromNumber) {
+    previousIntent.repoId = selectedRepoFromNumber;
+    previousIntent.repoHint = selectedRepoFromNumber;
+  }
+  const { settings } = await resolveSlackIntentScopeConfig(env, input.tenantId, {
+    channelId: input.channelId
+  });
+  const availableRepos = await listAvailableRepoIdsForTenant(env, input.tenantId);
+  const parsed = mergeIntentWithSession(await parseSlackIntentWithLlm(env, {
+    text: buildIntentParseInputText(input.text, previousIntent),
+    settings,
+    priorTurns: currentTurn,
+    availableRepos
+  }), previousIntent, input.text);
+  if (!parsed.taskPrompt?.trim() && !isLikelyRepoOnlyText(input.text)) {
+    parsed.taskPrompt = input.text.trim();
+  }
+  if (!parsed.taskTitle?.trim() && parsed.taskPrompt?.trim()) {
+    parsed.taskTitle = deriveTaskTitleFromPrompt(parsed.taskPrompt);
+  }
+
+  const repoResolution = await resolveRepoIdForIntent(env, input.tenantId, input.channelId, parsed);
+  const missingFields = normalizeIntentMissingFields(parsed.missingFields, Boolean(repoResolution.repoId));
+  const hasCoreFields = Boolean(repoResolution.repoId)
+    && Boolean(parsed.taskPrompt?.trim())
+    && Boolean(parsed.taskTitle?.trim());
+  const isCompleteByConfidence = parsed.confidence >= AUTO_CREATE_CONFIDENCE_THRESHOLD
+    && parsed.intent === 'create_task'
+    && hasCoreFields
+    && missingFields.length === 0;
+  const isCompleteByTurnFallback = parsed.intent === 'create_task'
+    && hasCoreFields
+    && currentTurn >= Math.max(1, settings.intentClarifyMaxTurns - 1);
+  const isReadyForConfirmation = parsed.intent === 'create_task'
+    && hasCoreFields
+    && missingFields.filter((field) => field !== 'acceptanceCriteria').length === 0;
+  const isComplete = isReadyForConfirmation || isCompleteByConfidence || isCompleteByTurnFallback;
+
+  if (isComplete && settings.intentAutoCreate && repoResolution.repoId) {
+    const title = parsed.taskTitle!.trim();
+    const prompt = parsed.taskPrompt!.trim();
+    const acceptanceCriteria = parsed.acceptanceCriteria.length > 0
+      ? parsed.acceptanceCriteria
+      : ['Task is complete and validated in the target repository.'];
+    await tenantAuthDb.upsertSlackIntakeSession(env, {
+      tenantId: input.tenantId,
+      channelId: input.channelId,
+      threadTs: input.threadTs,
+      status: 'active',
+      turnCount: currentTurn,
       lastConfidence: parsed.confidence,
       data: {
         ...parsed,
-        lastUserText: input.text
+        lastUserText: input.text,
+        pendingConfirmation: {
+          repoId: repoResolution.repoId,
+          title,
+          prompt,
+          acceptanceCriteria
+        }
       }
     });
-    const completionText = `Created task ${started.taskId} and started run ${started.runId} in ${repoResolution.repoId}.`;
-    if (input.responseUrl) {
-      await postSlackResponse(input.responseUrl, { response_type: 'ephemeral', text: completionText });
-    } else {
-      await postThreadPrompt(env, {
-        tenantId: input.tenantId,
-        channelId: input.channelId,
-        threadTs: input.threadTs,
-        text: completionText
-      });
-    }
-    return started;
+    await postThreadPrompt(env, {
+      tenantId: input.tenantId,
+      channelId: input.channelId,
+      threadTs: input.threadTs,
+      text: [
+        'I can create this task:',
+        `repo: ${repoResolution.repoId}`,
+        `title: ${title}`,
+        `prompt: ${prompt}`,
+        `acceptance: ${acceptanceCriteria.join(' | ')}`,
+        'Reply `yes` to create it, or send edits in this thread.'
+      ].join('\n')
+    });
+    return undefined;
   }
 
   const nextTurn = currentTurn + 1;
   const maxTurns = settings.intentClarifyMaxTurns;
   const needsRepoDisambiguation = !repoResolution.repoId && repoResolution.ambiguous && repoResolution.choices.length > 0;
+  const disambiguationChoices = needsRepoDisambiguation ? repoResolution.choices.slice(0, 9) : [];
   const question = needsRepoDisambiguation
-    ? `I found multiple repos: ${repoResolution.choices.join(', ')}. Which repo should I use?`
+    ? [
+      'I found multiple possible repos. Did you mean:',
+      ...disambiguationChoices.map((repoId, index) => `${index + 1}: ${repoId}`),
+      'Reply with the number.'
+    ].join('\n')
     : parsed.clarifyingQuestion
       ?? 'Please clarify repo, exact goal, and acceptance criteria.';
 
@@ -868,11 +1265,12 @@ async function runIntentIntake(
       ...parsed,
       missingFields,
       clarifyingQuestion: question,
-      lastUserText: input.text
+      lastUserText: input.text,
+      ...(disambiguationChoices.length > 0 ? { repoChoices: disambiguationChoices } : {})
     }
   });
 
-  if (nextTurn >= maxTurns) {
+  if (nextTurn >= maxTurns && !needsRepoDisambiguation && !parsed.taskPrompt?.trim() && !parsed.taskTitle?.trim()) {
     const handoff = [
       `I still need more detail after ${maxTurns} clarification turns.`,
       'Please hand off in a structured format:',
