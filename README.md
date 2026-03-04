@@ -35,6 +35,7 @@ AgentsKanban helps you run AI-assisted software work the same way you already ma
 - Start and retry runs, preview checks, and evidence capture
 - Automatically discover preview URLs and gather before/after evidence
 - Review logs and outputs for every run
+- Recover failed runs from deterministic phase checkpoints with automatic latest-checkpoint retry defaults
 
 ### Auto Review and Selective Change Loop
 
@@ -223,7 +224,7 @@ npx wrangler d1 migrations apply TENANT_DB --remote
 npm run bootstrap:single-tenant -- --input ./scripts/bootstrap-single-tenant.example.json --remote
 ```
 
-For deeper setup and troubleshooting, see [docs/local-testing.md](docs/local-testing.md), [docs/features-and-api.md](docs/features-and-api.md), [docs/integrations/slack-jira-gitlab-mvp.md](docs/integrations/slack-jira-gitlab-mvp.md), [docs/integrations/auto-review-change-loop.md](docs/integrations/auto-review-change-loop.md), and [docs/integrations/sentinel-orchestration.md](docs/integrations/sentinel-orchestration.md).
+For deeper setup and troubleshooting, see [docs/local-testing.md](docs/local-testing.md), [docs/features-and-api.md](docs/features-and-api.md), [docs/integrations/checkpoint-recovery.md](docs/integrations/checkpoint-recovery.md), [docs/integrations/slack-jira-gitlab-mvp.md](docs/integrations/slack-jira-gitlab-mvp.md), [docs/integrations/auto-review-change-loop.md](docs/integrations/auto-review-change-loop.md), and [docs/integrations/sentinel-orchestration.md](docs/integrations/sentinel-orchestration.md).
 
 ## Onboarding Prompts
 
