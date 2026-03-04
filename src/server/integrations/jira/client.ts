@@ -39,6 +39,7 @@ const ISSUE_KEY_PATTERN = /^[A-Z][A-Z0-9_]*-\d+$/i;
 const DEFAULT_TIMEOUT_MS = 5_000;
 const DEFAULT_MAX_ATTEMPTS = 3;
 const DEFAULT_RETRY_DELAY_MS = 250;
+const defaultFetcher: HttpFetcher = (input, init) => globalThis.fetch(input, init);
 
 function readHost(value: string) {
   try {
@@ -51,6 +52,14 @@ function readHost(value: string) {
 function readIssueKeyFromUrl(url: string) {
   const match = /\/issue\/([A-Z][A-Z0-9_]*-\d+)/i.exec(url);
   return match?.[1]?.toUpperCase() ?? 'unknown';
+}
+
+function readPath(value: string) {
+  try {
+    return new URL(value).pathname || '/';
+  } catch {
+    return 'unknown';
+  }
 }
 
 function logJiraFetchLifecycle(
@@ -209,7 +218,7 @@ export class JiraMcpIssueSourceIntegration implements IssueSourceIntegration {
   readonly pluginKind: 'jira' = 'jira';
   private readonly options: NormalizedJiraIssueSourceOptions;
 
-  constructor(input: JiraIssueSourceOptions, fetcher: HttpFetcher = fetch) {
+  constructor(input: JiraIssueSourceOptions, fetcher: HttpFetcher = defaultFetcher) {
     const baseUrl = readString(input.baseUrl);
     if (!baseUrl) {
       throw badRequest('Jira integration requires a base URL.');
@@ -231,10 +240,22 @@ export class JiraMcpIssueSourceIntegration implements IssueSourceIntegration {
     if (!issueKey || !ISSUE_KEY_PATTERN.test(issueKey)) {
       throw badRequest('Invalid Jira issue key.');
     }
+    const issueEndpoint = buildIssueEndpoint(this.options.baseUrl, issueKey);
+    console.info(JSON.stringify({
+      event: 'jira_fetch_start',
+      issueKey,
+      jiraHost: readHost(this.options.baseUrl),
+      jiraBasePath: readPath(this.options.baseUrl),
+      jiraIssuePath: readPath(issueEndpoint),
+      hasAuthEmail: Boolean(this.options.authEmail?.trim()),
+      hasAuthToken: Boolean(this.options.authToken?.trim()),
+      timeoutMs: this.options.timeoutMs,
+      maxAttempts: this.options.maxAttempts
+    }));
 
     let response: Response;
     try {
-      response = await this.fetchWithRetry(buildIssueEndpoint(this.options.baseUrl, issueKey));
+      response = await this.fetchWithRetry(issueEndpoint);
     } catch (error) {
       logJiraFetchLifecycle('error', 'request_failed', {
         issueKey,
@@ -367,12 +388,29 @@ export class JiraMcpIssueSourceIntegration implements IssueSourceIntegration {
 
 export function createJiraIssueSourceIntegrationFromEnv(env: Env, tenantId: string) {
   const envValues = env as unknown as Record<string, string | undefined>;
+  const baseUrl = envValues.JIRA_API_BASE_URL ?? envValues.JIRA_API_URL ?? ``;
+  const authEmail = envValues.JIRA_EMAIL ?? envValues.JIRA_USER_EMAIL;
+  const authToken = envValues.JIRA_API_TOKEN;
+  const timeoutMs = readPositiveInt(envValues.JIRA_TIMEOUT_MS, DEFAULT_TIMEOUT_MS);
+  const maxAttempts = readPositiveInt(envValues.JIRA_MAX_ATTEMPTS, DEFAULT_MAX_ATTEMPTS);
+  const retryDelayMs = readPositiveInt(envValues.JIRA_RETRY_DELAY_MS, DEFAULT_RETRY_DELAY_MS);
+  console.info(JSON.stringify({
+    event: 'jira_fetch_config',
+    tenantId,
+    jiraHost: readHost(baseUrl),
+    jiraBasePath: readPath(baseUrl),
+    hasAuthEmail: Boolean(authEmail?.trim()),
+    hasAuthToken: Boolean(authToken?.trim()),
+    timeoutMs,
+    maxAttempts,
+    retryDelayMs
+  }));
   return new JiraMcpIssueSourceIntegration({
-    baseUrl: envValues.JIRA_API_BASE_URL ?? envValues.JIRA_API_URL ?? ``,
-    authEmail: envValues.JIRA_EMAIL ?? envValues.JIRA_USER_EMAIL,
-    authToken: envValues.JIRA_API_TOKEN,
-    timeoutMs: readPositiveInt(envValues.JIRA_TIMEOUT_MS, DEFAULT_TIMEOUT_MS),
-    maxAttempts: readPositiveInt(envValues.JIRA_MAX_ATTEMPTS, DEFAULT_MAX_ATTEMPTS),
-    retryDelayMs: readPositiveInt(envValues.JIRA_RETRY_DELAY_MS, DEFAULT_RETRY_DELAY_MS)
+    baseUrl,
+    authEmail,
+    authToken,
+    timeoutMs,
+    maxAttempts,
+    retryDelayMs
   });
 }

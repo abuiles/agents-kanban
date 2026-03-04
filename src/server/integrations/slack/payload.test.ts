@@ -19,6 +19,7 @@ describe('slack payload parsing', () => {
   it('keeps deterministic Jira fast-path parsing for fix <JIRA_KEY>', () => {
     expect(parseJiraFastPathIssueKey('fix ABC-123')).toBe('ABC-123');
     expect(parseJiraFastPathIssueKey('fix abc-123')).toBe('ABC-123');
+    expect(parseJiraFastPathIssueKey('fix jira issue ABC-123')).toBeUndefined();
     expect(parseJiraFastPathIssueKey('draft mr')).toBeUndefined();
   });
 
