@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { platform } from 'node:os';
 
 type TunnelMode = 'off' | 'auto' | 'external';
@@ -9,8 +9,8 @@ const LOCAL_DEV_URL = `http://localhost:${DEV_PORT}`;
 const externalUrl = process.env.AK_DEV_PUBLIC_URL?.trim();
 const mode = resolveTunnelMode(process.env.AK_DEV_TUNNEL, externalUrl);
 
-let viteProcess: ChildProcessWithoutNullStreams | null = null;
-let tunnelProcess: ChildProcessWithoutNullStreams | null = null;
+let viteProcess: ChildProcess | null = null;
+let tunnelProcess: ChildProcess | null = null;
 let shuttingDown = false;
 let discoveredTunnelUrl: string | undefined;
 
@@ -63,7 +63,7 @@ function extractTryCloudflareUrl(text: string) {
   return match?.[0];
 }
 
-function killProcess(child: ChildProcessWithoutNullStreams | null) {
+function killProcess(child: ChildProcess | null) {
   if (!child || child.killed) {
     return;
   }
@@ -110,8 +110,8 @@ function startTunnelAuto() {
     }
   };
 
-  tunnelProcess.stdout.on('data', onTunnelOutput);
-  tunnelProcess.stderr.on('data', onTunnelOutput);
+  tunnelProcess.stdout?.on('data', onTunnelOutput);
+  tunnelProcess.stderr?.on('data', onTunnelOutput);
 
   tunnelProcess.on('error', (error) => {
     warn(`Failed to start cloudflared: ${error.message}`);

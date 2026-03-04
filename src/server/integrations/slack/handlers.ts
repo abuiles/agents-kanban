@@ -820,7 +820,7 @@ async function runSlackCommandAsync(
 
   const tenantId = await resolveThreadTenantId(env, payload.teamId);
   const issueKey = parseJiraFastPathIssueKey(payload.text);
-  const dedupeSubject = issueKey ?? payload.text.trim() || 'empty';
+  const dedupeSubject = issueKey ?? (payload.text.trim() || 'empty');
   const slashDedupeKey = buildIdempotencyKey({
     provider: 'slack',
     tenantId,

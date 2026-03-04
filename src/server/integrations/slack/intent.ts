@@ -176,7 +176,7 @@ export async function parseSlackIntentWithLlm(
   if (!trimmed) {
     return fallbackIntent(trimmed);
   }
-  const apiKey = env.OPENAI_API_KEY?.trim();
+  const apiKey = (env as Env & { OPENAI_API_KEY?: string }).OPENAI_API_KEY?.trim();
   if (!apiKey || !input.settings.intentEnabled) {
     return fallbackIntent(trimmed);
   }
