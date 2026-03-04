@@ -952,16 +952,7 @@ async function resolveCommitMessageForRun(input: {
     model: input.model,
     reasoningEffort: input.reasoningEffort,
     timeoutMs: 90_000,
-    phase: 'push',
-    outputSchema: {
-      type: 'object',
-      additionalProperties: false,
-      required: ['commitMessage'],
-      properties: {
-        commitMessage: { type: 'string', minLength: 1 },
-        reason: { type: 'string' }
-      }
-    }
+    phase: 'push'
   });
 
   if (remediation.status !== 'success') {
@@ -1042,32 +1033,27 @@ async function proposePushBranchRemediation(input: {
     model: input.model,
     reasoningEffort: input.reasoningEffort,
     timeoutMs: 90_000,
-    phase: 'push',
-    outputSchema: {
-      type: 'object',
-      additionalProperties: false,
-      required: ['branchName'],
-      properties: {
-        branchName: { type: 'string', minLength: 1 },
-        reason: { type: 'string' }
-      }
-    }
+    phase: 'push'
   });
 
   if (remediation.status !== 'success') {
+    const fallbackBranchName = buildFallbackPushBranchName(input.run.runId);
     return {
+      branchName: fallbackBranchName,
       diagnostics:
         remediation.status === 'timed_out'
-          ? `LLM remediation timed out after ${remediation.timeoutMs}ms.`
-          : remediation.message
+          ? `LLM remediation timed out after ${remediation.timeoutMs}ms. Falling back to deterministic branch name ${fallbackBranchName}.`
+          : `${remediation.message} Falling back to deterministic branch name ${fallbackBranchName}.`
     };
   }
 
   const parsed = extractBranchNameFromRemediationOutput(remediation.rawOutput);
   const branchName = sanitizeBranchNameCandidate(parsed);
   if (!branchName) {
+    const fallbackBranchName = buildFallbackPushBranchName(input.run.runId);
     return {
-      diagnostics: `LLM remediation output did not include a valid branch name. Raw output: ${summarizeOutput(remediation.rawOutput)}`
+      branchName: fallbackBranchName,
+      diagnostics: `LLM remediation output did not include a valid branch name. Falling back to deterministic branch name ${fallbackBranchName}. Raw output: ${summarizeOutput(remediation.rawOutput)}`
     };
   }
 
@@ -1136,6 +1122,11 @@ function sanitizeBranchNameCandidate(value: string | undefined) {
   }
 
   return normalized;
+}
+
+function buildFallbackPushBranchName(runId: string) {
+  const hash = shortStableHash(runId).slice(0, 10);
+  return `agent/run-${hash}`;
 }
 
 function isBranchPolicyPushFailure(errorMessage: string) {
