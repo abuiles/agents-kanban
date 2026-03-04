@@ -42,8 +42,10 @@ const KANVY_HELP_TEXT = [
 ].join('\n');
 const SESSION_EXPIRY_MS = 24 * 60 * 60 * 1000;
 const AUTO_CREATE_CONFIDENCE_THRESHOLD = 0.8;
+const JIRA_TASK_TRANSFORM_CONFIDENCE_THRESHOLD = 0.75;
 const DEFAULT_JIRA_API_PATH_PREFIX = '/rest/api/3/issue';
 const MAX_LOG_MESSAGE_CHARS = 300;
+const JIRA_KEY_PATTERN = /^[A-Z][A-Z0-9_]*-\d+$/i;
 
 type SlackLifecycleCheckpoint = 'received' | 'deduped' | 'jira_fetch_started' | 'jira_fetch_failed' | 'task_started';
 
@@ -134,6 +136,40 @@ function resolveJiraRequestTarget(env: Env, issueKey: string): { host: string; p
   }
 }
 
+function normalizeJiraKey(value: string | undefined) {
+  if (!value) {
+    return undefined;
+  }
+  const match = value.match(/[A-Z][A-Z0-9_]*-\d+/i);
+  if (!match?.[0]) {
+    return undefined;
+  }
+  const candidate = match[0].toUpperCase();
+  return JIRA_KEY_PATTERN.test(candidate) ? candidate : undefined;
+}
+
+async function detectJiraIssueKeyWithIntent(
+  env: Env,
+  input: {
+    tenantId: string;
+    channelId: string;
+    text: string;
+  }
+) {
+  const { settings } = await resolveSlackIntentScopeConfig(env, input.tenantId, {
+    channelId: input.channelId
+  });
+  const parsed = await parseSlackIntentWithLlm(env, {
+    text: input.text,
+    settings,
+    priorTurns: 0
+  });
+  if (parsed.intent !== 'fix_jira') {
+    return undefined;
+  }
+  return normalizeJiraKey(parsed.jiraKey);
+}
+
 function logSlackCommandLifecycle(input: {
   checkpoint: SlackLifecycleCheckpoint;
   tenantId: string;
@@ -201,6 +237,182 @@ function buildTaskPayloadFromIssue(
     codexModel: model,
     codexReasoningEffort: JIRA_LLM_REASONING_EFFORT
   };
+}
+
+function ensureIssueKeyInTitle(title: string, issueKey: string) {
+  const trimmed = title.trim();
+  if (!trimmed) {
+    return `[${issueKey}]`;
+  }
+  if (trimmed.toUpperCase().includes(issueKey.toUpperCase())) {
+    return trimmed;
+  }
+  return `[${issueKey}] ${trimmed}`;
+}
+
+async function buildTaskPayloadFromIssueWithLlmTransform(
+  env: Env,
+  input: {
+    tenantId: string;
+    channelId: string;
+    repoId: string;
+    issue: IntegrationIssueRef;
+    commandText: string;
+    llmModel: CreateTaskInput['codexModel'];
+    settings: ReturnType<typeof resolveSlackIntentSettings>;
+  }
+): Promise<CreateTaskInput> {
+  const fallbackPayload = buildTaskPayloadFromIssue(input.issue, input.repoId, input.llmModel);
+  console.info(JSON.stringify({
+    event: 'slack_jira_transform_started',
+    tenantId: input.tenantId,
+    channelId: input.channelId,
+    issueKey: input.issue.issueKey,
+    repoId: input.repoId,
+    llmModel: input.llmModel
+  }));
+  try {
+    const parsed = await parseSlackIntentWithLlm(env, {
+      text: [
+        `user_command: ${input.commandText.trim() || `fix ${input.issue.issueKey}`}`,
+        `jira_issue_key: ${input.issue.issueKey}`,
+        `jira_issue_title: ${input.issue.title}`,
+        `jira_issue_body: ${input.issue.body}`,
+        'Create a concrete implementation task from this Jira issue.'
+      ].join('\n'),
+      settings: input.settings,
+      priorTurns: 0,
+      availableRepos: [input.repoId]
+    });
+    if (parsed.intent !== 'create_task' || parsed.confidence < JIRA_TASK_TRANSFORM_CONFIDENCE_THRESHOLD) {
+      console.info(JSON.stringify({
+        event: 'slack_jira_transform_result',
+        issueKey: input.issue.issueKey,
+        intent: parsed.intent,
+        confidence: parsed.confidence,
+        usedFallback: true,
+        reason: parsed.intent !== 'create_task' ? 'intent_not_create_task' : 'low_confidence'
+      }));
+      return fallbackPayload;
+    }
+    const taskPrompt = parsed.taskPrompt?.trim() || fallbackPayload.taskPrompt;
+    const taskTitle = ensureIssueKeyInTitle(parsed.taskTitle?.trim() || fallbackPayload.title, input.issue.issueKey);
+    const acceptanceCriteria = parsed.acceptanceCriteria.length > 0
+      ? parsed.acceptanceCriteria
+      : fallbackPayload.acceptanceCriteria;
+    console.info(JSON.stringify({
+      event: 'slack_jira_transform_result',
+      issueKey: input.issue.issueKey,
+      intent: parsed.intent,
+      confidence: parsed.confidence,
+      usedFallback: false,
+      acceptanceCount: acceptanceCriteria.length
+    }));
+    return {
+      ...fallbackPayload,
+      title: taskTitle,
+      description: taskPrompt,
+      taskPrompt,
+      acceptanceCriteria
+    };
+  } catch {
+    console.info(JSON.stringify({
+      event: 'slack_jira_transform_result',
+      issueKey: input.issue.issueKey,
+      usedFallback: true,
+      reason: 'transform_exception'
+    }));
+    return fallbackPayload;
+  }
+}
+
+async function queueJiraConfirmation(
+  env: Env,
+  input: {
+    tenantId: string;
+    channelId: string;
+    threadTs: string;
+    issue: IntegrationIssueRef;
+    payload: CreateTaskInput;
+    responseUrl?: string;
+  }
+) {
+  const title = input.payload.title.trim();
+  const prompt = input.payload.taskPrompt.trim();
+  const acceptanceCriteria = input.payload.acceptanceCriteria.length > 0
+    ? input.payload.acceptanceCriteria
+    : ['Task is complete and validated in the target repository.'];
+
+  console.info(JSON.stringify({
+    event: 'slack_jira_confirmation_prepare',
+    tenantId: input.tenantId,
+    channelId: input.channelId,
+    threadTs: input.threadTs,
+    issueKey: input.issue.issueKey,
+    repoId: input.payload.repoId,
+    titlePreview: title.slice(0, 120)
+  }));
+
+  await tenantAuthDb.upsertSlackIntakeSession(env, {
+    tenantId: input.tenantId,
+    channelId: input.channelId,
+    threadTs: input.threadTs,
+    status: 'active',
+    turnCount: 0,
+    data: {
+      intent: 'create_task',
+      confidence: 1,
+      jiraKey: input.issue.issueKey,
+      repoId: input.payload.repoId,
+      taskTitle: title,
+      taskPrompt: prompt,
+      acceptanceCriteria,
+      missingFields: [],
+      pendingConfirmation: {
+        repoId: input.payload.repoId,
+        title,
+        prompt,
+        acceptanceCriteria
+      }
+    }
+  });
+  console.info(JSON.stringify({
+    event: 'slack_jira_confirmation_session_saved',
+    tenantId: input.tenantId,
+    channelId: input.channelId,
+    threadTs: input.threadTs,
+    issueKey: input.issue.issueKey
+  }));
+
+  const summary = [
+    `I can create this task from ${input.issue.issueKey}:`,
+    `repo: ${input.payload.repoId}`,
+    `title: ${title}`,
+    `prompt: ${prompt}`,
+    `acceptance: ${acceptanceCriteria.join(' | ')}`,
+    'Reply `yes` to create it, or send edits in this thread.'
+  ].join('\n');
+
+  const delivered = await postThreadPrompt(env, {
+    tenantId: input.tenantId,
+    channelId: input.channelId,
+    threadTs: input.threadTs,
+    text: summary
+  });
+  console.info(JSON.stringify({
+    event: 'slack_jira_confirmation_post',
+    tenantId: input.tenantId,
+    channelId: input.channelId,
+    threadTs: input.threadTs,
+    issueKey: input.issue.issueKey,
+    delivered
+  }));
+  if (!delivered && input.responseUrl) {
+    await postSlackResponse(input.responseUrl, {
+      response_type: 'ephemeral',
+      text: 'I prepared a Jira-based task summary, but failed to post it in-thread. Please retry in this thread.'
+    });
+  }
 }
 
 function buildTaskPayloadFromIntent(input: {
@@ -787,6 +999,33 @@ async function resolveRepoIdForRun(env: Env, runId: string): Promise<string | un
     : undefined;
 }
 
+async function resolvePreferredRepoFromChannelContext(
+  env: Env,
+  tenantId: string,
+  channelId: string
+): Promise<string | undefined> {
+  const bindings = await tenantAuthDb.listSlackThreadBindings(env, tenantId, { channelId });
+  for (const binding of bindings) {
+    const runId = binding.currentRunId?.trim();
+    if (!runId) {
+      continue;
+    }
+    const repoId = await resolveRepoIdForRun(env, runId);
+    if (repoId?.trim()) {
+      console.info(JSON.stringify({
+        event: 'slack_jira_repo_selected',
+        tenantId,
+        channelId,
+        threadTs: binding.threadTs,
+        repoId: repoId.trim(),
+        source: 'channel_context'
+      }));
+      return repoId.trim();
+    }
+  }
+  return undefined;
+}
+
 async function startRunForTask(
   env: Env,
   ctx: ExecutionContext<unknown> | undefined,
@@ -944,11 +1183,59 @@ async function processJiraIssueFlow(
     latestReviewRound?: number;
   },
   responseUrl: string | undefined,
-  llmModel: CreateTaskInput['codexModel'] = DEFAULT_TASK_LLM_MODEL
+  llmModel: CreateTaskInput['codexModel'] = DEFAULT_TASK_LLM_MODEL,
+  commandText = `fix ${issue.issueKey}`,
+  settings = resolveSlackIntentSettings([], { tenantId, channelId: bindings.channelId }),
+  preferredRepoId: string | undefined = undefined
 ): Promise<RunKickoff | undefined> {
   const issueProjectKey = issueProjectKeyFromIssue(issue.issueKey);
   const mappings = await tenantAuthDb.listJiraProjectRepoMappingsByProject(env, tenantId, issueProjectKey, true);
+  console.info(JSON.stringify({
+    event: 'slack_jira_mapping_resolved',
+    tenantId,
+    channelId: bindings.channelId,
+    threadTs: bindings.threadTs ?? null,
+    issueKey: issue.issueKey,
+    issueProjectKey,
+    mappingCount: mappings.length
+  }));
   if (mappings.length === 0) {
+    if (preferredRepoId?.trim()) {
+      console.info(JSON.stringify({
+        event: 'slack_jira_repo_selected',
+        tenantId,
+        channelId: bindings.channelId,
+        threadTs: bindings.threadTs ?? null,
+        issueKey: issue.issueKey,
+        repoId: preferredRepoId.trim(),
+        source: 'configured_scope'
+      }));
+      const payload = await buildTaskPayloadFromIssueWithLlmTransform(env, {
+        tenantId,
+        channelId: bindings.channelId,
+        repoId: preferredRepoId.trim(),
+        issue,
+        commandText,
+        llmModel,
+        settings
+      });
+      if (!bindings.threadTs) {
+        await postSlackResponse(responseUrl, {
+          response_type: 'ephemeral',
+          text: `Unable to create a confirmation thread for ${issue.issueKey}. Please retry in a thread.`
+        });
+        return undefined;
+      }
+      await queueJiraConfirmation(env, {
+        tenantId,
+        channelId: bindings.channelId,
+        threadTs: bindings.threadTs,
+        issue,
+        payload,
+        responseUrl
+      });
+      return undefined;
+    }
     const candidates = await resolveRepoCandidates(env, tenantId, issueProjectKey, []);
     if (candidates.length === 0) {
       await postSlackResponse(responseUrl, buildNoMappingResponse(issue, issueProjectKey));
@@ -966,6 +1253,14 @@ async function processJiraIssueFlow(
   }
 
   const candidates = await resolveRepoCandidates(env, tenantId, issueProjectKey, mappings);
+  console.info(JSON.stringify({
+    event: 'slack_jira_repo_candidates',
+    tenantId,
+    channelId: bindings.channelId,
+    threadTs: bindings.threadTs ?? null,
+    issueKey: issue.issueKey,
+    candidateCount: candidates.length
+  }));
   if (mappings.length > 1) {
     if (candidates.length === 0) {
       await postSlackResponse(responseUrl, buildNoMappingResponse(issue, issueProjectKey));
@@ -988,30 +1283,39 @@ async function processJiraIssueFlow(
   }
 
   const repoId = candidates[0]!.repoId;
-  const payload = buildTaskPayloadFromIssue(issue, repoId, llmModel);
-  try {
-    const started = await startRunForTask(env, ctx, tenantId, repoId, payload);
-    if (bindings.threadTs) {
-      await syncSlackBindingAfterRunStart(env, tenantId, bindings.taskId, {
-        taskId: started.taskId,
-        channelId: bindings.channelId,
-        threadTs: bindings.threadTs,
-        runId: started.runId,
-        latestReviewRound: normalizeLatestReviewRound(bindings.latestReviewRound)
-      });
-    }
+  console.info(JSON.stringify({
+    event: 'slack_jira_repo_selected',
+    tenantId,
+    channelId: bindings.channelId,
+    threadTs: bindings.threadTs ?? null,
+    issueKey: issue.issueKey,
+    repoId
+  }));
+  const payload = await buildTaskPayloadFromIssueWithLlmTransform(env, {
+    tenantId,
+    channelId: bindings.channelId,
+    repoId,
+    issue,
+    commandText,
+    llmModel,
+    settings
+  });
+  if (!bindings.threadTs) {
     await postSlackResponse(responseUrl, {
       response_type: 'ephemeral',
-      text: `Started ${issue.issueKey} in repo ${repoId} (task ${started.taskId}, run ${started.runId}).`
+      text: `Unable to create a confirmation thread for ${issue.issueKey}. Please retry in a thread.`
     });
-    return started;
-  } catch (error) {
-    await postSlackResponse(responseUrl, {
-      response_type: 'ephemeral',
-      text: `Failed to start a run for ${issue.issueKey}: ${toReadableErrorMessage(error)}`
-    });
-    throw error;
+    return undefined;
   }
+  await queueJiraConfirmation(env, {
+    tenantId,
+    channelId: bindings.channelId,
+    threadTs: bindings.threadTs,
+    issue,
+    payload,
+    responseUrl
+  });
+  return undefined;
 }
 
 async function resolveThreadTenantId(env: Env, teamId: string | undefined) {
@@ -1080,12 +1384,33 @@ async function postThreadPrompt(
     text: string;
   }
 ) {
-  await postSlackThreadMessage(env, {
-    tenantId: input.tenantId,
-    channelId: input.channelId,
-    threadTs: input.threadTs,
-    text: input.text
-  }).catch(() => {});
+  try {
+    const result = await postSlackThreadMessage(env, {
+      tenantId: input.tenantId,
+      channelId: input.channelId,
+      threadTs: input.threadTs,
+      text: input.text
+    });
+    if (!result.delivered) {
+      console.warn(JSON.stringify({
+        event: 'slack_thread_post_failed',
+        tenantId: input.tenantId,
+        channelId: input.channelId,
+        threadTs: input.threadTs,
+        reason: result.reason ?? 'unknown'
+      }));
+    }
+    return result.delivered;
+  } catch (error) {
+    console.warn(JSON.stringify({
+      event: 'slack_thread_post_failed',
+      tenantId: input.tenantId,
+      channelId: input.channelId,
+      threadTs: input.threadTs,
+      reason: error instanceof Error ? error.message : 'unknown_error'
+    }));
+    return false;
+  }
 }
 
 async function runIntentIntake(
@@ -1334,7 +1659,14 @@ async function runSlackCommandAsync(
   ctx?: ExecutionContext<unknown>
 ) {
   const tenantId = await resolveThreadTenantId(env, payload.teamId);
-  const issueKey = parseJiraFastPathIssueKey(payload.text);
+  let issueKey = parseJiraFastPathIssueKey(payload.text);
+  if (!issueKey && payload.text.trim() && payload.text.trim().toLowerCase() !== 'help') {
+    issueKey = await detectJiraIssueKeyWithIntent(env, {
+      tenantId,
+      channelId: payload.channelId,
+      text: payload.text
+    });
+  }
   logSlackCommandLifecycle({
     checkpoint: 'received',
     tenantId,
@@ -1435,9 +1767,23 @@ async function runSlackCommandAsync(
     return;
   }
 
-  const bindingTaskId = payload.threadTs
-    ? await createThreadBindingForSlashCommand(env, tenantId, issueKey, payload.channelId, payload.threadTs)
-    : buildTaskIdFromIssue(issueKey);
+  const issueThreadTs = payload.threadTs
+    ?? await ensureThreadForChannelIntake(env, {
+      tenantId,
+      channelId: payload.channelId,
+      userId: payload.userId,
+      responseUrl: payload.responseUrl
+    });
+  if (!issueThreadTs) {
+    return;
+  }
+  const bindingTaskId = await createThreadBindingForSlashCommand(env, tenantId, issueKey, payload.channelId, issueThreadTs);
+  await postThreadPrompt(env, {
+    tenantId,
+    channelId: payload.channelId,
+    threadTs: issueThreadTs,
+    text: `Analyzing Jira issue ${issueKey} and preparing a task summary. Hold tight.`
+  });
 
   try {
     const jiraTarget = resolveJiraRequestTarget(env, issueKey);
@@ -1445,27 +1791,39 @@ async function runSlackCommandAsync(
       checkpoint: 'jira_fetch_started',
       tenantId,
       channelId: payload.channelId,
-      threadTs: payload.threadTs,
+      threadTs: issueThreadTs,
       issueKey,
       jiraHost: jiraTarget.host,
       jiraPath: jiraTarget.path
     });
     const issue = await resolveTenantAndJiraIssue(env, tenantId, issueKey);
-    const { settings } = await resolveSlackIntentScopeConfig(env, tenantId, {
+    console.info(JSON.stringify({
+      event: 'slack_jira_issue_loaded',
+      tenantId,
+      channelId: payload.channelId,
+      threadTs: issueThreadTs,
+      issueKey: issue.issueKey
+    }));
+    const { settings, config } = await resolveSlackIntentScopeConfig(env, tenantId, {
       channelId: payload.channelId
     });
+    const scopedRepoId = config?.scopeType === 'repo' && config.scopeId?.trim()
+      ? config.scopeId.trim()
+      : undefined;
+    const contextRepoId = await resolvePreferredRepoFromChannelContext(env, tenantId, payload.channelId);
+    const preferredRepoId = scopedRepoId || settings.defaultRepoId?.trim() || contextRepoId || undefined;
     const started = await processJiraIssueFlow(env, ctx, tenantId, issue, {
       taskId: bindingTaskId,
       channelId: payload.channelId,
-      threadTs: payload.threadTs,
+      threadTs: issueThreadTs,
       latestReviewRound: DEFAULT_REVIEW_ROUND
-    }, payload.responseUrl, toSupportedCodexModel(settings.intentModel));
+    }, payload.responseUrl, toSupportedCodexModel(settings.intentModel), payload.text, settings, preferredRepoId);
     if (started) {
       logSlackCommandLifecycle({
         checkpoint: 'task_started',
         tenantId,
         channelId: payload.channelId,
-        threadTs: payload.threadTs,
+        threadTs: issueThreadTs,
         issueKey,
         taskId: started.taskId,
         runId: started.runId
@@ -1477,7 +1835,7 @@ async function runSlackCommandAsync(
       checkpoint: 'jira_fetch_failed',
       tenantId,
       channelId: payload.channelId,
-      threadTs: payload.threadTs,
+      threadTs: issueThreadTs,
       issueKey,
       jiraFailureCategory: jiraFailure.category,
       jiraStatus: jiraFailure.status,
