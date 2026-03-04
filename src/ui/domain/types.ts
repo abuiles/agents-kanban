@@ -21,6 +21,43 @@ export type LlmReasoningEffort = 'low' | 'medium' | 'high';
 export type ScmProvider = 'github' | 'gitlab';
 export type ReviewProvider = ScmProvider;
 export type PreviewAdapterKind = 'cloudflare_checks' | 'prompt_recipe';
+export type IntegrationScopeType = 'tenant' | 'repo' | 'channel';
+export type IntegrationPluginKind = 'slack' | 'jira' | 'gitlab';
+export type IntegrationLoopState = 'QUEUED' | 'RUNNING' | 'MR_OPEN' | 'REVIEW_PENDING' | 'DECISION_REQUIRED' | 'RERUN_QUEUED' | 'PAUSED' | 'DONE' | 'FAILED';
+export type IntegrationConfigSettings = Record<string, string | number | boolean>;
+export type IntegrationConfig = {
+  id: string;
+  tenantId: string;
+  scopeType: IntegrationScopeType;
+  scopeId?: string;
+  pluginKind: IntegrationPluginKind;
+  enabled: boolean;
+  settings: IntegrationConfigSettings;
+  secretRef?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+export type JiraProjectRepoMapping = {
+  id: string;
+  tenantId: string;
+  jiraProjectKey: string;
+  repoId: string;
+  priority: number;
+  active: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+export type SlackThreadBinding = {
+  id: string;
+  tenantId: string;
+  taskId: string;
+  channelId: string;
+  threadTs: string;
+  currentRunId?: string;
+  latestReviewRound: number;
+  createdAt: string;
+  updatedAt: string;
+};
 export type RepoPreviewConfig = {
   checkName?: string;
   promptRecipe?: string;
@@ -373,6 +410,7 @@ export type AgentRun = {
   commitMessage?: string;
   codexProcessId?: string;
   currentCommandId?: string;
+  loopState?: IntegrationLoopState;
   llmAdapter?: LlmAdapter;
   llmSupportsResume?: boolean;
   llmModel?: string;
