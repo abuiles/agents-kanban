@@ -1,4 +1,4 @@
-import { badRequest } from '../http/errors';
+import { badRequest } from '../../http/errors';
 
 export type SlackSlashCommandPayload = {
   command: string;

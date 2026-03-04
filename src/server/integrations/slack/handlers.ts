@@ -1,6 +1,6 @@
 import { badRequest } from '../../http/errors';
 import { handleError, json } from '../../http/response';
-import * as tenantAuthDb from '../tenant-auth-db';
+import * as tenantAuthDb from '../../tenant-auth-db';
 import {
   parseSlackEventBody,
   parseSlackInteractionBody,

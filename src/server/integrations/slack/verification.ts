@@ -1,4 +1,4 @@
-import { badRequest, unauthorized } from '../http/errors';
+import { badRequest, unauthorized } from '../../http/errors';
 
 const DEFAULT_SIGNING_SECRET_KEY = 'slack/signing-secret';
 const TEAM_SIGNING_SECRET_PREFIX = 'slack/signing-secret';
