@@ -7,6 +7,7 @@ const tenantAuthDbMocks = vi.hoisted(() => ({
   listSentinelEvents: vi.fn(),
   createSentinelRun: vi.fn(),
   updateSentinelRun: vi.fn(),
+  claimSentinelRunTask: vi.fn(),
   appendSentinelEvent: vi.fn(),
   upsertRepoSentinelConfig: vi.fn(),
   resolveApiToken: vi.fn(),
@@ -48,10 +49,54 @@ function createEnv(overrides?: {
       sentinelConfig: patch.sentinelConfig
     }))
   };
+  const repoBoardStub = {
+    listTasks: vi.fn(async () => []),
+    getTask: vi.fn(async () => ({
+      task: {
+        taskId: 'task_active',
+        repoId: 'repo_1',
+        tenantId: overrides?.repoTenantId ?? 'tenant_local',
+        title: 'Active task',
+        taskPrompt: 'Prompt',
+        acceptanceCriteria: [],
+        context: { links: [] },
+        status: 'DONE',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z'
+      },
+      repo: {
+        repoId: 'repo_1',
+        tenantId: overrides?.repoTenantId ?? 'tenant_local',
+        name: 'Test Repo',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+        sentinelConfig: { globalMode: true }
+      },
+      runs: [],
+      latestRun: undefined
+    })),
+    startRun: vi.fn(async () => ({
+      runId: 'run_1',
+      taskId: 'task_1',
+      repoId: 'repo_1',
+      status: 'RUNNING',
+      branchName: 'task-1'
+    })),
+    transitionRun: vi.fn(async () => ({
+      runId: 'run_1',
+      taskId: 'task_1',
+      repoId: 'repo_1',
+      status: 'RUNNING',
+      branchName: 'task-1'
+    }))
+  };
 
   return {
     BOARD_INDEX: {
       getByName: vi.fn(() => boardStub)
+    },
+    REPO_BOARD: {
+      getByName: vi.fn(() => repoBoardStub)
     }
   } as unknown as Env;
 }
@@ -70,6 +115,16 @@ describe('repo sentinel router handlers', () => {
     tenantAuthDbMocks.hasActiveTenantAccess.mockResolvedValue(true);
     tenantAuthDbMocks.listSentinelEvents.mockResolvedValue([]);
     tenantAuthDbMocks.appendSentinelEvent.mockResolvedValue({});
+    tenantAuthDbMocks.claimSentinelRunTask.mockImplementation(async (_env: Env, _tenantId: string, runId: string) => ({
+      id: runId,
+      tenantId: _tenantId,
+      repoId: 'repo_1',
+      scopeType: 'global',
+      status: 'running',
+      attemptCount: 0,
+      startedAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z'
+    }));
   });
 
   it('returns repo sentinel status', async () => {
@@ -208,4 +263,3 @@ describe('repo sentinel router handlers', () => {
     expect(body.code).toBe('FORBIDDEN');
   });
 });
-

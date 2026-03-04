@@ -102,13 +102,23 @@ apiRouter.patch('/api/repos/:repoId/sentinel/config', (c: Context) =>
   handlePatchRepoSentinelConfig(c.req.raw, c.env as Env, { repoId: c.req.param('repoId') })
 );
 apiRouter.post('/api/repos/:repoId/sentinel/start', (c: Context) =>
-  handleStartRepoSentinel(c.req.raw, c.env as Env, { repoId: c.req.param('repoId') })
+  handleStartRepoSentinel(
+    c.req.raw,
+    c.env as Env,
+    { repoId: c.req.param('repoId') },
+    c.executionCtx as unknown as ExecutionContext<unknown>
+  )
 );
 apiRouter.post('/api/repos/:repoId/sentinel/pause', (c: Context) =>
   handlePauseRepoSentinel(c.req.raw, c.env as Env, { repoId: c.req.param('repoId') })
 );
 apiRouter.post('/api/repos/:repoId/sentinel/resume', (c: Context) =>
-  handleResumeRepoSentinel(c.req.raw, c.env as Env, { repoId: c.req.param('repoId') })
+  handleResumeRepoSentinel(
+    c.req.raw,
+    c.env as Env,
+    { repoId: c.req.param('repoId') },
+    c.executionCtx as unknown as ExecutionContext<unknown>
+  )
 );
 apiRouter.post('/api/repos/:repoId/sentinel/stop', (c: Context) =>
   handleStopRepoSentinel(c.req.raw, c.env as Env, { repoId: c.req.param('repoId') })

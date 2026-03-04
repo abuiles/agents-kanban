@@ -36,12 +36,14 @@ import { normalizeTenantId, normalizeTenantIdStrict } from '../shared/tenant';
 import { hasRunReview } from '../shared/scm';
 import * as tenantAuthDb from './tenant-auth-db';
 import { DEFAULT_REPO_SENTINEL_CONFIG } from '../shared/sentinel';
+import { SentinelController } from './sentinel';
 import {
   handleSlackCommands as handleSlackCommandsHandler,
   handleSlackEvents as handleSlackEventsHandler,
   handleSlackInteractions as handleSlackInteractionsHandler
 } from './integrations/slack/handlers';
 import { handleGitlabWebhook as handleGitlabWebhookHandler } from './integrations/gitlab/handlers';
+import type { SentinelRun } from '../ui/domain/types';
 
 const BOARD_OBJECT_NAME = 'agentboard';
 
@@ -640,7 +642,51 @@ async function transitionRepoSentinelRun(
   };
 }
 
-export async function handleStartRepoSentinel(request: Request, env: Env, params: RouteParams): Promise<Response> {
+async function progressRepoSentinel(
+  env: Env,
+  tenantId: string,
+  repoId: string,
+  run: SentinelRun | undefined,
+  ctx: ExecutionContext<unknown>
+) {
+  if (!run || run.status !== 'running') {
+    return run;
+  }
+  const controller = new SentinelController({
+    env,
+    tenantId,
+    repoId,
+    run,
+    board: {
+      listTasks: async (tenantIdOverride?: string, options?: { tags?: string[] }) => {
+        const board = env.REPO_BOARD.getByName(repoId);
+        return board.listTasks(tenantIdOverride, options);
+      },
+      getTask: async (taskId: string, tenantIdOverride?: string) => {
+        const board = env.REPO_BOARD.getByName(repoId);
+        return board.getTask(taskId, tenantIdOverride);
+      },
+      startRun: async (taskId: string, options?: { tenantId?: string }) => {
+        const board = env.REPO_BOARD.getByName(repoId);
+        return board.startRun(taskId, options);
+      },
+      transitionRun: async (runId: string, patch: { workflowInstanceId: string; orchestrationMode: 'workflow' | 'local_alarm' }) => {
+        const board = env.REPO_BOARD.getByName(repoId);
+        return board.transitionRun(runId, patch);
+      }
+    },
+    executionContext: ctx
+  });
+  const progressed = await controller.progress();
+  return progressed.run;
+}
+
+export async function handleStartRepoSentinel(
+  request: Request,
+  env: Env,
+  params: RouteParams,
+  ctx: ExecutionContext<unknown> = {} as unknown as ExecutionContext<unknown>
+): Promise<Response> {
   return withApiError(async () => {
     const board = getBoard(env);
     const requestContext = await resolveRequestTenantContext(env, board, request, { requireSession: true });
@@ -653,6 +699,7 @@ export async function handleStartRepoSentinel(request: Request, env: Env, params
       ? (input.scopeValue ?? repo.sentinelConfig?.defaultGroupTag)
       : undefined;
     const transition = await transitionRepoSentinelRun(env, requestContext.activeTenantId, repoId, 'start', { scopeType, scopeValue });
+    await progressRepoSentinel(env, requestContext.activeTenantId, repoId, transition.run, ctx);
     const state = await buildRepoSentinelState(env, requestContext.activeTenantId, repoId);
     return json({
       repoId,
@@ -680,13 +727,19 @@ export async function handlePauseRepoSentinel(request: Request, env: Env, params
   });
 }
 
-export async function handleResumeRepoSentinel(request: Request, env: Env, params: RouteParams): Promise<Response> {
+export async function handleResumeRepoSentinel(
+  request: Request,
+  env: Env,
+  params: RouteParams,
+  ctx: ExecutionContext<unknown> = {} as unknown as ExecutionContext<unknown>
+): Promise<Response> {
   return withApiError(async () => {
     const board = getBoard(env);
     const requestContext = await resolveRequestTenantContext(env, board, request, { requireSession: true });
     const repoId = parsePathParam(params.repoId);
     const repo = await assertRepoAccess(env, board, requestContext, repoId);
     const transition = await transitionRepoSentinelRun(env, requestContext.activeTenantId, repoId, 'resume');
+    await progressRepoSentinel(env, requestContext.activeTenantId, repoId, transition.run, ctx);
     const state = await buildRepoSentinelState(env, requestContext.activeTenantId, repoId);
     return json({
       repoId,
