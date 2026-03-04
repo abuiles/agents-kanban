@@ -1043,6 +1043,12 @@ export async function getTenant(env: Env, tenantId: string): Promise<Tenant> {
   return mapTenant(canonical, await getTenantConfigRow(db));
 }
 
+export async function getPrimaryTenantId(env: Env): Promise<string> {
+  const db = getDb(env);
+  await ensureSchema(db);
+  return getTenantId(db);
+}
+
 export async function getTenantMembership(env: Env, tenantId: string, userId: string): Promise<TenantMember | undefined> {
   const db = getDb(env);
   await ensureSchema(db);
