@@ -189,7 +189,9 @@ export class RunSimulator {
         nextRun.artifacts = [
           nextRun.artifactManifest.logs.key,
           nextRun.artifactManifest.before?.key ?? '',
-          nextRun.artifactManifest.after?.key ?? ''
+          nextRun.artifactManifest.after?.key ?? '',
+          nextRun.artifactManifest.reviewFindingsJson?.key ?? '',
+          nextRun.artifactManifest.reviewMarkdown?.key ?? ''
         ].filter(Boolean);
       }
 

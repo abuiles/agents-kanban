@@ -75,6 +75,42 @@ export type RepoAutoReview = {
   provider: AutoReviewProvider;
   postInline: boolean;
 };
+export type ReviewFindingSeverity = 'critical' | 'high' | 'medium' | 'low' | 'info';
+export type ReviewFindingStatus = 'open' | 'addressed' | 'ignored';
+export type ReviewPromptSource = 'task' | 'repo' | 'native';
+export type ReviewExecutionTrigger = 'auto_on_review' | 'manual_rerun';
+export type ReviewExecutionStatus = 'not_started' | 'running' | 'completed' | 'failed';
+export type ReviewFinding = {
+  findingId: string;
+  severity: ReviewFindingSeverity;
+  title: string;
+  description: string;
+  filePath?: string;
+  lineStart?: number;
+  lineEnd?: number;
+  providerThreadId?: string;
+  status: ReviewFindingStatus;
+  replyContext?: string[];
+};
+export type RunReviewExecution = {
+  enabled: boolean;
+  trigger: ReviewExecutionTrigger;
+  promptSource: ReviewPromptSource;
+  status: ReviewExecutionStatus;
+  round: number;
+  startedAt?: string;
+  endedAt?: string;
+};
+export type RunReviewFindingsSummary = {
+  total: number;
+  open: number;
+  posted: number;
+  provider?: AutoReviewProvider;
+};
+export type RunReviewArtifacts = {
+  findingsJsonKey: string;
+  reviewMarkdownKey: string;
+};
 export type PreviewResolutionStatus = 'ready' | 'pending' | 'failed' | 'timed_out';
 export type PreviewDiagnostic = {
   code: string;
@@ -353,6 +389,8 @@ export type ArtifactManifest = {
   after?: ArtifactPointer;
   trace?: ArtifactPointer;
   video?: ArtifactPointer;
+  reviewFindingsJson?: ArtifactPointer;
+  reviewMarkdown?: ArtifactPointer;
   metadata: {
     tenantId?: string;
     generatedAt: string;
@@ -446,6 +484,10 @@ export type AgentRun = {
     prCommented?: boolean;
     previewResolution?: RunPreviewResolution;
   };
+  reviewExecution?: RunReviewExecution;
+  reviewFindings?: ReviewFinding[];
+  reviewFindingsSummary?: RunReviewFindingsSummary;
+  reviewArtifacts?: RunReviewArtifacts;
   artifacts?: string[];
   artifactManifest?: ArtifactManifest;
   errors: RunError[];
