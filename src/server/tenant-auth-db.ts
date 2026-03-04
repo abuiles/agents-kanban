@@ -1209,6 +1209,36 @@ export async function getSentinelRun(env: Env, tenantId: string, runId: string):
   return mapSentinelRun(row);
 }
 
+export async function claimSentinelRunTask(
+  env: Env,
+  tenantId: string,
+  runId: string,
+  taskId: string,
+  taskRunId: string | undefined
+): Promise<SentinelRun | null> {
+  const db = getDb(env);
+  await ensureSchema(db);
+  const now = new Date().toISOString();
+  await db.prepare(
+    `UPDATE sentinel_runs
+     SET current_task_id = ?, current_run_id = ?, updated_at = ?
+     WHERE tenant_id = ? AND external_id = ? AND status = 'running' AND current_task_id IS NULL`
+  ).bind(
+    taskId,
+    taskRunId ?? null,
+    now,
+    tenantId,
+    runId
+  ).run();
+  const claimed = await db.prepare(
+    'SELECT external_id FROM sentinel_runs WHERE tenant_id = ? AND external_id = ? AND status = ? AND current_task_id = ?'
+  ).bind(tenantId, runId, 'running', taskId).first<Record<string, unknown>>();
+  if (!claimed) {
+    return null;
+  }
+  return getSentinelRun(env, tenantId, runId);
+}
+
 export async function updateSentinelRun(env: Env, tenantId: string, runId: string, patch: SentinelRunPatch): Promise<SentinelRun> {
   const db = getDb(env);
   await ensureSchema(db);
