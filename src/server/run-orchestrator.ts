@@ -794,11 +794,42 @@ fi`)}`
     let postErrors: string[] = [];
     let postedCount = 0;
     let findings = parsed.findings;
+    let agentReportedPostedCount = 0;
+    let platformFallbackTriggered = false;
     let summaryPosted: boolean | undefined;
     let summaryThreadId: string | undefined;
     let summaryThreadUrl: string | undefined;
     if (autoReview.postingMode === 'agent') {
-      postedCount = findings.filter((finding) => Boolean(finding.providerThreadId?.trim())).length;
+      agentReportedPostedCount = findings.filter((finding) => Boolean(finding.providerThreadId?.trim())).length;
+      postedCount = agentReportedPostedCount;
+
+      if (findings.length > 0 && postedCount === 0) {
+        const reviewCredential = getReviewPostingCredential(env, autoReview.provider);
+        if (!reviewCredential) {
+          postErrors = [buildMissingReviewPostingCredentialError(autoReview.provider)];
+        } else {
+          platformFallbackTriggered = true;
+          try {
+            const postingAdapter = getReviewPostingAdapter(autoReview.provider);
+            const posting = await postingAdapter.postFindings({
+              repo,
+              task,
+              run,
+              findings,
+              credential: reviewCredential,
+              postInline: autoReview.postInline
+            });
+            findings = posting.updatedFindings;
+            postedCount = posting.findings.filter((entry) => entry.posted).length;
+            postErrors = posting.errors;
+            summaryPosted = posting.summary?.posted;
+            summaryThreadId = posting.summary?.providerThreadId;
+            summaryThreadUrl = posting.summary?.providerThreadUrl;
+          } catch (error) {
+            postErrors = [error instanceof Error ? error.message : String(error)];
+          }
+        }
+      }
     } else {
       const reviewCredential = getReviewPostingCredential(env, autoReview.provider);
 
@@ -842,8 +873,11 @@ fi`)}`
         sanitizedPostErrors.length ? 'error' : 'info',
         {
           reviewProvider: autoReview.provider,
+          reviewPostingMode: autoReview.postingMode,
           reviewPostingStatus: reviewPostStatus,
           postedCount,
+          agentReportedPostedCount,
+          platformFallbackTriggered,
           findingsCount: findings.length,
           errorCount: sanitizedPostErrors.length,
           summaryPosted: Boolean(summaryPosted)
