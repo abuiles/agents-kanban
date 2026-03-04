@@ -229,7 +229,7 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
   async function retryRun(runId: string) {
     const run = await api.retryRun(runId);
     await api.setSelectedTaskId(run.taskId);
-    setNotice('Started a fresh run.');
+    setNotice('Started retry run.');
   }
 
   async function rerunReview(runId: string) {

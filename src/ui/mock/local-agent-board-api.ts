@@ -15,6 +15,7 @@ import type {
   CreateUserApiTokenResult,
   InviteRecord,
   RequestRunChangesInput,
+  RetryRunInput,
   UpdateRepoInput,
   UpdateTaskInput,
   UserApiTokenRecord,
@@ -658,7 +659,7 @@ export class LocalAgentBoardApi implements AgentBoardApi {
     return run;
   }
 
-  async retryRun(runId: string): Promise<AgentRun> {
+  async retryRun(runId: string, _input?: RetryRunInput): Promise<AgentRun> {
     const run = await this.getRun(runId);
     const task = this.store.getSnapshot().tasks.find((candidate) => candidate.taskId === run.taskId);
     if (!task) {

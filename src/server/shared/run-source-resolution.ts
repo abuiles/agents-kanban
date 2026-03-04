@@ -8,6 +8,7 @@ type ResolveRunSourceInput = {
   runs: AgentRun[];
   defaultBranch: string;
   resolvedAt: string;
+  sourceRefOverride?: string;
 };
 
 type ResolvedRunSource = {
@@ -20,8 +21,23 @@ export function resolveRunSource({
   tasks,
   runs,
   defaultBranch,
-  resolvedAt
+  resolvedAt,
+  sourceRefOverride
 }: ResolveRunSourceInput): ResolvedRunSource {
+  const explicitSourceRefOverride = sourceRefOverride?.trim();
+  if (explicitSourceRefOverride) {
+    return {
+      branchSource: {
+        kind: 'explicit_source_ref',
+        resolvedRef: explicitSourceRefOverride,
+        resolvedAt
+      },
+      dependencyContext: {
+        sourceMode: 'explicit_source_ref'
+      }
+    };
+  }
+
   const explicitSourceRef = task.sourceRef?.trim();
   if (explicitSourceRef) {
     return {
