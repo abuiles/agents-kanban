@@ -15,6 +15,7 @@ import {
   listIntegrationConfigs,
   listJiraProjectRepoMappings,
   listJiraProjectRepoMappingsByProject,
+  listSlackThreadBindings,
   listSentinelEvents,
   listSentinelRuns,
   upsertIntegrationConfig,
@@ -279,13 +280,17 @@ class FakeTenantAuthDb {
     if (sql.includes('SELECT * FROM slack_thread_bindings')) {
       const tenantId = String(bindings[0]);
       let rows = this.slackThreadBindings.filter((row) => row.tenant_id === tenantId);
+      let index = 1;
       if (sql.includes('task_id = ?')) {
-        const taskId = String(bindings[1]);
+        const taskId = String(bindings[index++]);
         rows = rows.filter((row) => row.task_id === taskId);
       }
+      if (sql.includes('current_run_id = ?')) {
+        const currentRunId = String(bindings[index++]);
+        rows = rows.filter((row) => String(row.current_run_id ?? '') === currentRunId);
+      }
       if (sql.includes('channel_id = ?')) {
-        const taskIdProvided = sql.includes('task_id = ?');
-        const channelId = String(bindings[taskIdProvided ? 2 : 1]);
+        const channelId = String(bindings[index++]);
         rows = rows.filter((row) => row.channel_id === channelId);
       }
       if (sql.includes('LIMIT 1')) {
@@ -946,6 +951,14 @@ describe('tenant-auth-db single-tenant auth store', () => {
     expect(lookedUp?.threadTs).toBe(updated.threadTs);
     expect(lookedUp?.currentRunId).toBe('run_1');
     expect(lookedUp?.latestReviewRound).toBe(2);
+
+    const byTask = await listSlackThreadBindings(env, tenantId, { taskId: 'task_1' });
+    expect(byTask).toHaveLength(1);
+    expect(byTask[0]?.currentRunId).toBe('run_1');
+
+    const byRun = await listSlackThreadBindings(env, tenantId, { currentRunId: 'run_1' });
+    expect(byRun).toHaveLength(1);
+    expect(byRun[0]?.taskId).toBe('task_1');
 
     await deleteSlackThreadBinding(env, tenantId, 'task_1', 'C123');
     const afterDelete = await getSlackThreadBinding(env, tenantId, 'task_1', 'C123');
