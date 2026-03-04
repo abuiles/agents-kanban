@@ -1,6 +1,14 @@
 import { buildGitlabApiBaseUrl, buildGitlabGitUrl, getRepoProjectPath, getRepoScmBaseUrl } from '../../shared/scm';
 import type { AgentRun, Repo, Task } from '../../ui/domain/types';
-import type { ScmAdapter, ScmAdapterCredential, ScmCommitCheck, ScmReviewRef, ScmReviewState } from './adapter';
+import type {
+  ScmAdapter,
+  ScmAdapterCredential,
+  ScmCommitCheck,
+  ScmMergeRequest,
+  ScmMergeResult,
+  ScmReviewRef,
+  ScmReviewState
+} from './adapter';
 import type { ScmSourceRef } from './source-ref';
 
 export class GitLabScmAdapter implements ScmAdapter {
@@ -168,6 +176,7 @@ export class GitLabScmAdapter implements ScmAdapter {
       web_url: string;
       state?: string;
       merged_at?: string | null;
+      merge_status?: string;
       sha?: string;
       target_branch?: string;
     };
@@ -179,7 +188,44 @@ export class GitLabScmAdapter implements ScmAdapter {
       number: payload.iid,
       headSha: payload.sha,
       baseBranch: payload.target_branch,
+      mergeable: mapGitlabMergeability(payload.merge_status),
+      mergeableState: payload.merge_status,
       mergedAt: payload.merged_at ?? undefined
+    };
+  }
+
+  async mergeReview(repo: Repo, run: AgentRun, credential: ScmAdapterCredential, request: ScmMergeRequest): Promise<ScmMergeResult> {
+    const reviewNumber = run.reviewNumber ?? run.prNumber;
+    if (!reviewNumber) {
+      return { merged: false, reason: 'Missing review number for merge.' };
+    }
+
+    const search = new URLSearchParams();
+    search.set('squash', request.method === 'squash' ? 'true' : 'false');
+    if (request.deleteSourceBranch) {
+      search.set('should_remove_source_branch', 'true');
+    }
+
+    const response = await gitlabRequest(
+      repo,
+      `/merge_requests/${reviewNumber}/merge?${search.toString()}`,
+      credential.token,
+      { method: 'POST' }
+    );
+    if (!response.ok) {
+      const payload = await parseErrorPayload(response);
+      return {
+        merged: false,
+        reason: payload.message ?? `GitLab merge request failed with status ${response.status}.`
+      };
+    }
+
+    const payload = await response.json() as { state?: string; merged_at?: string; sha?: string };
+    const merged = payload.state === 'merged' || response.status === 201;
+    return {
+      merged,
+      mergedAt: payload.merged_at ?? undefined,
+      mergeCommitSha: payload.sha
     };
   }
 
@@ -339,6 +385,27 @@ function mapGitlabReviewState(state?: string, mergedAt?: string | null): ScmRevi
     return 'merged';
   }
   return undefined;
+}
+
+function mapGitlabMergeability(mergeStatus?: string): boolean | undefined {
+  if (!mergeStatus) {
+    return undefined;
+  }
+  if (mergeStatus === 'can_be_merged') {
+    return true;
+  }
+  if (mergeStatus === 'cannot_be_merged') {
+    return false;
+  }
+  return undefined;
+}
+
+async function parseErrorPayload(response: Response) {
+  try {
+    return await response.json() as { message?: string };
+  } catch {
+    return {};
+  }
 }
 
 function mapGitlabCheckState(status?: string | null): Pick<ScmCommitCheck, 'status' | 'conclusion'> {

@@ -1,6 +1,14 @@
 import { buildGithubApiBaseUrl, buildGithubGitUrl, getRepoProjectPath, getRepoScmBaseUrl } from '../../shared/scm';
 import type { AgentRun, Repo, Task } from '../../ui/domain/types';
-import type { ScmAdapter, ScmAdapterCredential, ScmCommitCheck, ScmReviewRef, ScmReviewState } from './adapter';
+import type {
+  ScmAdapter,
+  ScmAdapterCredential,
+  ScmCommitCheck,
+  ScmMergeRequest,
+  ScmMergeResult,
+  ScmReviewRef,
+  ScmReviewState
+} from './adapter';
 import type { ScmSourceRef } from './source-ref';
 
 export class GitHubScmAdapter implements ScmAdapter {
@@ -176,6 +184,8 @@ export class GitHubScmAdapter implements ScmAdapter {
       html_url: string;
       state?: 'open' | 'closed';
       merged_at?: string | null;
+      mergeable?: boolean;
+      mergeable_state?: string;
       head?: { sha?: string };
       base?: { ref?: string };
     };
@@ -187,7 +197,44 @@ export class GitHubScmAdapter implements ScmAdapter {
       number: payload.number,
       headSha: payload.head?.sha,
       baseBranch: payload.base?.ref,
+      mergeable: payload.mergeable ?? undefined,
+      mergeableState: payload.mergeable_state,
       mergedAt: payload.merged_at ?? undefined
+    };
+  }
+
+  async mergeReview(
+    repo: Repo,
+    run: AgentRun,
+    credential: ScmAdapterCredential,
+    request: ScmMergeRequest
+  ): Promise<ScmMergeResult> {
+    const reviewNumber = run.reviewNumber ?? run.prNumber;
+    if (!reviewNumber) {
+      return { merged: false, reason: 'Missing review number for merge.' };
+    }
+
+    const response = await githubRequest(repo, `/pulls/${reviewNumber}/merge`, credential.token, {
+      method: 'PUT',
+      body: JSON.stringify({
+        merge_method: request.method === 'merge' ? 'merge' : request.method === 'squash' ? 'squash' : 'rebase',
+        delete_branch: request.deleteSourceBranch,
+        sha: run.headSha
+      })
+    });
+    if (!response.ok) {
+      const payload = await parseErrorPayload(response);
+      return {
+        merged: false,
+        reason: payload.message ?? `GitHub merge request failed with status ${response.status}.`
+      };
+    }
+
+    const payload = await response.json() as { merged?: boolean; sha?: string; merged_at?: string };
+    return {
+      merged: payload.merged ?? true,
+      mergedAt: payload.merged_at ?? undefined,
+      mergeCommitSha: payload.sha
     };
   }
 
@@ -255,6 +302,14 @@ async function githubRequest(repo: Repo, path: string, token: string, init?: Req
     throw new Error(`GitHub API request failed with status ${response.status}.`);
   }
   return response;
+}
+
+async function parseErrorPayload(response: Response) {
+  try {
+    return await response.json() as { message?: string };
+  } catch {
+    return {};
+  }
 }
 
 function buildPullRequestBody(task: Task, run: AgentRun) {

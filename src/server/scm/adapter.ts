@@ -19,6 +19,25 @@ export type ScmReviewState = {
   headSha?: string;
   baseBranch?: string;
   mergedAt?: string;
+  mergeable?: boolean;
+  mergeableState?: string;
+};
+
+export type ScmMergePolicy = {
+  method: 'merge' | 'squash' | 'rebase';
+  deleteBranch: boolean;
+};
+
+export type ScmMergeResult = {
+  merged: boolean;
+  mergedAt?: string;
+  reason?: string;
+  mergeCommitSha?: string;
+};
+
+export type ScmMergeRequest = {
+  method: 'merge' | 'squash' | 'rebase';
+  deleteSourceBranch: boolean;
 };
 
 export type ScmCommitCheck = {
@@ -42,4 +61,10 @@ export type ScmAdapter = {
   getReviewState(repo: Repo, run: AgentRun, credential: ScmAdapterCredential): Promise<ScmReviewState>;
   listCommitChecks(repo: Repo, headSha: string, credential: ScmAdapterCredential): Promise<ScmCommitCheck[]>;
   isCommitOnDefaultBranch(repo: Repo, commitSha: string, credential: ScmAdapterCredential): Promise<boolean>;
+  mergeReview(
+    repo: Repo,
+    run: AgentRun,
+    credential: ScmAdapterCredential,
+    request: ScmMergeRequest
+  ): Promise<ScmMergeResult>;
 };
