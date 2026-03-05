@@ -1589,16 +1589,89 @@ describe('slack handlers', () => {
     const response = await handleSlackEvents(request, env);
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ ok: true, status: 'accepted' });
-    expect(openAiCalled).toBe(1);
-    const calls = vi.mocked(global.fetch).mock.calls as Array<[RequestInfo | URL, RequestInit]>;
-    const reviewIntentRequest = calls.find((entry) =>
-      String(entry[0]).includes('https://api.openai.com/v1/chat/completions')
-      && String(entry[1].body).includes('thread_context')
-    );
-    expect(reviewIntentRequest).toBeTruthy();
+    expect(openAiCalled).toBe(0);
     expect(repoBoard.createTask).toHaveBeenCalledWith(expect.objectContaining({
       repoId: 'repo_alpha',
       sourceRef: 'pull/12041/head',
+      autoReviewMode: 'on'
+    }));
+    expect(runOrchestratorMocks.scheduleRunJob).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({ mode: 'review_only', repoId: 'repo_alpha' })
+    );
+  });
+
+  it('starts a review-only run from @kanvy review this MR using nearby channel MR announcement', async () => {
+    const repoBoard = makeRepoBoard({ taskId: 'task_review_channel_context', runId: 'run_review_channel_context' });
+    const boardIndex = makeBoardIndex([
+      {
+        repoId: 'repo_alpha',
+        slug: 'acme/repo-alpha',
+        scmProvider: 'github',
+        scmBaseUrl: 'https://github.com',
+        projectPath: 'acme/repo-alpha',
+        autoReview: {
+          enabled: true,
+          provider: 'github',
+          postInline: false
+        }
+      } as unknown as { repoId: string; slug: string }
+    ]);
+    const env = makeEnv('secret', repoBoard, boardIndex);
+    await env.SECRETS_KV.put('slack/bot-token', 'xoxb-test');
+    fetchSpy.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('https://slack.com/api/conversations.replies')) {
+        return new Response(JSON.stringify({
+          ok: true,
+          messages: [
+            { ts: '1772677754.188369', user: 'U02MV9VJUGN', text: '<@U0AJQ0GPJQL> review this MR' }
+          ]
+        }), { status: 200 });
+      }
+      if (url.includes('https://slack.com/api/conversations.history')) {
+        return new Response(JSON.stringify({
+          ok: true,
+          messages: [
+            { ts: '1772660529.450700', user: 'bot', text: 'MR !17 opened: https://github.com/acme/repo-alpha/pull/17' },
+            { ts: '1772660529.450701', user: 'U1', text: 'Looks good but needs review' }
+          ]
+        }), { status: 200 });
+      }
+      if (url.includes('https://slack.com/api/chat.postMessage')) {
+        const payload = JSON.parse(String(init?.body ?? '{}')) as { thread_ts?: string };
+        return new Response(JSON.stringify({ ok: true, ts: payload.thread_ts ?? '1772677754.188369' }), { status: 200 });
+      }
+      return new Response('{}', { status: 200 });
+    });
+
+    const rawBody = JSON.stringify({
+      type: 'event_callback',
+      event_id: 'EvMentionReviewChannelContext',
+      team_id: 'team_one',
+      event: {
+        type: 'message',
+        channel: 'C0AH77Y53NC',
+        ts: '1772677754.188369',
+        user: 'U02MV9VJUGN',
+        text: '<@U0AJQ0GPJQL> review this MR',
+        channel_type: 'channel'
+      }
+    });
+    const signature = await buildSlackSignature('secret', nowTs, rawBody);
+    const request = new Request('https://example.test/api/integrations/slack/events', {
+      method: 'POST',
+      headers: slackHeaders(nowTs, signature),
+      body: rawBody
+    });
+
+    const response = await handleSlackEvents(request, env);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ ok: true, status: 'accepted' });
+    expect(repoBoard.createTask).toHaveBeenCalledWith(expect.objectContaining({
+      repoId: 'repo_alpha',
+      sourceRef: 'pull/17/head',
       autoReviewMode: 'on'
     }));
     expect(runOrchestratorMocks.scheduleRunJob).toHaveBeenCalledWith(
