@@ -5,6 +5,7 @@ describe('LLM adapter registry', () => {
   it('resolves adapter implementations generically by kind', () => {
     expect(getLlmAdapter('codex').kind).toBe('codex');
     expect(getLlmAdapter('cursor_cli').kind).toBe('cursor_cli');
+    expect(getLlmAdapter('claude_code').kind).toBe('claude_code');
   });
 
   it('resolves codex by default when no adapter is configured', () => {
@@ -22,6 +23,11 @@ describe('LLM adapter registry', () => {
     expect(getLlmAdapterCapabilities('cursor_cli')).toMatchObject({
       supportsResume: false,
       supportsTakeover: false
+    });
+
+    expect(getLlmAdapterCapabilities('claude_code')).toMatchObject({
+      supportsResume: false,
+      supportsTakeover: true
     });
   });
 

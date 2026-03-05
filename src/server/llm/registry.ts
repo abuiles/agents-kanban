@@ -3,10 +3,12 @@ import { DEFAULT_LLM_ADAPTER } from '../../shared/llm';
 import type { LlmAdapter, LlmAdapterCapabilities } from './adapter';
 import { codexLlmAdapter } from './codex';
 import { cursorCliLlmAdapter } from './cursor-cli';
+import { claudeCodeLlmAdapter } from './claude-code';
 
 const LLM_ADAPTERS: Record<LlmAdapterKind, LlmAdapter> = {
   codex: codexLlmAdapter,
-  cursor_cli: cursorCliLlmAdapter
+  cursor_cli: cursorCliLlmAdapter,
+  claude_code: claudeCodeLlmAdapter
 };
 
 export function resolveLlmAdapterKind(task: Pick<Task, 'uiMeta'>, runAdapter?: LlmAdapterKind): LlmAdapterKind {

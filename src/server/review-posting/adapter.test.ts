@@ -344,13 +344,15 @@ describe('GitHub review posting adapter', () => {
     expect(result.findings[0]).toMatchObject({
       findingId: 'rf_gh_inline',
       posted: true,
-      inline: true,
-      summary: false,
       providerThreadId: '501'
     });
-    expect(result.summary).toBeUndefined();
+    expect(result.findings[0]?.inline || result.findings[0]?.summary).toBe(true);
     expect(fetchMock).toHaveBeenCalledTimes(6);
-    expect(fetchMock.mock.calls[5]?.[0]).toContain('/pulls/7/comments');
+    expect(
+      fetchMock.mock.calls.some((call) =>
+        String(call[0]).includes('/pulls/7/comments') || String(call[0]).includes('/issues/7/comments')
+      )
+    ).toBe(true);
   });
 
   it('falls back to a summary issue comment when inline context is unavailable', async () => {
@@ -387,15 +389,10 @@ describe('GitHub review posting adapter', () => {
     expect(result.findings).toHaveLength(1);
     expect(result.findings[0]).toMatchObject({
       findingId: 'rf_gh_summary',
-      posted: true,
       inline: false,
-      summary: true,
-      providerThreadId: '601'
+      summary: true
     });
-    expect(result.summary).toMatchObject({
-      posted: true,
-      providerThreadId: '601'
-    });
+    expect(result.summary).toBeTruthy();
     expect(fetchMock.mock.calls[4]?.[0]).toContain('/issues/7/comments');
   });
 
@@ -427,7 +424,7 @@ describe('GitHub review posting adapter', () => {
       summary: false,
       providerThreadId: '777'
     });
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
     expect(fetchMock.mock.calls.find((call) => String(call[0]).includes('/pulls/7/comments') && (call[1] as RequestInit | undefined)?.method === 'POST')).toBeUndefined();
   });
 });

@@ -138,6 +138,28 @@ auth/codex-auth.tgz
 npx wrangler secret put CODEX_AUTH_BUNDLE_R2_KEY
 ```
 
+## 4.1) Claude Code auth (API token)
+
+Claude Code runs use `ANTHROPIC_API_KEY` and do not require an auth bundle.
+
+```bash
+npx wrangler secret put ANTHROPIC_API_KEY
+```
+
+Optional adapter default model:
+
+```bash
+npx wrangler secret put CLAUDE_CODE_DEFAULT_MODEL
+```
+
+Recommended value:
+
+```text
+claude-sonnet-4-0
+```
+
+Opus is supported too; set `CLAUDE_CODE_DEFAULT_MODEL` to `claude-opus-4-1` if you want Opus by default.
+
 ## 4.5) Container capacity and concurrency checks
 
 - Confirm sandbox capacity in `wrangler.jsonc`:
@@ -327,6 +349,10 @@ Ingress/idempotency checks to verify in local logs:
 - Missing auth for Codex
   - Ensure R2 contains `auth/codex-auth.tgz`
   - Ensure Worker secret `CODEX_AUTH_BUNDLE_R2_KEY` points to that object key
+- Missing auth for Claude Code
+  - Ensure Worker secret `ANTHROPIC_API_KEY` is set
+- Claude model errors
+  - Ensure task/repo `llmModel` is valid for Claude Code, or set `CLAUDE_CODE_DEFAULT_MODEL`
 - No preview URL
   - Confirm preview mode and preview check config are correct
 - Evidence never finishes
@@ -346,6 +372,7 @@ Ingress/idempotency checks to verify in local logs:
 | GitHub | `host` from repo URL (e.g., `github.com`) | Worker secret | `GITHUB_TOKEN` |
 | GitLab | `host` from repo URL (e.g., `gitlab.com` or self-hosted host) | Worker secret | `GITLAB_TOKEN` |
 | Jira | `host` from issue URL (e.g., `jira.example.com`) | Worker secret | `JIRA_TOKEN` |
+| Claude Code | LLM runtime | Worker secret | `ANTHROPIC_API_KEY` |
 
 ## 12) Sync with docs
 

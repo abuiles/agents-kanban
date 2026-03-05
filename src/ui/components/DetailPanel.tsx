@@ -60,6 +60,7 @@ function dependencyReasonTone(state: 'missing' | 'not_ready' | 'ready') {
 
 function llmAdapterLabel(adapter?: AgentRun['llmAdapter']) {
   if (adapter === 'cursor_cli') return 'Cursor CLI';
+  if (adapter === 'claude_code') return 'Claude Code';
   return 'Codex';
 }
 
@@ -152,7 +153,9 @@ export function DetailPanel({
   const baselineUrl = getBaselineUrl(task, repo as Repo);
   const canCopyLogs = logs.length > 0;
   const taskLlmAdapter = task.uiMeta?.llmAdapter ?? 'codex';
-  const taskLlmModel = task.uiMeta?.llmModel ?? task.uiMeta?.codexModel ?? 'gpt-5.1-codex-mini';
+  const taskLlmModel = task.uiMeta?.llmModel
+    ?? task.uiMeta?.codexModel
+    ?? (taskLlmAdapter === 'claude_code' ? 'claude-sonnet-4-0' : taskLlmAdapter === 'cursor_cli' ? 'cursor-default' : 'gpt-5.1-codex-mini');
   const taskLlmReasoningEffort = task.uiMeta?.llmReasoningEffort ?? task.uiMeta?.codexReasoningEffort ?? 'medium';
   const latestRunResumeCommand = latestRun?.llmResumeCommand ?? latestRun?.latestCodexResumeCommand;
   const latestCommands = latestRun ? commands.filter((command) => command.runId === latestRun.runId) : [];

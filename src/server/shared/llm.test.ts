@@ -80,4 +80,23 @@ describe('llm compatibility normalization', () => {
     expect(run.llmResumeCommand).toBeUndefined();
     expect(run.latestCodexResumeCommand).toBeUndefined();
   });
+
+  it('marks claude_code as non-resumable by default', () => {
+    const run = normalizeRunLlmState({
+      runId: 'run_3',
+      taskId: 'task_3',
+      repoId: 'repo_3',
+      status: 'RUNNING_CODEX',
+      branchName: 'agent/task_3/run_3',
+      llmAdapter: 'claude_code',
+      errors: [],
+      startedAt: '2026-03-02T00:00:00.000Z',
+      timeline: [],
+      simulationProfile: 'happy_path',
+      pendingEvents: []
+    });
+
+    expect(run.llmSupportsResume).toBe(false);
+    expect(run.llmResumeCommand).toBeUndefined();
+  });
 });

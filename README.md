@@ -397,6 +397,30 @@ Notes:
 - Keep `auth.json` private; never commit or share it.
 - If auth fails, check `docs/local-testing.md` troubleshooting for Codex bundle diagnostics.
 
+## Claude Code Auth (API Token)
+
+Claude Code execution uses runtime secret injection and does not require an auth bundle.
+
+1. Set the Anthropic API key secret:
+
+```bash
+npx wrangler secret put ANTHROPIC_API_KEY
+```
+
+2. Optionally set a default model for `claude_code` runs:
+
+```bash
+npx wrangler secret put CLAUDE_CODE_DEFAULT_MODEL
+```
+
+Example value:
+
+```text
+claude-sonnet-4-0
+```
+
+Opus is also supported via the same `llmModel` field, for example `claude-opus-4-1`.
+
 ## Key Docs
 
 - [docs/plans/current/README.md](docs/plans/current/README.md)

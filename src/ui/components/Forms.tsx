@@ -33,7 +33,8 @@ const CODEX_MODELS: Array<{ value: CodexModel; label: string }> = [
 
 const DEFAULT_LLM_MODELS: Record<LlmAdapter, string> = {
   codex: 'gpt-5.1-codex-mini',
-  cursor_cli: 'cursor-default'
+  cursor_cli: 'cursor-default',
+  claude_code: 'claude-sonnet-4-0'
 };
 
 function FieldShell({ label, children, hint }: { label: string; children: React.ReactNode; hint?: string }) {
@@ -473,6 +474,7 @@ export function RepoForm({
           <select className={inputClass()} value={llmAdapter} onChange={(event) => setLlmAdapter(event.target.value as LlmAdapter)}>
             <option value="codex">Codex</option>
             <option value="cursor_cli">Cursor CLI</option>
+            <option value="claude_code">Claude Code</option>
           </select>
         </FieldShell>
         <FieldShell label="LLM auth mode" hint="API mode skips .codex restore and requires OPENAI_API_KEY.">
@@ -485,7 +487,7 @@ export function RepoForm({
           <input className={inputClass()} value={llmProfileId} onChange={(event) => setLlmProfileId(event.target.value)} placeholder="codex-default" />
         </FieldShell>
         <FieldShell label="LLM auth bundle key" hint="Optional R2 key for executor credentials (for example `.codex` auth tarball).">
-          <input className={inputClass()} value={llmAuthBundleR2Key} onChange={(event) => setLlmAuthBundleR2Key(event.target.value)} placeholder={llmAdapter === 'codex' ? 'auth/codex.tgz' : 'auth/cursor.tgz'} />
+          <input className={inputClass()} value={llmAuthBundleR2Key} onChange={(event) => setLlmAuthBundleR2Key(event.target.value)} placeholder={llmAdapter === 'codex' ? 'auth/codex.tgz' : llmAdapter === 'claude_code' ? 'auth/claude.tgz' : 'auth/cursor.tgz'} />
         </FieldShell>
       </div>
       <div className="grid gap-4 md:grid-cols-1">
@@ -939,13 +941,14 @@ export function TaskForm({
             onChange={(event) => {
               const nextAdapter = event.target.value as LlmAdapter;
               setLlmAdapter(nextAdapter);
-              if (!llmModel || llmModel === DEFAULT_LLM_MODELS.codex || llmModel === DEFAULT_LLM_MODELS.cursor_cli) {
+              if (!llmModel || llmModel === DEFAULT_LLM_MODELS.codex || llmModel === DEFAULT_LLM_MODELS.cursor_cli || llmModel === DEFAULT_LLM_MODELS.claude_code) {
                 setLlmModel(DEFAULT_LLM_MODELS[nextAdapter]);
               }
             }}
           >
             <option value="codex">Codex</option>
             <option value="cursor_cli">Cursor CLI</option>
+            <option value="claude_code">Claude Code</option>
           </select>
         </FieldShell>
         <FieldShell label="LLM model" hint="Per-task execution model for the selected adapter.">

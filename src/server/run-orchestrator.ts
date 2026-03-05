@@ -42,6 +42,8 @@ type Stage3Env = Env & {
   GITLAB_TOKEN?: string;
   JIRA_TOKEN?: string;
   OPENAI_API_KEY?: string;
+  ANTHROPIC_API_KEY?: string;
+  CLAUDE_CODE_DEFAULT_MODEL?: string;
 };
 
 type SleepFn = (name: string, duration: number | `${number} ${string}`) => Promise<void>;
@@ -86,8 +88,8 @@ export async function executeRunJob(env: Env, params: RunJobParams, sleepFn: Sle
   const scmAdapter = getScmAdapter(repo);
   const llmAdapterKind = resolveLlmAdapterKind(detail.task, run.llmAdapter);
   const llmAdapter = getLlmAdapter(llmAdapterKind);
-  const llmExecutorLabel = llmAdapter.kind === 'codex' ? 'Codex' : 'Cursor CLI';
-  const llmModel = detail.task.uiMeta?.llmModel ?? detail.task.uiMeta?.codexModel ?? 'gpt-5.1-codex-mini';
+  const llmExecutorLabel = getLlmExecutorLabel(llmAdapter.kind);
+  const llmModel = resolveRunLlmModel(env as Stage3Env, llmAdapter.kind, detail.task.uiMeta?.llmModel ?? detail.task.uiMeta?.codexModel);
   const llmReasoningEffort = detail.task.uiMeta?.llmReasoningEffort ?? detail.task.uiMeta?.codexReasoningEffort ?? 'medium';
   const workflowStartedAtMs = Date.now();
   let sandboxStartedAtMs: number | undefined;
@@ -696,7 +698,7 @@ async function executeRunReview(
     const run = await repoBoard.getRun(runId);
     const llmAdapterKind = resolveLlmAdapterKind(task, run.llmAdapter);
     const llmAdapter = getLlmAdapter(llmAdapterKind);
-    const llmModel = task.uiMeta?.llmModel ?? task.uiMeta?.codexModel ?? 'gpt-5.1-codex-mini';
+    const llmModel = resolveRunLlmModel(env as Stage3Env, llmAdapter.kind, task.uiMeta?.llmModel ?? task.uiMeta?.codexModel);
     const llmReasoningEffort = task.uiMeta?.llmReasoningEffort ?? task.uiMeta?.codexReasoningEffort ?? 'medium';
     const scmAdapter = getScmAdapter(repo);
     const scmCredential = await getScmCredential(env, repo, scmAdapter);
@@ -1885,10 +1887,32 @@ async function configureSandboxRuntimeSecrets(
   if (env.OPENAI_API_KEY?.trim()) {
     exports.push(`export OPENAI_API_KEY=${shellQuote(env.OPENAI_API_KEY.trim())}`);
   }
+  if (env.ANTHROPIC_API_KEY?.trim()) {
+    exports.push(`export ANTHROPIC_API_KEY=${shellQuote(env.ANTHROPIC_API_KEY.trim())}`);
+  }
   await sandbox.writeFile(
     '/workspace/agent-env.sh',
     exports.length ? `${exports.join('\n')}\n` : '# no runtime env exports configured\n'
   );
+}
+
+function resolveRunLlmModel(env: Stage3Env, adapter: 'codex' | 'cursor_cli' | 'claude_code', requestedModel?: string) {
+  if (requestedModel?.trim()) {
+    return requestedModel.trim();
+  }
+  if (adapter === 'claude_code') {
+    return env.CLAUDE_CODE_DEFAULT_MODEL?.trim() || 'claude-sonnet-4-0';
+  }
+  if (adapter === 'cursor_cli') {
+    return 'cursor-default';
+  }
+  return 'gpt-5.1-codex-mini';
+}
+
+function getLlmExecutorLabel(adapter: 'codex' | 'cursor_cli' | 'claude_code') {
+  if (adapter === 'codex') return 'Codex';
+  if (adapter === 'cursor_cli') return 'Cursor CLI';
+  return 'Claude Code';
 }
 
 async function restoreLlmAuthForRepoMode(input: {

@@ -6,7 +6,8 @@ export const DEFAULT_REASONING_EFFORT: CodexReasoningEffort = 'medium';
 export const DEFAULT_AUTO_REVIEW_MODE: AutoReviewMode = 'inherit';
 export const DEFAULT_SUPPORTS_RESUME_BY_ADAPTER: Record<LlmAdapter, boolean> = {
   codex: true,
-  cursor_cli: false
+  cursor_cli: false,
+  claude_code: false
 };
 
 export function normalizeTaskUiMeta(uiMeta?: TaskUiMeta): TaskUiMeta | undefined {

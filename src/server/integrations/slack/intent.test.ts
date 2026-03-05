@@ -11,7 +11,7 @@ function config(input: Partial<IntegrationConfig> & Pick<IntegrationConfig, 'id'
 }
 
 describe('slack intent settings resolution', () => {
-  it('uses precedence channel > repo > tenant and defaults model to gpt-5.1-codex-mini', () => {
+  it('uses precedence channel > repo > tenant and defaults model to gpt-5-nano', () => {
     const configs: IntegrationConfig[] = [
       config({
         id: 'tenant',
@@ -61,7 +61,7 @@ describe('slack intent settings resolution', () => {
       repoId: 'repo_alpha',
       channelId: 'C123'
     });
-    expect(resolved.intentModel).toBe('gpt-5.1-codex-mini');
+    expect(resolved.intentModel).toBe('gpt-5-nano');
     expect(resolved.intentClarifyMaxTurns).toBe(4);
   });
 });

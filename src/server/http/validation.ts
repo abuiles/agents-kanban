@@ -14,7 +14,7 @@ import { SCM_PROVIDERS, getAutoReviewProviderDefaultForScm } from '../../shared/
 
 const CODEX_MODELS = new Set(['gpt-5.1-codex-mini', 'gpt-5.3-codex', 'gpt-5.3-codex-spark'] as const);
 const CODEX_REASONING_EFFORTS = new Set(['low', 'medium', 'high'] as const);
-const LLM_ADAPTERS = new Set(['codex', 'cursor_cli'] as const);
+const LLM_ADAPTERS = new Set(['codex', 'cursor_cli', 'claude_code'] as const);
 const LLM_AUTH_MODES = new Set(['bundle', 'api'] as const);
 const AUTO_REVIEW_PROVIDERS = new Set(['github', 'gitlab', 'jira'] as const);
 const AUTO_REVIEW_POSTING_MODES = new Set(['platform', 'agent'] as const);

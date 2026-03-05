@@ -571,6 +571,20 @@ describe('repo validation', () => {
     });
   });
 
+  it('accepts claude_code as a repo llm adapter', () => {
+    const parsed = parseCreateRepoInput({
+      slug: 'abuiles/minions',
+      baselineUrl: 'https://example.com',
+      llmAdapter: 'claude_code',
+      llmProfileId: 'claude-default'
+    });
+
+    expect(parsed).toMatchObject({
+      llmAdapter: 'claude_code',
+      llmProfileId: 'claude-default'
+    });
+  });
+
   it('parses commit policy config for repo settings', () => {
     const parsed = parseCreateRepoInput({
       slug: 'abuiles/minions',
