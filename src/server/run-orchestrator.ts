@@ -52,6 +52,12 @@ type PushRemediationResult = {
   diagnostics: string;
 };
 
+type RepoLlmAuthMode = 'bundle' | 'api';
+
+function resolveRepoLlmAuthMode(repo: Repo): RepoLlmAuthMode {
+  return repo.llmAuthMode === 'api' ? 'api' : 'bundle';
+}
+
 export async function scheduleRunJob(env: Env, ctx: ExecutionContext, params: RunJobParams) {
   const stage3Env = env as Stage3Env;
   if (stage3Env.RUN_WORKFLOW?.create) {
@@ -185,7 +191,12 @@ export async function executeRunJob(env: Env, params: RunJobParams, sleepFn: Sle
       await emitCommandLifecycle(repoBoard, params.runId, 'bootstrap', 'mkdir -p /workspace/repo', () => sandbox.exec('mkdir -p /workspace/repo'));
       await repoBoard.appendRunLogs(params.runId, [buildRunLog(params.runId, `Using configured ${scmAdapter.provider} credentials.`, 'bootstrap')]);
       await configureSandboxRuntimeSecrets(sandbox, env as Stage3Env);
-      await llmAdapter.restoreAuth({ ...llmContext, repo });
+      await restoreLlmAuthForRepoMode({
+        repo,
+        llmAdapter,
+        llmContext,
+        phase: 'bootstrap'
+      });
       await sandbox.gitCheckout(scmAdapter.buildCloneUrl(repo, scmCredential), {
         branch: repo.defaultBranch,
         targetDir: '/workspace/repo'
@@ -1399,7 +1410,12 @@ function createPromptRecipeRuntime(
       if (!prepared) {
         await emitCommandLifecycle(repoBoard, runId, 'preview', 'mkdir -p /workspace/preview', () => sandbox.exec('mkdir -p /workspace/preview'));
         await configureSandboxRuntimeSecrets(sandbox, env);
-        await llmAdapter.restoreAuth({ ...llmContext, repo });
+        await restoreLlmAuthForRepoMode({
+          repo,
+          llmAdapter,
+          llmContext,
+          phase: 'preview'
+        });
         await llmAdapter.ensureInstalled(llmContext);
         await llmAdapter.logDiagnostics(llmContext, request);
         prepared = true;
@@ -1873,6 +1889,34 @@ async function configureSandboxRuntimeSecrets(
     '/workspace/agent-env.sh',
     exports.length ? `${exports.join('\n')}\n` : '# no runtime env exports configured\n'
   );
+}
+
+async function restoreLlmAuthForRepoMode(input: {
+  repo: Repo;
+  llmAdapter: ReturnType<typeof getLlmAdapter>;
+  llmContext: { env: Env; sandbox: ReturnType<typeof getSandbox>; repoBoard: DurableObjectStub<RepoBoardDO>; runId: string };
+  phase: RunPhase;
+}) {
+  const mode = resolveRepoLlmAuthMode(input.repo);
+  await input.llmContext.repoBoard.appendRunLogs(input.llmContext.runId, [
+    buildRunLog(input.llmContext.runId, `LLM auth mode: ${mode}.`, input.phase)
+  ]);
+
+  if (input.llmAdapter.kind !== 'codex') {
+    await input.llmAdapter.restoreAuth({ ...input.llmContext, repo: input.repo });
+    return;
+  }
+  if (mode === 'api') {
+    const env = input.llmContext.env as Stage3Env;
+    if (!env.OPENAI_API_KEY?.trim()) {
+      throw new NonRetryableError('Repo is configured with llmAuthMode=api but OPENAI_API_KEY is missing.');
+    }
+    await input.llmContext.repoBoard.appendRunLogs(input.llmContext.runId, [
+      buildRunLog(input.llmContext.runId, 'Skipping Codex auth bundle restore (api mode).', input.phase)
+    ]);
+    return;
+  }
+  await input.llmAdapter.restoreAuth({ ...input.llmContext, repo: input.repo });
 }
 
 async function persistArtifactManifest(env: Stage3Env, run: Awaited<ReturnType<RepoBoardDO['getRun']>>) {

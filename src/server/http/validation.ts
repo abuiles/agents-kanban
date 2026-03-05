@@ -15,6 +15,7 @@ import { SCM_PROVIDERS, getAutoReviewProviderDefaultForScm } from '../../shared/
 const CODEX_MODELS = new Set(['gpt-5.1-codex-mini', 'gpt-5.3-codex', 'gpt-5.3-codex-spark'] as const);
 const CODEX_REASONING_EFFORTS = new Set(['low', 'medium', 'high'] as const);
 const LLM_ADAPTERS = new Set(['codex', 'cursor_cli'] as const);
+const LLM_AUTH_MODES = new Set(['bundle', 'api'] as const);
 const AUTO_REVIEW_PROVIDERS = new Set(['github', 'gitlab', 'jira'] as const);
 const AUTO_REVIEW_POSTING_MODES = new Set(['platform', 'agent'] as const);
 const AUTO_REVIEW_MODES = new Set(['inherit', 'on', 'off'] as const);
@@ -645,6 +646,7 @@ export function parseCreateRepoInput(body: unknown): CreateRepoInput {
     scmBaseUrl: readTrimmedString(body.scmBaseUrl, 'scmBaseUrl', false),
     projectPath: projectPath ?? slug,
     llmAdapter: readEnumValue(body.llmAdapter, 'llmAdapter', LLM_ADAPTERS, false),
+    llmAuthMode: readEnumValue(body.llmAuthMode, 'llmAuthMode', LLM_AUTH_MODES, false),
     llmProfileId: readTrimmedString(body.llmProfileId, 'llmProfileId', false),
     llmAuthBundleR2Key: readTrimmedString(body.llmAuthBundleR2Key, 'llmAuthBundleR2Key', false)
       ?? readTrimmedString(body.codexAuthBundleR2Key, 'codexAuthBundleR2Key', false),
@@ -689,6 +691,7 @@ export function parseUpdateRepoInput(body: unknown): UpdateRepoInput {
   if (hasOwn(body, 'scmBaseUrl')) patch.scmBaseUrl = readTrimmedString(body.scmBaseUrl, 'scmBaseUrl', false);
   if (hasOwn(body, 'projectPath')) patch.projectPath = readTrimmedString(body.projectPath, 'projectPath', false);
   if (hasOwn(body, 'llmAdapter')) patch.llmAdapter = readEnumValue(body.llmAdapter, 'llmAdapter', LLM_ADAPTERS, false);
+  if (hasOwn(body, 'llmAuthMode')) patch.llmAuthMode = readEnumValue(body.llmAuthMode, 'llmAuthMode', LLM_AUTH_MODES, false);
   if (hasOwn(body, 'llmProfileId')) patch.llmProfileId = readTrimmedString(body.llmProfileId, 'llmProfileId', false);
   if (hasOwn(body, 'llmAuthBundleR2Key')) patch.llmAuthBundleR2Key = readTrimmedString(body.llmAuthBundleR2Key, 'llmAuthBundleR2Key', false);
   if (patch.slug && patch.projectPath && patch.slug !== patch.projectPath) {

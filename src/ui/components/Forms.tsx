@@ -81,6 +81,7 @@ export function RepoForm({
   const initialDefaultBranch = initialValues?.defaultBranch ?? 'main';
   const initialBaselineUrl = initialValues?.baselineUrl ?? '';
   const initialLlmAdapter = initialValues?.llmAdapter ?? 'codex';
+  const initialLlmAuthMode = initialValues?.llmAuthMode ?? 'bundle';
   const initialLlmProfileId = initialValues?.llmProfileId ?? '';
   const initialLlmAuthBundleR2Key = initialValues?.llmAuthBundleR2Key ?? initialValues?.codexAuthBundleR2Key ?? '';
   const normalizedPreview = normalizeRepoPreviewConfig({
@@ -124,6 +125,7 @@ export function RepoForm({
   const [previewAdapter, setPreviewAdapter] = useState<PreviewAdapterKind>(initialPreviewAdapter);
   const [previewCheckName, setPreviewCheckName] = useState(initialPreviewCheckName);
   const [llmAdapter, setLlmAdapter] = useState<LlmAdapter>(initialLlmAdapter);
+  const [llmAuthMode, setLlmAuthMode] = useState<NonNullable<CreateRepoInput['llmAuthMode']>>(initialLlmAuthMode);
   const [llmProfileId, setLlmProfileId] = useState(initialLlmProfileId);
   const [llmAuthBundleR2Key, setLlmAuthBundleR2Key] = useState(initialLlmAuthBundleR2Key);
   const [promptRecipe, setPromptRecipe] = useState(initialPromptRecipe);
@@ -158,6 +160,7 @@ export function RepoForm({
     setPreviewAdapter(initialPreviewAdapter);
     setPreviewCheckName(initialPreviewCheckName);
     setLlmAdapter(initialLlmAdapter);
+    setLlmAuthMode(initialLlmAuthMode);
     setLlmProfileId(initialLlmProfileId);
     setLlmAuthBundleR2Key(initialLlmAuthBundleR2Key);
     setPromptRecipe(initialPromptRecipe);
@@ -195,6 +198,7 @@ export function RepoForm({
     initialPreviewAdapter,
     initialPreviewCheckName,
     initialLlmAdapter,
+    initialLlmAuthMode,
     initialLlmProfileId,
     initialLlmAuthBundleR2Key,
     initialPromptRecipe,
@@ -256,6 +260,7 @@ export function RepoForm({
           scmBaseUrl,
           projectPath,
           llmAdapter,
+          llmAuthMode,
           llmProfileId: llmProfileId || undefined,
           llmAuthBundleR2Key: llmAuthBundleR2Key || undefined,
           defaultBranch,
@@ -304,6 +309,7 @@ export function RepoForm({
         setPreviewAdapter('cloudflare_checks');
         setPreviewCheckName('');
         setLlmAdapter('codex');
+        setLlmAuthMode('bundle');
         setLlmProfileId('');
         setLlmAuthBundleR2Key('');
         setPromptRecipe('');
@@ -467,6 +473,12 @@ export function RepoForm({
           <select className={inputClass()} value={llmAdapter} onChange={(event) => setLlmAdapter(event.target.value as LlmAdapter)}>
             <option value="codex">Codex</option>
             <option value="cursor_cli">Cursor CLI</option>
+          </select>
+        </FieldShell>
+        <FieldShell label="LLM auth mode" hint="API mode skips .codex restore and requires OPENAI_API_KEY.">
+          <select className={inputClass()} value={llmAuthMode} onChange={(event) => setLlmAuthMode(event.target.value as NonNullable<CreateRepoInput['llmAuthMode']>)}>
+            <option value="bundle">Codex bundle (.codex)</option>
+            <option value="api">OpenAI API key (OPENAI_API_KEY)</option>
           </select>
         </FieldShell>
         <FieldShell label="LLM profile id" hint="Optional profile identifier used by adapter integrations.">
