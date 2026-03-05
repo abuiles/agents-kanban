@@ -18,7 +18,13 @@ import {
 } from './payload';
 import { resolveThreadTenant, verifySlackRequest } from './verification';
 import { mirrorRunLifecycleMilestone } from './timeline';
-import { addSlackReaction, fetchSlackThreadMessages, postSlackChannelMessage, postSlackThreadMessage } from './client';
+import {
+  addSlackReaction,
+  fetchSlackRecentChannelMessages,
+  fetchSlackThreadMessages,
+  postSlackChannelMessage,
+  postSlackThreadMessage
+} from './client';
 import { resolveIntegrationConfig } from '../config-resolution';
 import { getRepoHost, getRepoProjectPath } from '../../../shared/scm';
 import {
@@ -57,6 +63,9 @@ const MAX_TASK_DESCRIPTION_CHARS = 320;
 const MAX_SLACK_PROMPT_PREVIEW_CHARS = 420;
 const JIRA_KEY_PATTERN = /^[A-Z][A-Z0-9_]*-\d+$/i;
 const REVIEW_INTENT_FALLBACK_MODELS = ['gpt-4.1-mini', 'gpt-4o-mini'] as const;
+const REVIEW_SHORTHAND_REGEX = /\b(?:mr|merge\s+request|pull\s+request|pr)\s*[#:]?\s*([#!]?\d+)\b/gi;
+const REVIEW_URL_REGEX = /https?:\/\/[^\s<>]+/gi;
+const REVIEW_URL_TRIMMED_SUFFIX = /[)\]}.;:!,?>]+$/;
 
 type SlackLifecycleCheckpoint = 'received' | 'deduped' | 'jira_fetch_started' | 'jira_fetch_failed' | 'task_started';
 
@@ -516,6 +525,55 @@ function toSingleLine(value: string | undefined) {
   return normalizeMultilineText(value).replace(/\s+/g, ' ').trim();
 }
 
+function stripSlackReviewLinkMarkup(value: string) {
+  return value.replace(/<([^>|]+)\|[^>]+>/g, '$1');
+}
+
+function parseReviewMarkerNumber(raw: string | undefined): number | undefined {
+  if (!raw) {
+    return undefined;
+  }
+  const trimmed = raw.trim().replace(/^[#!]+/, '');
+  if (!trimmed || !/^\d+$/.test(trimmed)) {
+    return undefined;
+  }
+  const parsed = Number.parseInt(trimmed, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function inferReviewInputFromText(text: string): SlackReviewFastPathInput | undefined {
+  const normalized = stripSlackReviewLinkMarkup(toSingleLine(text))
+    .replace(REVIEW_URL_TRIMMED_SUFFIX, '')
+    .trim();
+  if (!normalized) {
+    return undefined;
+  }
+  for (const url of normalized.matchAll(REVIEW_URL_REGEX)) {
+    const reviewFromUrl = parseReviewFastPathInput(`review ${url[0]}`);
+    if (reviewFromUrl?.reviewNumber) {
+      return reviewFromUrl;
+    }
+  }
+  const markerMatches = Array.from(normalized.matchAll(REVIEW_SHORTHAND_REGEX));
+  for (let index = markerMatches.length - 1; index >= 0; index -= 1) {
+    const parsedReview = parseReviewMarkerNumber(markerMatches[index]?.[1]);
+    if (parsedReview) {
+      return { reviewNumber: parsedReview };
+    }
+  }
+  return undefined;
+}
+
+function inferReviewInputFromMessages(messages: Array<{ text: string }>): SlackReviewFastPathInput | undefined {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const parsed = inferReviewInputFromText(messages[index]?.text ?? '');
+    if (parsed) {
+      return parsed;
+    }
+  }
+  return undefined;
+}
+
 function truncateForText(value: string, maxChars: number) {
   if (value.length <= maxChars) {
     return value;
@@ -578,6 +636,12 @@ function buildIntentTextWithThreadContext(
     'latest_user_message:',
     command
   ].join('\n');
+}
+
+function sortSlackMessagesChronologically(
+  messages: Array<{ text: string; ts?: string; botId?: string; userId?: string }>
+) {
+  return [...messages].sort((a, b) => (a.ts ?? '').localeCompare(b.ts ?? ''));
 }
 
 function formatTaskPromptMarkdown(input: {
@@ -2967,29 +3031,40 @@ async function runSlackCommandAsync(
 ) {
   const tenantId = await resolveThreadTenantId(env, payload.teamId);
   const normalizedText = payload.text.trim();
-  const reviewInput = parseReviewFastPathInput(normalizedText)
-    ?? (normalizedText && normalizedText.toLowerCase() !== 'help' && shouldAttemptReviewIntentLlm(normalizedText)
-      ? await (async () => {
-        const reviewPromptText = payload.threadTs
-          ? await (async (threadTs: string) => {
-            const threadMessages = await fetchSlackThreadMessages(env, {
-              tenantId,
-              channelId: payload.channelId,
-              threadTs,
-              limit: 12
-            });
-            return threadMessages.length > 0
-              ? buildIntentTextWithThreadContext(normalizedText, threadMessages)
-              : normalizedText;
-          })(payload.threadTs)
-          : normalizedText;
-        return detectReviewCommandWithIntent(env, {
-          tenantId,
-          channelId: payload.channelId,
-          text: reviewPromptText
-        });
-      })()
-      : undefined);
+  const reviewInput = await (async () => {
+    const directReview = parseReviewFastPathInput(normalizedText);
+    if (directReview) {
+      return directReview;
+    }
+    if (!(normalizedText && normalizedText.toLowerCase() !== 'help' && shouldAttemptReviewIntentLlm(normalizedText))) {
+      return undefined;
+    }
+    if (payload.threadTs) {
+      const threadMessages = await fetchSlackThreadMessages(env, {
+        tenantId,
+        channelId: payload.channelId,
+        threadTs: payload.threadTs,
+        limit: 12
+      });
+      const inferredReview = inferReviewInputFromMessages(threadMessages);
+      if (inferredReview) {
+        return inferredReview;
+      }
+      const reviewPromptText = threadMessages.length > 0
+        ? buildIntentTextWithThreadContext(normalizedText, threadMessages)
+        : normalizedText;
+      return detectReviewCommandWithIntent(env, {
+        tenantId,
+        channelId: payload.channelId,
+        text: reviewPromptText
+      });
+    }
+    return detectReviewCommandWithIntent(env, {
+      tenantId,
+      channelId: payload.channelId,
+      text: normalizedText
+    });
+  })();
   let issueKey = reviewInput ? undefined : parseJiraFastPathIssueKey(payload.text);
   if (!reviewInput && !issueKey && normalizedText && normalizedText.toLowerCase() !== 'help') {
     issueKey = await detectJiraIssueKeyWithIntent(env, {
@@ -3281,28 +3356,68 @@ async function runSlackMentionAsync(
     if (threadMessagesForReview !== undefined) {
       return threadMessagesForReview;
     }
-    threadMessagesForReview = await fetchSlackThreadMessages(env, {
+    const messages = await fetchSlackThreadMessages(env, {
       tenantId,
       channelId: payload.channelId,
       threadTs: payload.threadTs,
       limit: 12
     });
+    threadMessagesForReview = sortSlackMessagesChronologically(messages);
     return threadMessagesForReview;
   };
-  const reviewInput = parseReviewFastPathInput(normalizedText)
-    ?? (shouldAttemptReviewIntentLlm(normalizedText)
-      ? await (async () => {
-        const threadMessages = await getThreadMessages();
-        const reviewPromptText = threadMessages.length > 0
-          ? buildIntentTextWithThreadContext(normalizedText, threadMessages)
-          : normalizedText;
-        return detectReviewCommandWithIntent(env, {
-          tenantId,
-          channelId: payload.channelId,
-          text: reviewPromptText
-        });
-      })()
-      : undefined);
+  const getReviewContextMessages = async () => {
+    const threadMessages = await getThreadMessages();
+    const isTopLevelMessage = payload.eventTs !== undefined && payload.eventTs === payload.threadTs;
+    if (!isTopLevelMessage) {
+      return threadMessages;
+    }
+    const channelMessages = await fetchSlackRecentChannelMessages(env, {
+      tenantId,
+      channelId: payload.channelId,
+      latest: payload.eventTs,
+      limit: 16
+    });
+    if (channelMessages.length === 0) {
+      return threadMessages;
+    }
+    const seenTs = new Set<string>();
+    const mergedMessages = sortSlackMessagesChronologically([
+      ...channelMessages,
+      ...threadMessages
+    ]).filter((message) => {
+      if (!message.ts) {
+        return true;
+      }
+      if (seenTs.has(message.ts)) {
+        return false;
+      }
+      seenTs.add(message.ts);
+      return true;
+    });
+    return mergedMessages;
+  };
+  const reviewInput = await (async () => {
+    const directReview = parseReviewFastPathInput(normalizedText);
+    if (directReview) {
+      return directReview;
+    }
+    if (!shouldAttemptReviewIntentLlm(normalizedText)) {
+      return undefined;
+    }
+    const reviewContextMessages = await getReviewContextMessages();
+    const inferredReview = inferReviewInputFromMessages(reviewContextMessages);
+    if (inferredReview) {
+      return inferredReview;
+    }
+    const reviewPromptText = reviewContextMessages.length > 0
+      ? buildIntentTextWithThreadContext(normalizedText, reviewContextMessages)
+      : normalizedText;
+    return detectReviewCommandWithIntent(env, {
+      tenantId,
+      channelId: payload.channelId,
+      text: reviewPromptText
+    });
+  })();
   if (reviewInput) {
     logSlackMentionIngestion({
       checkpoint: 'review_detected',
