@@ -29,6 +29,7 @@ import {
 } from './shared/review-contract';
 import { executePromptWithLlmAdapter } from './llm/runtime';
 import { getReviewPostingAdapter } from './review-posting/registry';
+import type { ReviewContextComment } from './review-posting/adapter';
 import { normalizeRepoCheckpointConfig } from '../shared/checkpoint';
 
 type WorkflowBinding<T> = {
@@ -791,6 +792,26 @@ fi`)}`
       throw new Error(checkout.stderr || `Failed to prepare review branch ${run.branchName}.`);
     }
 
+    const reviewContextComments = await loadReviewContextComments({
+      env,
+      repoBoard,
+      repo,
+      task,
+      run,
+      autoReview
+    });
+    if (reviewContextComments.length) {
+      await repoBoard.appendRunLogs(runId, [
+        buildRunLog(
+          runId,
+          `Loaded ${reviewContextComments.length} review comments from ${autoReview.provider} for review context.`,
+          'pr',
+          'info',
+          { reviewCommentContextCount: reviewContextComments.length }
+        )
+      ]);
+    }
+
     const parsed = autoReview.promptSource === 'native'
       ? await runNativeReviewAndNormalize({
         llmAdapter,
@@ -801,7 +822,8 @@ fi`)}`
         model: llmModel,
         reasoningEffort: llmReasoningEffort,
         sleepFn,
-        autoReview
+        autoReview,
+        reviewContextComments
       })
       : await runStructuredReview({
         llmAdapter,
@@ -812,7 +834,8 @@ fi`)}`
         model: llmModel,
         reasoningEffort: llmReasoningEffort,
         sleepFn,
-        autoReview
+        autoReview,
+        reviewContextComments
       });
     if (!parsed.ok) {
       throw new Error(`${parsed.code}: ${parsed.message}`);
@@ -1002,7 +1025,8 @@ function buildReviewPrompt(
   task: Task,
   repo: Repo,
   run: Awaited<ReturnType<RepoBoardDO['getRun']>>,
-  autoReview: { prompt?: string; provider: AutoReviewProvider; postingMode: 'platform' | 'agent'; postInline: boolean }
+  autoReview: { prompt?: string; provider: AutoReviewProvider; postingMode: 'platform' | 'agent'; postInline: boolean },
+  reviewContextComments: ReviewContextComment[] = []
 ) {
   const customPrompt = autoReview.prompt;
   const useNativeReview = !customPrompt?.trim();
@@ -1017,6 +1041,7 @@ function buildReviewPrompt(
 
   const reviewNumber = run.reviewNumber ?? run.prNumber;
   const reviewUrl = run.reviewUrl ?? run.prUrl;
+  const normalizedReviewContextComments = dedupeReviewContextComments(reviewContextComments);
   const agentPostingGuidance = autoReview.postingMode === 'agent'
     ? [
         '',
@@ -1051,6 +1076,13 @@ function buildReviewPrompt(
           'If native review mode emits narrative output first, convert it into the structured findings JSON below.'
         ]
       : []),
+    ...(normalizedReviewContextComments.length
+      ? [
+          '',
+          'Review context from existing PR/MR discussion and comments:',
+          ...normalizedReviewContextComments.map((comment, index) => `${index + 1}. (${comment.source}) ${comment.body}`)
+        ]
+      : []),
     '',
     'Return JSON only using this exact schema shape:',
     '{ "findings": [ { "severity": "critical|high|medium|low|info", "title": "string", "description": "string", "filePath": "string|null?", "lineStart": "number|null?", "lineEnd": "number|null?", "providerThreadId": "string|null?" } ] }',
@@ -1067,7 +1099,8 @@ async function runStructuredReview({
   model,
   reasoningEffort,
   sleepFn,
-  autoReview
+  autoReview,
+  reviewContextComments = []
 }: {
   llmAdapter: ReturnType<typeof getLlmAdapter>;
   llmContext: { env: Env; sandbox: ReturnType<typeof getSandbox>; repoBoard: DurableObjectStub<RepoBoardDO>; runId: string };
@@ -1078,6 +1111,7 @@ async function runStructuredReview({
   reasoningEffort: LlmReasoningEffort;
   sleepFn: SleepFn;
   autoReview: { prompt?: string; provider: AutoReviewProvider; postingMode: 'platform' | 'agent'; postInline: boolean };
+  reviewContextComments: ReviewContextComment[];
 }) {
   const promptResult = await executePromptWithLlmAdapter(
     llmAdapter,
@@ -1087,7 +1121,7 @@ async function runStructuredReview({
       task,
       run,
       cwd: '/workspace/repo',
-      prompt: buildReviewPrompt(task, repo, run, autoReview),
+      prompt: buildReviewPrompt(task, repo, run, autoReview, reviewContextComments),
       model,
       reasoningEffort,
       timeoutMs: 180_000,
@@ -1115,7 +1149,8 @@ async function runNativeReviewAndNormalize({
   model,
   reasoningEffort,
   sleepFn,
-  autoReview
+  autoReview,
+  reviewContextComments = []
 }: {
   llmAdapter: ReturnType<typeof getLlmAdapter>;
   llmContext: { env: Env; sandbox: ReturnType<typeof getSandbox>; repoBoard: DurableObjectStub<RepoBoardDO>; runId: string };
@@ -1126,6 +1161,7 @@ async function runNativeReviewAndNormalize({
   reasoningEffort: LlmReasoningEffort;
   sleepFn: SleepFn;
   autoReview: { prompt?: string; provider: AutoReviewProvider; postingMode: 'platform' | 'agent'; postInline: boolean };
+  reviewContextComments: ReviewContextComment[];
 }) {
   const nativeReviewResult = await executePromptWithLlmAdapter(
     llmAdapter,
@@ -1135,7 +1171,7 @@ async function runNativeReviewAndNormalize({
       task,
       run,
       cwd: '/workspace/repo',
-      prompt: buildNativeReviewPrompt(task, repo, run),
+      prompt: buildNativeReviewPrompt(task, repo, run, reviewContextComments),
       model,
       reasoningEffort,
       timeoutMs: 180_000,
@@ -1180,7 +1216,13 @@ async function runNativeReviewAndNormalize({
   return parseReviewFindings(normalizeResult.rawOutput);
 }
 
-function buildNativeReviewPrompt(task: Task, repo: Repo, run: Awaited<ReturnType<RepoBoardDO['getRun']>>) {
+function buildNativeReviewPrompt(
+  task: Task,
+  repo: Repo,
+  run: Awaited<ReturnType<RepoBoardDO['getRun']>>,
+  reviewContextComments: ReviewContextComment[] = []
+) {
+  const normalizedReviewContextComments = dedupeReviewContextComments(reviewContextComments);
   return [
     `You are reviewing code changes for ${repo.slug}.`,
     `Run: ${run.runId}`,
@@ -1191,10 +1233,92 @@ function buildNativeReviewPrompt(task: Task, repo: Repo, run: Awaited<ReturnType
     '',
     'Acceptance criteria:',
     ...task.acceptanceCriteria.map((item) => `- ${item}`),
+    ...(normalizedReviewContextComments.length
+      ? [
+          '',
+          'Review context from existing PR/MR discussion and comments:',
+          ...normalizedReviewContextComments.map((comment, index) => `${index + 1}. (${comment.source}) ${comment.body}`)
+        ]
+      : []),
     '',
     'Run /review on the current branch diff and return a concise narrative review.',
     'Focus on correctness, regressions, security risks, and missing tests.'
   ].filter(Boolean).join('\n');
+}
+
+async function loadReviewContextComments(input: {
+  env: Stage3Env;
+  repoBoard: DurableObjectStub<RepoBoardDO>;
+  repo: Repo;
+  task: Task;
+  run: Awaited<ReturnType<RepoBoardDO['getRun']>>;
+  autoReview: {
+    provider: AutoReviewProvider;
+  };
+}): Promise<ReviewContextComment[]> {
+  const reviewNumber = input.run.reviewNumber ?? input.run.prNumber;
+  if (!reviewNumber) {
+    return [];
+  }
+
+  const reviewCredential = getReviewPostingCredential(input.env, input.autoReview.provider);
+  if (!reviewCredential) {
+    return [];
+  }
+
+  try {
+    const postingAdapter = getReviewPostingAdapter(input.autoReview.provider);
+    const comments = await postingAdapter.fetchReviewContextComments({
+      repo: input.repo,
+      task: input.task,
+      run: input.run,
+      findingIds: [],
+      credential: reviewCredential
+    });
+    return dedupeReviewContextComments(comments.filter((comment) => comment.body.trim()), { includeSourceOrdering: true });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await input.repoBoard.appendRunLogs(input.run.runId, [
+      buildRunLog(input.run.runId, `Failed to load review context comments: ${message}`, 'pr', 'error', {
+        reviewProvider: input.autoReview.provider,
+        reviewNumber
+      })
+    ]);
+    return [];
+  }
+}
+
+function dedupeReviewContextComments(
+  comments: ReviewContextComment[],
+  options?: {
+    includeSourceOrdering?: boolean;
+  }
+) {
+  const sourceOrder = new Map<ReviewContextComment['source'], number>([
+    ['discussion', 0],
+    ['issue', 1],
+    ['review', 2]
+  ]);
+  const normalized = options?.includeSourceOrdering
+    ? [...comments].sort((left, right) => {
+      const leftOrder = sourceOrder.get(left.source) ?? 99;
+      const rightOrder = sourceOrder.get(right.source) ?? 99;
+      if (leftOrder !== rightOrder) {
+        return leftOrder - rightOrder;
+      }
+      return left.body.localeCompare(right.body);
+    })
+    : comments;
+
+  const seen = new Set<string>();
+  return normalized.filter((comment) => {
+    const key = `${comment.source}:${comment.body}`;
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
 }
 
 function buildReviewNormalizationPrompt(

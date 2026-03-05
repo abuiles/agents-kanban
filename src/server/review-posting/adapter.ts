@@ -36,6 +36,11 @@ export type ReviewPostingResult = {
   errors: string[];
 };
 
+export type ReviewContextComment = {
+  source: 'review' | 'issue' | 'discussion';
+  body: string;
+};
+
 export type ReviewReplyFetchInput = Omit<ReviewPostingInput, 'findings'> & {
   findingIds?: string[];
 };
@@ -46,6 +51,7 @@ export interface ReviewPostingAdapter {
   readonly provider: AutoReviewProvider;
   postFindings(input: ReviewPostingInput): Promise<ReviewPostingResult>;
   fetchReplyContext(input: ReviewReplyFetchInput): Promise<ReviewReplyContext>;
+  fetchReviewContextComments(input: ReviewReplyFetchInput): Promise<ReviewContextComment[]>;
 }
 
 export const REVIEW_MARKER_TAG = 'agentboard-review';

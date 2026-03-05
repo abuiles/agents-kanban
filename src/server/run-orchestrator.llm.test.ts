@@ -558,16 +558,35 @@ describe('executeRunJob LLM adapter coverage', () => {
       return baseExec(command);
     };
     sandboxState.current = sandbox;
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify([]), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify([]), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ head: { sha: 'a'.repeat(40) } }), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify([]), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify([]), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({
-        id: 501,
-        html_url: 'https://github.com/abuiles/minions/pull/17#discussion_r501'
-      }), { status: 201 }));
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method?.toUpperCase() ?? 'GET';
+      if (url.includes('/pulls/17/comments') && method === 'GET') {
+        return new Response(JSON.stringify([]), { status: 200 });
+      }
+      if (url.includes('/issues/17/comments') && method === 'GET') {
+        return new Response(JSON.stringify([]), { status: 200 });
+      }
+      if (url.includes('/pulls/17/files') && method === 'GET') {
+        return new Response(JSON.stringify([]), { status: 200 });
+      }
+      if (url.includes('/pulls/17') && method !== 'POST') {
+        return new Response(JSON.stringify({ head: { sha: 'a'.repeat(40) } }), { status: 200 });
+      }
+      if (url.includes('/pulls/17/comments') && init?.method === 'POST') {
+        return new Response(JSON.stringify({
+          id: 501,
+          html_url: 'https://github.com/abuiles/minions/pull/17#discussion_r501'
+        }), { status: 201 });
+      }
+      if (url.includes('/issues/17/comments') && init?.method === 'POST') {
+        return new Response(JSON.stringify({
+          id: 601,
+          html_url: 'https://github.com/abuiles/minions/pull/17#issuecomment-601'
+        }), { status: 201 });
+      }
+      throw new Error(`Unexpected fetch URL: ${url}`);
+    });
     vi.stubGlobal('fetch', fetchMock);
 
     await executeRunJob(harness.env, { tenantId: 'tenant_legacy', repoId: repo.repoId, taskId: task.taskId, runId: 'run_1', mode: 'full_run' }, async () => {});
@@ -834,6 +853,84 @@ describe('executeRunJob LLM adapter coverage', () => {
     expect(reviewPromptCommand).not.toContain('codex exec -m gpt-5.1-codex-mini');
   });
 
+  it('includes all existing review comments in structured review prompt context', async () => {
+    const task = buildTask({
+      uiMeta: {
+        llmAdapter: 'codex',
+        llmModel: 'gpt-5.3-codex',
+        llmReasoningEffort: 'high'
+      }
+    });
+    const repo = buildRepo({
+      autoReview: {
+        enabled: true,
+        provider: 'github',
+        postInline: false,
+        prompt: 'Run a structured review and return exact JSON findings.'
+      }
+    });
+    const harness = createHarness(task, repo);
+    await harness.repoBoard.transitionRun('run_1', {
+      reviewNumber: 17,
+      prNumber: 17,
+      prUrl: 'https://github.com/abuiles/minions/pull/17',
+      reviewUrl: 'https://github.com/abuiles/minions/pull/17'
+    });
+
+    const sandbox = buildSandbox([
+      { type: 'stdout', data: 'Applied fix.\n' },
+      { type: 'exit', exitCode: 0 }
+    ]);
+    const baseExec = sandbox.exec.bind(sandbox);
+    sandbox.exec = async (command) => {
+      if (command.includes('/workspace/prompt-last-message.txt')) {
+        return {
+          success: true,
+          exitCode: 0,
+          stdout: '\n===CODEX_LAST_MESSAGE===\n{"findings":[]}\n'
+        };
+      }
+      return baseExec(command);
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/issues/17/comments')) {
+        return Promise.resolve(new Response(JSON.stringify([
+          { body: 'Issue comment: old note on prior review round' }
+        ]), { status: 200 }));
+      }
+      if (url.includes('/pulls/17/comments')) {
+        return Promise.resolve(new Response(JSON.stringify([
+          { body: 'Existing review comment: check branch target' }
+        ]), { status: 200 }));
+      }
+      throw new Error(`Unexpected fetch URL: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    sandboxState.current = sandbox;
+
+    await executeRunJob(
+      harness.env,
+      {
+        tenantId: 'tenant_legacy',
+        repoId: repo.repoId,
+        taskId: task.taskId,
+        runId: 'run_1',
+        mode: 'review_only'
+      },
+      async () => {}
+    );
+
+    const promptWrite = sandbox.writes.find((entry) => entry.path === '/workspace/prompt.txt');
+    expect(promptWrite).toBeDefined();
+    const contents = promptWrite?.contents ?? '';
+    expect(contents).toContain('Review context from existing PR/MR discussion and comments:');
+    expect(contents).toContain('(issue) GitHub issue comment #1: Issue comment: old note on prior review round');
+    expect(contents).toContain('(review) GitHub review comment #1: Existing review comment: check branch target');
+    expect(harness.getRun().reviewFindingsSummary).toMatchObject({ total: 0, open: 0, posted: 0, provider: 'github' });
+  });
+
   it('falls back to native adapter review mode when no custom review prompt is configured', async () => {
     const task = buildTask({
       uiMeta: {
@@ -899,6 +996,161 @@ describe('executeRunJob LLM adapter coverage', () => {
     expect(promptCommands).toHaveLength(2);
     expect(promptCommands[0]).not.toContain('--output-schema /workspace/prompt-output-schema.json');
     expect(promptCommands[1]).toContain('--output-schema /workspace/prompt-output-schema.json');
+  });
+
+  it('includes existing review comments in native review prompt context', async () => {
+    const task = buildTask({
+      uiMeta: {
+        llmAdapter: 'codex',
+        llmModel: 'gpt-5.3-codex',
+        llmReasoningEffort: 'high'
+      }
+    });
+    const repo = buildRepo({
+      autoReview: {
+        enabled: true,
+        provider: 'github',
+        postInline: false
+      }
+    });
+    const harness = createHarness(task, repo);
+    await harness.repoBoard.transitionRun('run_1', {
+      reviewNumber: 17,
+      prNumber: 17,
+      prUrl: 'https://github.com/abuiles/minions/pull/17',
+      reviewUrl: 'https://github.com/abuiles/minions/pull/17'
+    });
+
+    const sandbox = buildSandbox([
+      { type: 'stdout', data: 'Applied fix.\n' },
+      { type: 'exit', exitCode: 0 }
+    ]);
+    const baseExec = sandbox.exec.bind(sandbox);
+    let promptCall = 0;
+    sandbox.exec = async (command) => {
+      if (command.includes('/workspace/prompt-last-message.txt')) {
+        promptCall += 1;
+        return {
+          success: true,
+          exitCode: 0,
+          stdout: promptCall === 1
+            ? '\n===CODEX_LAST_MESSAGE===\nNo issues found in this change.\n'
+            : '\n===CODEX_LAST_MESSAGE===\n{"findings":[]}\n'
+        };
+      }
+      return baseExec(command);
+    };
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/issues/17/comments')) {
+        return Promise.resolve(new Response(JSON.stringify([
+          { body: 'Issue comment: preexisting discussion mention' }
+        ]), { status: 200 }));
+      }
+      if (url.includes('/pulls/17/comments')) {
+        return Promise.resolve(new Response(JSON.stringify([
+          { body: 'Review comment: verify retry behavior' }
+        ]), { status: 200 }));
+      }
+      throw new Error(`Unexpected fetch URL: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    sandboxState.current = sandbox;
+
+    await executeRunJob(
+      harness.env,
+      {
+        tenantId: 'tenant_legacy',
+        repoId: repo.repoId,
+        taskId: task.taskId,
+        runId: 'run_1',
+        mode: 'review_only'
+      },
+      async () => {}
+    );
+
+    const promptWrites = sandbox.writes.filter((entry) => entry.path === '/workspace/prompt.txt');
+    expect(promptWrites).toHaveLength(2);
+    expect(promptWrites[0]?.contents).toContain('Review context from existing PR/MR discussion and comments:');
+    expect(promptWrites[0]?.contents).toContain('(issue) GitHub issue comment #1: Issue comment: preexisting discussion mention');
+    expect(promptWrites[0]?.contents).toContain('(review) GitHub review comment #1: Review comment: verify retry behavior');
+  });
+
+  it('logs full LLM raw review responses in chunks', async () => {
+    const task = buildTask({
+      uiMeta: {
+        llmAdapter: 'codex',
+        llmModel: 'gpt-5.3-codex',
+        llmReasoningEffort: 'high'
+      }
+    });
+    const longFindingDescription = 'Review findings should be chunked so diagnostics are visible in run logs. '.repeat(40);
+    const rawOutput = JSON.stringify({
+      findings: [{
+        severity: 'low',
+        title: 'Long response validation',
+        description: longFindingDescription,
+        filePath: 'src/index.ts',
+        lineStart: 12,
+        lineEnd: 12,
+        providerThreadId: null
+      }]
+    });
+    const repo = buildRepo({
+      autoReview: {
+        enabled: true,
+        provider: 'jira',
+        postInline: false,
+        prompt: 'Run a structured review and return exact JSON findings.',
+        postingMode: 'platform'
+      }
+    });
+    const harness = createHarness(task, repo);
+    const sandbox = buildSandbox([
+      { type: 'stdout', data: 'Applied fix.\n' },
+      { type: 'exit', exitCode: 0 }
+    ]);
+    const baseExec = sandbox.exec.bind(sandbox);
+    sandbox.exec = async (command) => {
+      if (command.includes('/workspace/prompt-last-message.txt')) {
+        return {
+          success: true,
+          exitCode: 0,
+          stdout: `\n===CODEX_LAST_MESSAGE===\n${rawOutput}\n`
+        };
+      }
+      return baseExec(command);
+    };
+    sandboxState.current = sandbox;
+
+    await executeRunJob(
+      harness.env,
+      {
+        tenantId: 'tenant_legacy',
+        repoId: repo.repoId,
+        taskId: task.taskId,
+        runId: 'run_1',
+        mode: 'review_only'
+      },
+      async () => {}
+    );
+
+    const responseLogs = harness.logs.filter((entry) => entry.message.includes('LLM pr prompt response (raw):'));
+    const expectedChunkCount = Math.ceil(rawOutput.length / 900);
+    expect(responseLogs).toHaveLength(expectedChunkCount);
+    expect(responseLogs.every((entry) => entry.metadata?.adapter === 'codex')).toBe(true);
+    expect(responseLogs.every((entry) => entry.metadata?.model === 'gpt-5.3-codex')).toBe(true);
+    expect(responseLogs.every((entry) => entry.metadata?.status === 'success')).toBe(true);
+    expect(responseLogs.every((entry) => entry.metadata?.chunkCount === expectedChunkCount)).toBe(true);
+    expect(responseLogs[0]?.metadata?.chunkIndex).toBe(1);
+    expect(responseLogs[responseLogs.length - 1]?.metadata?.chunkIndex).toBe(expectedChunkCount);
+    expect(responseLogs.some((entry) => entry.message.includes(longFindingDescription.slice(0, 25)))).toBe(true);
+    expect(harness.getRun().reviewExecution).toMatchObject({
+      enabled: true,
+      status: 'completed',
+      trigger: 'manual_rerun'
+    });
+    expect(harness.getRun().reviewPostState?.status).toBe('failed');
   });
 
   it('recovers review checkout when /workspace/repo already exists before clone on rerun', async () => {

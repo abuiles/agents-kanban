@@ -2,6 +2,7 @@ import { buildGithubApiBaseUrl, getRepoProjectPath } from '../../shared/scm';
 import type { AutoReviewProvider, Repo, ReviewFinding } from '../../ui/domain/types';
 import {
   ReviewPostingAdapter,
+  type ReviewContextComment,
   type ReviewPostingFindingRecord,
   type ReviewPostingInput,
   type ReviewPostingResult,
@@ -341,6 +342,37 @@ export class GitHubReviewPostingAdapter implements ReviewPostingAdapter {
     });
 
     return replies;
+  }
+
+  async fetchReviewContextComments(input: ReviewReplyFetchInput): Promise<ReviewContextComment[]> {
+    const reviewNumber = input.run.reviewNumber ?? input.run.prNumber;
+    if (!reviewNumber) {
+      return [];
+    }
+
+    const [reviewComments, issueComments] = await Promise.all([
+      this.fetchReviewComments(input.repo, reviewNumber, input.credential.token),
+      this.fetchIssueComments(input.repo, reviewNumber, input.credential.token)
+    ]);
+
+    const output: ReviewContextComment[] = [];
+
+    reviewComments.forEach((comment, index) => {
+      if (!comment.body?.trim()) {
+        return;
+      }
+      const label = comment.in_reply_to_id ? `reply to ${comment.in_reply_to_id}` : 'review comment';
+      output.push({ source: 'review', body: `GitHub ${label} #${index + 1}: ${comment.body}` });
+    });
+
+    issueComments.forEach((comment, index) => {
+      if (!comment.body?.trim()) {
+        return;
+      }
+      output.push({ source: 'issue', body: `GitHub issue comment #${index + 1}: ${comment.body}` });
+    });
+
+    return output;
   }
 
   private async fetchPullRequestHeadSha(repo: Repo, reviewNumber: number, token: string) {
