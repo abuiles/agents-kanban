@@ -14,10 +14,10 @@ export type RunStatus =
   | 'FAILED';
 
 export type SimulationProfile = 'happy_path' | 'fail_tests' | 'fail_preview';
-export type CodexModel = 'gpt-5.3-codex' | 'gpt-5.3-codex-spark' | 'gpt-5.1-codex-mini';
-export type CodexReasoningEffort = 'low' | 'medium' | 'high';
+export type CodexModel = 'gpt-5.4' | 'gpt-5.3-codex' | 'gpt-5.3-codex-spark' | 'gpt-5.1-codex-mini';
+export type CodexReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
 export type LlmAdapter = 'codex' | 'cursor_cli' | 'claude_code';
-export type LlmReasoningEffort = 'low' | 'medium' | 'high';
+export type LlmReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
 export type ScmProvider = 'github' | 'gitlab';
 export type AutoReviewProvider = 'github' | 'gitlab' | 'jira';
 export type AutoReviewPostingMode = 'platform' | 'agent';

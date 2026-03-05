@@ -16,6 +16,20 @@ describe('llm compatibility normalization', () => {
     });
   });
 
+  it('preserves gpt-5.4 and xhigh for codex-backed task metadata', () => {
+    expect(normalizeTaskUiMeta({
+      simulationProfile: 'happy_path',
+      codexModel: 'gpt-5.4',
+      codexReasoningEffort: 'xhigh'
+    })).toMatchObject({
+      llmAdapter: 'codex',
+      llmModel: 'gpt-5.4',
+      llmReasoningEffort: 'xhigh',
+      codexModel: 'gpt-5.4',
+      codexReasoningEffort: 'xhigh'
+    });
+  });
+
   it('hydrates generic run and operator session fields from codex aliases', () => {
     const session = normalizeOperatorSession({
       id: 'session_1',
