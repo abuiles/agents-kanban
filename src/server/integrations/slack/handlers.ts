@@ -61,6 +61,7 @@ const MAX_LOG_MESSAGE_CHARS = 300;
 const MAX_TASK_TITLE_CHARS = 120;
 const MAX_TASK_DESCRIPTION_CHARS = 320;
 const MAX_SLACK_PROMPT_PREVIEW_CHARS = 420;
+const MAX_REVIEW_DRAFT_CONTEXT_CHARS = 2000;
 const JIRA_KEY_PATTERN = /^[A-Z][A-Z0-9_]*-\d+$/i;
 const REVIEW_INTENT_FALLBACK_MODELS = ['gpt-4.1-mini', 'gpt-4o-mini'] as const;
 const REVIEW_SHORTHAND_REGEX = /\b(?:mr|merge\s+request|pull\s+request|pr)\s*[#:]?\s*([#!]?\d+)\b/gi;
@@ -137,6 +138,53 @@ function toReadableErrorMessage(error: unknown) {
     return error.message;
   }
   return 'Unknown error.';
+}
+
+function mergeReviewDraftContext(existing: string | undefined, incoming: string | undefined): string | undefined {
+  const current = existing?.trim();
+  const next = incoming?.trim();
+  if (!current && !next) {
+    return undefined;
+  }
+  if (!current) {
+    return next;
+  }
+  if (!next) {
+    return current;
+  }
+  const currentLower = current.toLowerCase();
+  const nextLower = next.toLowerCase();
+  if (currentLower === nextLower || currentLower.includes(nextLower)) {
+    return current;
+  }
+  if (nextLower.includes(currentLower)) {
+    return next;
+  }
+  const merged = `${current}\n\n${next}`;
+  if (merged.length <= MAX_REVIEW_DRAFT_CONTEXT_CHARS) {
+    return merged;
+  }
+  return `...${merged.slice(-(MAX_REVIEW_DRAFT_CONTEXT_CHARS - 3))}`;
+}
+
+function extractReviewDraftContext(commandText: string | undefined): string | undefined {
+  const trimmed = commandText?.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  const withoutPrefix = trimmed.replace(/^review\b/i, '').replace(/^\s*again\b/i, '').trim();
+  if (!withoutPrefix) {
+    return undefined;
+  }
+
+  const withoutTarget = withoutPrefix
+    .replace(/^<?https?:\/\/[^\s>]+>?/i, '')
+    .replace(/^\s*[#!]?\d+\b/, '')
+    .trim()
+    .replace(/^[\s:;,\-–—]+/, '')
+    .trim();
+
+  return withoutTarget || undefined;
 }
 
 function sanitizeErrorMessageForLog(message: string | undefined) {
@@ -1034,6 +1082,7 @@ function buildReviewTaskPayload(input: {
   reviewProvider: 'github' | 'gitlab';
   reviewNumber: number;
   reviewUrl?: string;
+  draftContext?: string;
 }): CreateTaskInput {
   const reviewLlmAdapter = input.repo.autoReview?.llmAdapter ?? JIRA_LLM_ADAPTER;
   const reviewLlmModel = input.repo.autoReview?.llmModel
@@ -1055,7 +1104,10 @@ function buildReviewTaskPayload(input: {
       goal: reviewGoal,
       details: [
         `Run review-only mode against ${reviewLabel}.`,
-        'Do not implement or modify code; only review and publish findings.'
+        'Do not implement or modify code; only review and publish findings.',
+        ...(input.draftContext?.trim()
+          ? [`Operator context: ${input.draftContext.trim()}`]
+          : [])
       ].join(' '),
       contextLines: [
         `Review provider: ${input.reviewProvider}`,
@@ -1075,7 +1127,9 @@ function buildReviewTaskPayload(input: {
       links: input.reviewUrl
         ? [{ id: `${input.reviewProvider}:${input.reviewNumber}`, label: reviewLabel, url: input.reviewUrl }]
         : [],
-      notes: `Created from Slack /kanvy review for ${reviewLabel}.`
+      notes: input.draftContext?.trim()
+        ? `Created from Slack /kanvy review for ${reviewLabel}. Operator context included.`
+        : `Created from Slack /kanvy review for ${reviewLabel}.`
     },
     tags: ['review_only'],
     autoReviewMode: 'on',
@@ -2068,6 +2122,7 @@ async function startReviewRunForTask(
   tenantId: string,
   repo: Repo,
   review: ResolvedReviewCommand,
+  draftContext?: string,
 ): Promise<RunKickoff> {
   const repoId = repo.repoId;
   const repoBoard = env.REPO_BOARD.getByName(repoId);
@@ -2077,7 +2132,8 @@ async function startReviewRunForTask(
     sourceRef: review.sourceRef,
     reviewProvider: review.reviewProvider,
     reviewNumber: review.reviewNumber,
-    reviewUrl: review.reviewUrl
+    reviewUrl: review.reviewUrl,
+    draftContext
   }));
   const run = await repoBoard.startRun(task.taskId, { tenantId });
   await repoBoard.transitionRun(run.runId, {
@@ -2447,6 +2503,7 @@ async function processReviewCommandFlow(
     threadTs: string;
     responseUrl?: string;
     review: SlackReviewFastPathInput;
+    commandText?: string;
   }
 ): Promise<RunKickoff | undefined> {
   logSlackMentionIngestion({
@@ -2556,6 +2613,7 @@ async function processReviewCommandFlow(
     return undefined;
   }
   const review = resolveReviewCommandForRepo(repo, input.review);
+  const inlineDraftContext = extractReviewDraftContext(input.commandText);
   const existingReview = await findLatestReviewRunForRepo(env, input.tenantId, repo.repoId, review);
   if (existingReview) {
     const existingSession = await tenantAuthDb.getSlackIntakeSession(env, input.tenantId, input.channelId, input.threadTs);
@@ -2575,7 +2633,8 @@ async function processReviewCommandFlow(
           runId: existingReview.runId,
           reviewNumber: review.reviewNumber,
           reviewProvider: review.reviewProvider,
-          ...(review.reviewUrl ? { reviewUrl: review.reviewUrl } : {})
+          ...(review.reviewUrl ? { reviewUrl: review.reviewUrl } : {}),
+          ...(inlineDraftContext ? { draftContext: inlineDraftContext } : {})
         }
       }
     });
@@ -2620,7 +2679,8 @@ async function processReviewCommandFlow(
     channelId: input.channelId,
     threadTs: input.threadTs,
     repoId: repo.repoId,
-    review
+    review,
+    draftContext: inlineDraftContext
   });
   const confirmationText = [
     `Ready to run a review-only task for ${review.reviewProvider} #${review.reviewNumber} in ${repo.repoId}.`,
@@ -2981,6 +3041,7 @@ async function runIntentIntake(
 
     if (!isAffirmativeConfirmation(userText)) {
       const draftContext = userText;
+      const mergedDraftContext = mergeReviewDraftContext(pendingReviewStart.draftContext, draftContext);
       await tenantAuthDb.upsertSlackIntakeSession(env, {
         tenantId: input.tenantId,
         channelId: input.channelId,
@@ -2991,7 +3052,7 @@ async function runIntentIntake(
           ...(existing?.data ?? {}),
           pendingReviewStart: {
             ...pendingReviewStart,
-            ...(draftContext ? { draftContext } : {})
+            ...(mergedDraftContext ? { draftContext: mergedDraftContext } : {})
           },
           lastUserText: userText
         }
@@ -3026,7 +3087,8 @@ async function runIntentIntake(
       ctx,
       input.tenantId,
       repo,
-      review
+      review,
+      pendingReviewStart.draftContext
     );
     await tenantAuthDb.upsertSlackThreadBinding(env, {
       tenantId: input.tenantId,
@@ -3092,6 +3154,7 @@ async function runIntentIntake(
 
     if (!isAffirmativeConfirmation(userText)) {
       const rerunContext = userText;
+      const mergedDraftContext = mergeReviewDraftContext(pendingReviewRerun.draftContext, rerunContext);
       await tenantAuthDb.upsertSlackIntakeSession(env, {
         tenantId: input.tenantId,
         channelId: input.channelId,
@@ -3102,7 +3165,7 @@ async function runIntentIntake(
           ...(existing?.data ?? {}),
           pendingReviewRerun: {
             ...pendingReviewRerun,
-            ...(rerunContext ? { draftContext: rerunContext } : {})
+            ...(mergedDraftContext ? { draftContext: mergedDraftContext } : {})
           },
           lastUserText: userText
         }
@@ -3621,7 +3684,8 @@ async function runSlackCommandAsync(
         channelId: payload.channelId,
         threadTs: reviewThreadTs,
         responseUrl: payload.responseUrl,
-        review: reviewInput
+        review: reviewInput,
+        commandText: normalizedText
       });
       if (started) {
         logSlackCommandLifecycle({
@@ -3957,7 +4021,8 @@ async function runSlackMentionAsync(
         tenantId,
         channelId: payload.channelId,
         threadTs: payload.threadTs,
-        review: reviewInput
+        review: reviewInput,
+        commandText: normalizedText
       });
     } catch (error) {
       logSlackMentionIngestion({
