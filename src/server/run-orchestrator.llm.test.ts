@@ -827,10 +827,11 @@ describe('executeRunJob LLM adapter coverage', () => {
 
     const reviewPromptCommand = harness.commands
       .map((entry) => entry.command)
-      .find((command) => command.includes('node /workspace/codex-app-server.mjs') && command.includes('\"model\":\"gpt-5.3-codex\"'));
+      .find((command) => command.includes('codex exec -m'));
     expect(reviewPromptCommand).toBeDefined();
-    expect(reviewPromptCommand).toContain('\"reasoningEffort\":\"high\"');
-    expect(reviewPromptCommand).not.toContain('\"model\":\"gpt-5.1-codex-mini\"');
+    expect(reviewPromptCommand).toContain('codex exec -m gpt-5.3-codex');
+    expect(reviewPromptCommand).toContain('model_reasoning_effort="high"');
+    expect(reviewPromptCommand).not.toContain('codex exec -m gpt-5.1-codex-mini');
   });
 
   it('falls back to native adapter review mode when no custom review prompt is configured', async () => {
@@ -858,7 +859,7 @@ describe('executeRunJob LLM adapter coverage', () => {
     const promptCommands: string[] = [];
     let promptCall = 0;
     sandbox.exec = async (command) => {
-      if (command.includes('node /workspace/codex-app-server.mjs') && command.includes('/workspace/prompt.txt')) {
+      if (command.includes('codex exec') && command.includes('/workspace/prompt.txt')) {
         promptCommands.push(command);
       }
       if (command.includes('/workspace/prompt-last-message.txt')) {
@@ -896,77 +897,8 @@ describe('executeRunJob LLM adapter coverage', () => {
     });
     expect(harness.getRun().reviewFindingsSummary).toMatchObject({ total: 1, open: 1, posted: 0, provider: 'jira' });
     expect(promptCommands).toHaveLength(2);
-    expect(promptCommands[0]).not.toContain('\"outputSchemaPath\":\"/workspace/prompt-output-schema.json\"');
-    expect(promptCommands[1]).toContain('\"outputSchemaPath\":\"/workspace/prompt-output-schema.json\"');
-  });
-
-  it('falls back to direct Codex CLI when the app-server path reports unavailability', async () => {
-    const task = buildTask({
-      uiMeta: {
-        llmAdapter: 'codex',
-        llmModel: 'gpt-5.3-codex',
-        llmReasoningEffort: 'high'
-      }
-    });
-    const repo = buildRepo({
-      autoReview: {
-        enabled: true,
-        provider: 'jira',
-        postInline: false,
-        postingMode: 'agent'
-      }
-    });
-    const harness = createHarness(task, repo);
-    const sandbox = buildSandbox([
-      { type: 'stdout', data: 'Applied fix.\n' },
-      { type: 'exit', exitCode: 0 }
-    ]);
-    const baseExec = sandbox.exec.bind(sandbox);
-    const appServerCommands: string[] = [];
-    const cliCommands: string[] = [];
-    let promptLastMessageCalls = 0;
-    sandbox.exec = async (command) => {
-      if (command.includes('node /workspace/codex-app-server.mjs')) {
-        appServerCommands.push(command);
-        return {
-          success: false,
-          exitCode: 1,
-          stderr: 'CODEX_APP_SERVER_UNAVAILABLE: mock unavailable for compatibility'
-        };
-      }
-      if (command.includes('codex exec -m') && command.includes('/workspace/prompt.txt')) {
-        cliCommands.push(command);
-      }
-      if (command.includes('/workspace/prompt-last-message.txt')) {
-        promptLastMessageCalls += 1;
-        return {
-          success: true,
-          exitCode: 0,
-          stdout: '\n===CODEX_LAST_MESSAGE===\n{"findings":[]}\n'
-        };
-      }
-      return baseExec(command);
-    };
-    sandboxState.current = sandbox;
-
-    await executeRunJob(
-      harness.env,
-      {
-        tenantId: 'tenant_legacy',
-        repoId: repo.repoId,
-        taskId: task.taskId,
-        runId: 'run_1',
-        mode: 'review_only'
-      },
-      async () => {}
-    );
-
-    expect(appServerCommands.length).toBeGreaterThan(0);
-    expect(cliCommands.length).toBeGreaterThan(0);
-    expect(promptLastMessageCalls).toBeGreaterThan(0);
-    expect(harness.getRun().reviewExecution?.status).toBe('completed');
-    expect(harness.getRun().reviewExecution?.round).toBe(1);
-    expect(harness.logs.some((entry) => entry.message.includes('Falling back to direct codex exec for prompt()'))).toBe(true);
+    expect(promptCommands[0]).not.toContain('--output-schema /workspace/prompt-output-schema.json');
+    expect(promptCommands[1]).toContain('--output-schema /workspace/prompt-output-schema.json');
   });
 
   it('recovers review checkout when /workspace/repo already exists before clone on rerun', async () => {
@@ -1108,7 +1040,7 @@ describe('executeRunJob LLM adapter coverage', () => {
         codexResumeCommand: 'codex resume thread-123'
       }
     });
-    expect(harness.commands.some((command) => command.command.includes('node /workspace/codex-app-server.mjs'))).toBe(true);
+    expect(harness.commands.some((command) => command.command.includes('codex exec'))).toBe(true);
     expect(harness.events.some((event) => event.eventType === 'codex.resume_available')).toBe(true);
   });
 
