@@ -1,6 +1,20 @@
 import type { LlmAdapter, LlmPromptExecutionRequest, LlmPromptExecutionResult, LlmRuntimeContext, SleepFn } from './adapter';
 import { buildRunLog } from '../shared/real-run';
 
+const LLM_RESPONSE_LOG_CHUNK_SIZE = 900;
+
+function chunkText(value: string, size = LLM_RESPONSE_LOG_CHUNK_SIZE) {
+  if (size <= 0) {
+    return [value];
+  }
+
+  const chunks: string[] = [];
+  for (let index = 0; index < value.length; index += size) {
+    chunks.push(value.slice(index, index + size));
+  }
+  return chunks.length ? chunks : [''];
+}
+
 export async function executePromptWithLlmAdapter(
   adapter: LlmAdapter,
   context: LlmRuntimeContext,
@@ -38,5 +52,91 @@ rm -f "$HOME/.codex/._auth.json"
   }
   await adapter.logDiagnostics(context, request);
   await adapter.waitForCapacityIfNeeded?.(context, request, sleepFn);
-  return adapter.runPrompt(context, request);
+  const result = await adapter.runPrompt(context, request);
+  const phase = request.phase ?? 'codex';
+  const logs: Array<ReturnType<typeof buildRunLog>> = [];
+
+  if (typeof result.rawOutput === 'string') {
+    const rawOutput = result.rawOutput;
+    const chunks = chunkText(rawOutput);
+    const baseMetadata: Record<string, string | number | boolean> = {
+      adapter: adapter.kind,
+      model: request.model,
+      status: result.status,
+      phase,
+      elapsedMs: result.elapsedMs,
+      chunkCount: chunks.length,
+      outputLength: rawOutput.length
+    };
+
+    logs.push(
+      ...chunks.map((chunk, index) =>
+        buildRunLog(
+          context.runId,
+          `LLM ${phase} prompt response (raw): ${chunk || '<empty>'}`,
+          phase,
+          'info',
+          {
+            ...baseMetadata,
+            chunkIndex: index + 1,
+            ...(result.status === 'timed_out' ? { timeoutMs: result.timeoutMs } : {})
+          }
+        )
+      )
+    );
+  }
+
+  if (result.status === 'timed_out') {
+    logs.push(
+      buildRunLog(
+        context.runId,
+        `LLM ${phase} prompt timed out after ${result.timeoutMs}ms.`,
+        phase,
+        'error',
+        {
+          adapter: adapter.kind,
+          model: request.model,
+          status: 'timed_out',
+          phase,
+          elapsedMs: result.elapsedMs,
+          timeoutMs: result.timeoutMs
+        }
+      )
+    );
+  }
+
+  if (result.status === 'failed') {
+    logs.push(
+      buildRunLog(
+        context.runId,
+        `LLM ${phase} prompt failed: ${result.message}`,
+        phase,
+        'error',
+        {
+          adapter: adapter.kind,
+          model: request.model,
+          status: result.status,
+          phase,
+          elapsedMs: result.elapsedMs
+        }
+      )
+    );
+  }
+
+  if (result.stderr?.trim()) {
+    logs.push(
+      buildRunLog(context.runId, `LLM ${phase} prompt stderr: ${result.stderr}`, phase, 'error', {
+        adapter: adapter.kind,
+        model: request.model,
+        status: result.status,
+        phase,
+        elapsedMs: result.elapsedMs
+      })
+    );
+  }
+
+  if (logs.length) {
+    await context.repoBoard.appendRunLogs(context.runId, logs);
+  }
+  return result;
 }

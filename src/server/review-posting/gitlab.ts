@@ -2,6 +2,7 @@ import { buildGitlabApiBaseUrl, getRepoProjectPath } from '../../shared/scm';
 import type { AutoReviewProvider, Repo, ReviewFinding } from '../../ui/domain/types';
 import {
   ReviewPostingAdapter,
+  type ReviewContextComment,
   type ReviewPostingFindingRecord,
   type ReviewPostingInput,
   type ReviewPostingResult,
@@ -343,6 +344,27 @@ export class GitLabReviewPostingAdapter implements ReviewPostingAdapter {
     }
 
     return normalized;
+  }
+
+  async fetchReviewContextComments(input: ReviewReplyFetchInput): Promise<ReviewContextComment[]> {
+    const reviewNumber = input.run.reviewNumber ?? input.run.prNumber;
+    if (!reviewNumber) {
+      return [];
+    }
+
+    const discussions = await this.fetchDiscussions(input.repo, reviewNumber, input.credential.token);
+    const output: ReviewContextComment[] = [];
+
+    discussions.forEach((discussion) => {
+      (discussion.notes ?? []).forEach((note) => {
+        if (!note.body?.trim()) {
+          return;
+        }
+        output.push({ source: 'discussion', body: `GitLab discussion note: ${note.body}` });
+      });
+    });
+
+    return output;
   }
 
   private async fetchMergeRequestDiffRefs(

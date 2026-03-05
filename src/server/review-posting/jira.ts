@@ -1,6 +1,7 @@
 import type { AutoReviewProvider, AgentRun, ReviewFinding, Task } from '../../ui/domain/types';
 import {
   ReviewPostingAdapter,
+  type ReviewContextComment,
   type ReviewPostingFindingRecord,
   type ReviewPostingInput,
   type ReviewPostingResult,
@@ -201,6 +202,24 @@ export class JiraReviewPostingAdapter implements ReviewPostingAdapter {
     });
 
     return replies;
+  }
+
+  async fetchReviewContextComments(input: ReviewReplyFetchInput): Promise<ReviewContextComment[]> {
+    const target = this.resolveJiraIssue(input.run, input.task);
+    if (!target) {
+      return [];
+    }
+
+    const response = await this.requestJson<JiraIssueCommentResponse>(
+      target.host,
+      `/rest/api/2/issue/${encodeURIComponent(target.issueKey)}/comment`,
+      input.credential.token
+    );
+
+    return (response.comments ?? [])
+      .map((comment) => this.toJiraBodyText(comment.body))
+      .filter((body) => body.trim().length > 0)
+      .map((body) => ({ source: 'discussion', body: `Jira comment: ${body}` }));
   }
 
   private buildJiraCommentBody({
