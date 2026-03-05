@@ -55,6 +55,7 @@ function createEnv(
   runOverrides: Record<string, unknown> = {},
   options: {
     repoOverrides?: Record<string, unknown>;
+    taskOverrides?: Record<string, unknown>;
     kv?: KvStore;
   } = {}
 ): Env {
@@ -100,7 +101,8 @@ function createEnv(
         status: 'ACTIVE',
         tenantId: 'tenant_local',
         createdAt: '2026-03-02T00:00:00.000Z',
-        updatedAt: '2026-03-02T00:00:00.000Z'
+        updatedAt: '2026-03-02T00:00:00.000Z',
+        ...options.taskOverrides
       }
     }))
   };
@@ -193,6 +195,37 @@ describe('handleRequestChanges', () => {
     expect(body.changeRequest?.prompt).toContain('Requested findings: rf_1, rf_unknown');
     expect(body.changeRequest?.prompt).toContain('Unknown findings: rf_unknown');
     expect(body.changeRequest?.prompt).toContain('Provider replies for rf_1:');
+  });
+
+  it('queues review-only mode for request-changes on review-only tasks', async () => {
+    const response = await handleRequestChanges(
+      new Request('https://minions.example.test/api/runs/run_repo_1_demo/request-changes', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-session-token': 'session-token' },
+        body: JSON.stringify({
+          prompt: 'Re-check severity on these findings.'
+        })
+      }),
+      createEnv(
+        {
+          reviewProvider: 'gitlab',
+          reviewUrl: 'https://gitlab.example.com/acme/demo/-/merge_requests/12',
+          reviewNumber: 12
+        } as Record<string, unknown>,
+        {
+          taskOverrides: { tags: ['review_only'] }
+        }
+      ),
+      { runId: 'run_repo_1_demo' },
+      {} as ExecutionContext<unknown>
+    );
+
+    expect(response.status).toBe(200);
+    expect(orchestratorMocks.scheduleRunJob).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({ mode: 'review_only' })
+    );
   });
 
   it('merges persisted webhook hints with on-demand github replies for selective request-changes', async () => {

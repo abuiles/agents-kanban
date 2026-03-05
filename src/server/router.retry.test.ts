@@ -17,15 +17,44 @@ vi.mock('./run-orchestrator', () => orchestratorMocks);
 
 import { handleRetryRun } from './router';
 
-function createEnv(): { env: Env; repoBoard: { retryRun: ReturnType<typeof vi.fn> } } {
+function createEnv(options: { reviewOnlyTask?: boolean; runningReviewExecution?: boolean } = {}): {
+  env: Env;
+  repoBoard: { retryRun: ReturnType<typeof vi.fn>; getTask: ReturnType<typeof vi.fn> };
+} {
   let run = {
     runId: 'run_retry_2',
     taskId: 'task_1',
-    repoId: 'repo_1'
+    repoId: 'repo_1',
+    reviewUrl: 'https://github.com/acme/demo/pull/7',
+    reviewNumber: 7,
+    reviewExecution: options.runningReviewExecution
+      ? {
+          enabled: true,
+          trigger: 'manual_rerun',
+          promptSource: 'native',
+          status: 'running',
+          round: 1
+        }
+      : undefined
   };
 
   const repoBoard = {
     retryRun: vi.fn(async (_runId: string, _input: Record<string, unknown>) => run),
+    getTask: vi.fn(async () => ({
+      task: {
+        taskId: 'task_1',
+        repoId: 'repo_1',
+        title: 'Retry task',
+        taskPrompt: 'Retry',
+        acceptanceCriteria: ['No regressions'],
+        context: { links: [] },
+        status: 'REVIEW',
+        tenantId: 'tenant_local',
+        createdAt: '2026-03-02T00:00:00.000Z',
+        updatedAt: '2026-03-02T00:00:00.000Z',
+        tags: options.reviewOnlyTask ? ['review_only'] : undefined
+      }
+    })),
     transitionRun: vi.fn(async (_runId: string, patch: Record<string, unknown>) => {
       run = { ...run, ...patch };
       return run;
@@ -108,5 +137,33 @@ describe('handleRetryRun', () => {
       recoveryMode: 'latest_checkpoint',
       checkpointId: 'run_repo_1_demo:cp:003:tests'
     });
+  });
+
+  it('maps retry to manual review rerun for review-only tasks', async () => {
+    const { env, repoBoard } = createEnv({ reviewOnlyTask: true });
+    const response = await handleRetryRun(
+      new Request('https://minions.example.test/api/runs/run_repo_1_demo/retry', {
+        method: 'POST',
+        headers: {
+          'x-session-token': 'session-token',
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify({
+          recoveryMode: 'latest_checkpoint',
+          checkpointId: 'run_repo_1_demo:cp:003:tests'
+        })
+      }),
+      env,
+      { runId: 'run_repo_1_demo' },
+      {} as ExecutionContext<unknown>
+    );
+
+    expect(response.status).toBe(200);
+    expect(repoBoard.retryRun).not.toHaveBeenCalled();
+    expect(orchestratorMocks.scheduleRunJob).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({ mode: 'review_only', runId: 'run_retry_2' })
+    );
   });
 });
