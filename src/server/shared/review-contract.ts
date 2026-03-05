@@ -3,6 +3,10 @@ import type {
   ArtifactManifest,
   ArtifactPointer,
   AutoReviewProvider,
+  CodexModel,
+  CodexReasoningEffort,
+  LlmAdapter,
+  LlmReasoningEffort,
   Repo,
   ReviewFinding,
   ReviewPromptSource,
@@ -118,6 +122,11 @@ export type AutoReviewResolution = {
   provider: AutoReviewProvider;
   postInline: boolean;
   postingMode: 'platform' | 'agent';
+  llmAdapter?: LlmAdapter;
+  llmModel?: string;
+  llmReasoningEffort?: LlmReasoningEffort;
+  codexModel?: CodexModel;
+  codexReasoningEffort?: CodexReasoningEffort;
 };
 
 export function resolveAutoReviewConfig(repo: Pick<Repo, 'autoReview' | 'scmProvider'> | undefined, task: Pick<Task, 'uiMeta'> | undefined): AutoReviewResolution {
@@ -139,7 +148,12 @@ export function resolveAutoReviewConfig(repo: Pick<Repo, 'autoReview' | 'scmProv
       prompt: taskPrompt,
       provider: repoAutoReview.provider,
       postInline: repoAutoReview.postInline,
-      postingMode: repoAutoReview.postingMode ?? 'platform'
+      postingMode: repoAutoReview.postingMode ?? 'platform',
+      llmAdapter: repoAutoReview.llmAdapter,
+      llmModel: repoAutoReview.llmModel ?? repoAutoReview.codexModel,
+      llmReasoningEffort: repoAutoReview.llmReasoningEffort ?? repoAutoReview.codexReasoningEffort,
+      codexModel: repoAutoReview.codexModel,
+      codexReasoningEffort: repoAutoReview.codexReasoningEffort
     };
   }
 
@@ -151,7 +165,12 @@ export function resolveAutoReviewConfig(repo: Pick<Repo, 'autoReview' | 'scmProv
       prompt: repoPrompt,
       provider: repoAutoReview.provider,
       postInline: repoAutoReview.postInline,
-      postingMode: repoAutoReview.postingMode ?? 'platform'
+      postingMode: repoAutoReview.postingMode ?? 'platform',
+      llmAdapter: repoAutoReview.llmAdapter,
+      llmModel: repoAutoReview.llmModel ?? repoAutoReview.codexModel,
+      llmReasoningEffort: repoAutoReview.llmReasoningEffort ?? repoAutoReview.codexReasoningEffort,
+      codexModel: repoAutoReview.codexModel,
+      codexReasoningEffort: repoAutoReview.codexReasoningEffort
     };
   }
 
@@ -161,7 +180,12 @@ export function resolveAutoReviewConfig(repo: Pick<Repo, 'autoReview' | 'scmProv
     promptSource: 'native',
     provider: repoAutoReview.provider,
     postInline: repoAutoReview.postInline,
-    postingMode: repoAutoReview.postingMode ?? 'platform'
+    postingMode: repoAutoReview.postingMode ?? 'platform',
+    llmAdapter: repoAutoReview.llmAdapter,
+    llmModel: repoAutoReview.llmModel ?? repoAutoReview.codexModel,
+    llmReasoningEffort: repoAutoReview.llmReasoningEffort ?? repoAutoReview.codexReasoningEffort,
+    codexModel: repoAutoReview.codexModel,
+    codexReasoningEffort: repoAutoReview.codexReasoningEffort
   };
 }
 

@@ -95,6 +95,13 @@ export function RepoForm({
   const initialAutoReviewProvider = initialValues?.autoReview?.provider ?? getAutoReviewProviderDefaultForScm(initialScmProvider);
   const initialAutoReviewPostInline = initialValues?.autoReview?.postInline ?? false;
   const initialAutoReviewPrompt = initialValues?.autoReview?.prompt ?? '';
+  const initialAutoReviewLlmAdapter = initialValues?.autoReview?.llmAdapter ?? 'codex';
+  const initialAutoReviewLlmModel = initialValues?.autoReview?.llmModel
+    ?? initialValues?.autoReview?.codexModel
+    ?? DEFAULT_LLM_MODELS[initialAutoReviewLlmAdapter];
+  const initialAutoReviewLlmReasoningEffort = initialValues?.autoReview?.llmReasoningEffort
+    ?? initialValues?.autoReview?.codexReasoningEffort
+    ?? 'medium';
   const initialPreviewMode = initialValues?.previewMode ?? 'auto';
   const initialEvidenceMode = initialValues?.evidenceMode ?? 'auto';
   const initialPreviewAdapter = normalizedPreview.previewAdapter ?? 'cloudflare_checks';
@@ -134,6 +141,9 @@ export function RepoForm({
   const [autoReviewProvider, setAutoReviewProvider] = useState<AutoReviewProvider>(initialAutoReviewProvider);
   const [autoReviewPostInline, setAutoReviewPostInline] = useState(initialAutoReviewPostInline);
   const [autoReviewPrompt, setAutoReviewPrompt] = useState(initialAutoReviewPrompt);
+  const [autoReviewLlmAdapter, setAutoReviewLlmAdapter] = useState<LlmAdapter>(initialAutoReviewLlmAdapter);
+  const [autoReviewLlmModel, setAutoReviewLlmModel] = useState(initialAutoReviewLlmModel);
+  const [autoReviewLlmReasoningEffort, setAutoReviewLlmReasoningEffort] = useState<LlmReasoningEffort>(initialAutoReviewLlmReasoningEffort);
   const [codexAuthBundleR2Key, setCodexAuthBundleR2Key] = useState(initialCodexAuthBundleR2Key);
   const [commitMessageTemplate, setCommitMessageTemplate] = useState(initialCommitMessageTemplate);
   const [commitMessageRegex, setCommitMessageRegex] = useState(initialCommitMessageRegex);
@@ -169,6 +179,9 @@ export function RepoForm({
     setAutoReviewProvider(initialAutoReviewProvider);
     setAutoReviewPostInline(initialAutoReviewPostInline);
     setAutoReviewPrompt(initialAutoReviewPrompt);
+    setAutoReviewLlmAdapter(initialAutoReviewLlmAdapter);
+    setAutoReviewLlmModel(initialAutoReviewLlmModel);
+    setAutoReviewLlmReasoningEffort(initialAutoReviewLlmReasoningEffort);
     setCodexAuthBundleR2Key(initialCodexAuthBundleR2Key);
     setCommitMessageTemplate(initialCommitMessageTemplate);
     setCommitMessageRegex(initialCommitMessageRegex);
@@ -194,6 +207,9 @@ export function RepoForm({
     initialAutoReviewProvider,
     initialAutoReviewPostInline,
     initialAutoReviewPrompt,
+    initialAutoReviewLlmAdapter,
+    initialAutoReviewLlmModel,
+    initialAutoReviewLlmReasoningEffort,
     initialPreviewMode,
     initialEvidenceMode,
     initialPreviewAdapter,
@@ -271,7 +287,12 @@ export function RepoForm({
             enabled: autoReviewEnabled,
             provider: autoReviewProvider,
             postInline: autoReviewPostInline,
-            ...(autoReviewPrompt.trim() ? { prompt: autoReviewPrompt.trim() } : {})
+            ...(autoReviewPrompt.trim() ? { prompt: autoReviewPrompt.trim() } : {}),
+            llmAdapter: autoReviewLlmAdapter,
+            llmModel: autoReviewLlmModel || undefined,
+            llmReasoningEffort: autoReviewLlmReasoningEffort,
+            codexModel: autoReviewLlmAdapter === 'codex' ? (autoReviewLlmModel as CodexModel) : undefined,
+            codexReasoningEffort: autoReviewLlmAdapter === 'codex' ? autoReviewLlmReasoningEffort : undefined
           },
           previewMode,
           evidenceMode,
@@ -318,6 +339,9 @@ export function RepoForm({
         setAutoReviewProvider(getAutoReviewProviderDefaultForScm('github'));
         setAutoReviewPostInline(false);
         setAutoReviewPrompt('');
+        setAutoReviewLlmAdapter('codex');
+        setAutoReviewLlmModel('gpt-5.1-codex-mini');
+        setAutoReviewLlmReasoningEffort('medium');
         setCodexAuthBundleR2Key('');
         setCommitMessageTemplate('');
         setCommitMessageRegex('');
@@ -469,6 +493,51 @@ export function RepoForm({
           placeholder="Prioritize API contract stability and security findings."
         />
       </FieldShell>
+      <div className="grid gap-4 md:grid-cols-2">
+        <FieldShell label="Review LLM adapter" hint="Executor used for review rounds for this repo.">
+          <select
+            className={inputClass()}
+            value={autoReviewLlmAdapter}
+            onChange={(event) => {
+              const nextAdapter = event.target.value as LlmAdapter;
+              setAutoReviewLlmAdapter(nextAdapter);
+              if (!autoReviewLlmModel || autoReviewLlmModel === DEFAULT_LLM_MODELS.codex || autoReviewLlmModel === DEFAULT_LLM_MODELS.cursor_cli || autoReviewLlmModel === DEFAULT_LLM_MODELS.claude_code) {
+                setAutoReviewLlmModel(DEFAULT_LLM_MODELS[nextAdapter]);
+              }
+            }}
+          >
+            <option value="codex">Codex</option>
+            <option value="cursor_cli">Cursor CLI</option>
+            <option value="claude_code">Claude Code</option>
+          </select>
+        </FieldShell>
+        <FieldShell label="Review LLM model" hint="Model used by repo-level review runs.">
+          {autoReviewLlmAdapter === 'codex' ? (
+            <select className={inputClass()} value={autoReviewLlmModel} onChange={(event) => setAutoReviewLlmModel(event.target.value)}>
+              {CODEX_MODELS.map((model) => (
+                <option key={model.value} value={model.value}>
+                  {model.label}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <input className={inputClass()} value={autoReviewLlmModel} onChange={(event) => setAutoReviewLlmModel(event.target.value)} placeholder={autoReviewLlmAdapter === 'claude_code' ? 'claude-opus-4-1' : 'cursor-default'} />
+          )}
+        </FieldShell>
+      </div>
+      <div className="grid gap-4 md:grid-cols-2">
+        <FieldShell label="Review reasoning effort" hint="Reasoning effort hint for review execution.">
+          <select
+            className={inputClass()}
+            value={autoReviewLlmReasoningEffort}
+            onChange={(event) => setAutoReviewLlmReasoningEffort(event.target.value as LlmReasoningEffort)}
+          >
+            <option value="low">low</option>
+            <option value="medium">medium (default)</option>
+            <option value="high">high</option>
+          </select>
+        </FieldShell>
+      </div>
       <div className="grid gap-4 md:grid-cols-3">
         <FieldShell label="LLM adapter">
           <select className={inputClass()} value={llmAdapter} onChange={(event) => setLlmAdapter(event.target.value as LlmAdapter)}>

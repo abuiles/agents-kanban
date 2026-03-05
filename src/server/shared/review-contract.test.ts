@@ -85,6 +85,30 @@ describe('resolveAutoReviewConfig', () => {
     expect(result.promptSource).toBe('native');
     expect(result.prompt).toBeUndefined();
   });
+
+  it('includes repo-level review llm settings in resolved config', () => {
+    const result = resolveAutoReviewConfig(
+      buildRepo({
+        autoReview: {
+          enabled: true,
+          provider: 'github',
+          postInline: true,
+          llmAdapter: 'codex',
+          llmModel: 'gpt-5.3-codex-spark',
+          llmReasoningEffort: 'high',
+          codexModel: 'gpt-5.3-codex-spark',
+          codexReasoningEffort: 'high'
+        }
+      }),
+      buildTask({ uiMeta: { autoReviewMode: 'inherit' } })
+    );
+
+    expect(result.llmAdapter).toBe('codex');
+    expect(result.llmModel).toBe('gpt-5.3-codex-spark');
+    expect(result.llmReasoningEffort).toBe('high');
+    expect(result.codexModel).toBe('gpt-5.3-codex-spark');
+    expect(result.codexReasoningEffort).toBe('high');
+  });
 });
 
 describe('parseReviewFindings', () => {

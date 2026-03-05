@@ -204,6 +204,31 @@ describe('RepoForm', () => {
       previewConfig: undefined
     }));
   });
+
+  it('submits repo-level review model configuration', async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+
+    render(<RepoForm onSubmit={onSubmit} />);
+
+    await user.type(getInputField('Project path')!, 'abuiles/minions');
+    await user.type(getInputField('Baseline URL')!, 'https://repo.example.com');
+    await user.selectOptions(getSelectField('Review LLM adapter')! as unknown as Element, 'codex');
+    await user.selectOptions(getSelectField('Review LLM model')! as unknown as Element, 'gpt-5.3-codex-spark');
+    await user.selectOptions(getSelectField('Review reasoning effort')! as unknown as Element, 'high');
+
+    await user.click(screen.getByRole('button', { name: 'Add repo' }));
+
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
+      autoReview: expect.objectContaining({
+        llmAdapter: 'codex',
+        llmModel: 'gpt-5.3-codex-spark',
+        llmReasoningEffort: 'high',
+        codexModel: 'gpt-5.3-codex-spark',
+        codexReasoningEffort: 'high'
+      })
+    }));
+  });
 });
 
 describe('TaskForm', () => {
