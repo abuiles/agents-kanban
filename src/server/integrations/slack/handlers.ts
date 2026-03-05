@@ -496,6 +496,7 @@ function logSlackMentionIngestion(input: {
     | 'normalized'
     | 'ignored'
     | 'deduped'
+    | 'continued_without_mention'
     | 'invalid_review_syntax'
     | 'review_detected'
     | 'review_flow_started'
@@ -509,6 +510,10 @@ function logSlackMentionIngestion(input: {
     | 'review_rerun_pending'
     | 'review_rerun_started'
     | 'review_started'
+    | 'jira_issue_detected'
+    | 'jira_fetch_started'
+    | 'jira_fetch_failed'
+    | 'jira_confirmation_queued'
     | 'intent_flow_started';
   tenantId?: string;
   channelId?: string;
@@ -1856,6 +1861,29 @@ async function resolveRepoIdForIntent(
 ) {
   if (parsed.repoId?.trim()) {
     return { repoId: parsed.repoId.trim(), ambiguous: false, choices: [] as string[] };
+  }
+  const jiraKey = parsed.intent === 'fix_jira' ? normalizeJiraKey(parsed.jiraKey) : undefined;
+  if (jiraKey) {
+    const projectKey = issueProjectKeyFromIssue(jiraKey);
+    const mappings = await tenantAuthDb.listJiraProjectRepoMappingsByProject(env, tenantId, projectKey, true);
+    if (mappings.length > 0) {
+      const mappingChoices = mappings
+        .map((entry) => entry.repoId.trim())
+        .filter((repoId) => repoId.length > 0);
+      if (mappingChoices.length === 1) {
+        return { repoId: mappingChoices[0]!, ambiguous: false, choices: [] as string[] };
+      }
+      if (mappingChoices.length > 1) {
+        const hint = parsed.repoHint?.trim()?.toLowerCase();
+        if (hint) {
+          const exact = mappingChoices.find((candidate) => candidate.toLowerCase() === hint);
+          if (exact) {
+            return { repoId: exact, ambiguous: false, choices: mappingChoices };
+          }
+        }
+        return { repoId: undefined, ambiguous: true, choices: mappingChoices.slice(0, 9) };
+      }
+    }
   }
   const explicitRepoHint = parsed.repoHint?.trim()
     ? (extractRepoHintFromText(parsed.repoHint) ?? parsed.repoHint.trim())
@@ -3420,6 +3448,79 @@ async function runIntentIntake(
 
   const repoResolution = await resolveRepoIdForIntent(env, input.tenantId, input.channelId, parsed);
   const missingFields = normalizeIntentMissingFields(parsed.missingFields, Boolean(repoResolution.repoId));
+  const jiraKey = parsed.intent === 'fix_jira' ? normalizeJiraKey(parsed.jiraKey) : undefined;
+  if (parsed.intent === 'fix_jira' && jiraKey && repoResolution.repoId) {
+    logSlackMentionIngestion({
+      checkpoint: 'jira_issue_detected',
+      tenantId: input.tenantId,
+      channelId: input.channelId,
+      threadTs: input.threadTs,
+      eventTs: input.sourceMessageTs,
+      normalizedText: userText,
+      repoId: repoResolution.repoId,
+      message: `issue=${jiraKey}`
+    });
+    try {
+      logSlackMentionIngestion({
+        checkpoint: 'jira_fetch_started',
+        tenantId: input.tenantId,
+        channelId: input.channelId,
+        threadTs: input.threadTs,
+        eventTs: input.sourceMessageTs,
+        normalizedText: userText,
+        repoId: repoResolution.repoId,
+        message: `issue=${jiraKey}`
+      });
+      const issue = await resolveTenantAndJiraIssue(env, input.tenantId, jiraKey);
+      const payload = await buildTaskPayloadFromIssueWithLlmTransform(env, {
+        tenantId: input.tenantId,
+        channelId: input.channelId,
+        repoId: repoResolution.repoId,
+        issue,
+        commandText: userText,
+        llmModel: toSupportedCodexModel(settings.intentModel),
+        settings
+      });
+      await queueJiraConfirmation(env, {
+        tenantId: input.tenantId,
+        channelId: input.channelId,
+        threadTs: input.threadTs,
+        issue,
+        payload,
+        responseUrl: input.responseUrl
+      });
+      logSlackMentionIngestion({
+        checkpoint: 'jira_confirmation_queued',
+        tenantId: input.tenantId,
+        channelId: input.channelId,
+        threadTs: input.threadTs,
+        eventTs: input.sourceMessageTs,
+        normalizedText: userText,
+        repoId: repoResolution.repoId,
+        message: `issue=${jiraKey}`
+      });
+      return undefined;
+    } catch (error) {
+      logSlackMentionIngestion({
+        checkpoint: 'jira_fetch_failed',
+        tenantId: input.tenantId,
+        channelId: input.channelId,
+        threadTs: input.threadTs,
+        eventTs: input.sourceMessageTs,
+        normalizedText: userText,
+        repoId: repoResolution.repoId,
+        message: `issue=${jiraKey}`,
+        error
+      });
+      await postThreadPrompt(env, {
+        tenantId: input.tenantId,
+        channelId: input.channelId,
+        threadTs: input.threadTs,
+        text: `Failed to load Jira issue ${jiraKey}: ${toReadableErrorMessage(error)}`
+      });
+      return undefined;
+    }
+  }
   const hasCoreFields = Boolean(repoResolution.repoId)
     && Boolean(parsed.taskPrompt?.trim())
     && Boolean(parsed.taskTitle?.trim());
@@ -3481,7 +3582,7 @@ async function runIntentIntake(
     ? [
       'I found multiple possible repos. Did you mean:',
       ...disambiguationChoices.map((repoId, index) => `${index + 1}: ${repoId}`),
-      'Reply with `@kanvy <number>`.'
+      'Reply with `<number>` (or `@kanvy <number>`).'
     ].join('\n')
     : parsed.clarifyingQuestion
       ?? 'Please clarify repo, exact goal, and acceptance criteria.';
@@ -3835,6 +3936,7 @@ async function runSlackMentionAsync(
     eventType?: string;
     channelType?: string;
     authedUserIds?: string[];
+    allowPlainText?: boolean;
   },
   ctx?: ExecutionContext<unknown>
 ) {
@@ -3849,11 +3951,12 @@ async function runSlackMentionAsync(
     rawText: payload.text
   });
   const tenantId = await resolveThreadTenantId(env, payload.teamId);
-  const normalizedText = normalizeKanvyInvocationText(payload.text, {
+  const normalizedFromInvocation = normalizeKanvyInvocationText(payload.text, {
     eventType: payload.eventType,
     channelType: payload.channelType,
     authedUserIds: payload.authedUserIds
   });
+  const normalizedText = normalizedFromInvocation ?? (payload.allowPlainText ? payload.text.trim() : undefined);
   logSlackMentionIngestion({
     checkpoint: 'normalized',
     tenantId,
@@ -3880,6 +3983,20 @@ async function runSlackMentionAsync(
       message: 'normalizeKanvyInvocationText returned empty'
     });
     return;
+  }
+  if (!normalizedFromInvocation && payload.allowPlainText) {
+    logSlackMentionIngestion({
+      checkpoint: 'continued_without_mention',
+      tenantId,
+      channelId: payload.channelId,
+      threadTs: payload.threadTs,
+      eventTs: payload.eventTs,
+      userId: payload.userId,
+      eventType: payload.eventType,
+      channelType: payload.channelType,
+      rawText: payload.text,
+      normalizedText
+    });
   }
 
   let threadMessagesForReview: Array<{ text: string; botId?: string; ts?: string }> | undefined;
@@ -4233,6 +4350,23 @@ export async function handleSlackEvents(request: Request, env: Env): Promise<Res
           eventType: payload.event.type,
           channelType: payload.event.channelType,
           authedUserIds: payload.authedUserIds
+        });
+        return json({ ok: true, status: 'accepted' });
+      }
+      const tenantId = await resolveThreadTenantId(env, payload.teamId);
+      const activeSession = await tenantAuthDb.getSlackIntakeSession(env, tenantId, payload.event.channelId, threadTs);
+      if (activeSession?.status === 'active' && !isSessionExpired(activeSession.lastActivityAt)) {
+        await runSlackMentionAsync(env, {
+          teamId: payload.teamId,
+          channelId: payload.event.channelId,
+          threadTs,
+          eventTs: payload.event.ts,
+          userId: payload.event.userId,
+          text: payload.event.text,
+          eventType: payload.event.type,
+          channelType: payload.event.channelType,
+          authedUserIds: payload.authedUserIds,
+          allowPlainText: true
         });
         return json({ ok: true, status: 'accepted' });
       }

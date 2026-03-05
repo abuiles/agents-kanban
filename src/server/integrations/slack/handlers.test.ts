@@ -2382,6 +2382,281 @@ describe('slack handlers', () => {
     expect(eyesReactions).toHaveLength(1);
   });
 
+  it('routes @kanvy Jira mention through Jira confirmation flow', async () => {
+    const env = makeEnv('secret');
+    await env.SECRETS_KV.put('slack/bot-token', 'xoxb-test');
+    fetchIssue.mockResolvedValueOnce({
+      issueKey: 'AFCP-3013',
+      title: 'Checkout fails on retries',
+      body: 'Intermittent retry path fails with stale state.',
+      url: 'https://jira.test.com/browse/AFCP-3013'
+    });
+    tenantAuthDbMocks.listJiraProjectRepoMappingsByProject.mockResolvedValue([
+      { jiraProjectKey: 'AFCP', repoId: 'repo_alpha', priority: 0, active: true, id: 'm1', tenantId: 'tenant_local', createdAt: '', updatedAt: '' }
+    ]);
+    let llmCall = 0;
+    fetchSpy.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('https://slack.com/api/conversations.replies')) {
+        return new Response(JSON.stringify({
+          ok: true,
+          messages: [
+            { ts: '1672531200.1234', user: 'U1', text: '<@U_KANVY> fix AFCP-3013' }
+          ]
+        }), { status: 200 });
+      }
+      if (url.includes('/v1/chat/completions')) {
+        llmCall += 1;
+        if (llmCall === 1) {
+          return new Response(JSON.stringify({
+            choices: [{
+              message: {
+                content: JSON.stringify({
+                  intent: 'fix_jira',
+                  confidence: 0.92,
+                  jiraKey: 'AFCP-3013',
+                  repoHint: '',
+                  repoId: '',
+                  taskTitle: '',
+                  taskPrompt: '',
+                  acceptanceCriteria: [],
+                  missingFields: [],
+                  clarifyingQuestion: ''
+                })
+              }
+            }]
+          }), { status: 200 });
+        }
+        return new Response(JSON.stringify({
+          choices: [{
+            message: {
+              content: JSON.stringify({
+                intent: 'create_task',
+                confidence: 0.91,
+                jiraKey: '',
+                repoHint: '',
+                repoId: '',
+                taskTitle: 'Fix AFCP-3013 login edge case',
+                taskPrompt: 'Implement and validate the AFCP-3013 fix.',
+                acceptanceCriteria: ['AFCP-3013 is fixed'],
+                missingFields: [],
+                clarifyingQuestion: ''
+              })
+            }
+          }]
+        }), { status: 200 });
+      }
+      if (url.includes('https://slack.com/api/reactions.add')) {
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }
+      if (url.includes('https://slack.com/api/chat.postMessage')) {
+        const payload = JSON.parse(String(init?.body ?? '{}')) as { thread_ts?: string };
+        return new Response(JSON.stringify({ ok: true, ts: payload.thread_ts ?? '1672531200.1234' }), { status: 200 });
+      }
+      return new Response('{}', { status: 200 });
+    });
+
+    const rawBody = JSON.stringify({
+      type: 'event_callback',
+      event_id: 'EvMentionJira1',
+      team_id: 'team_one',
+      authed_users: ['U_KANVY'],
+      event: {
+        type: 'message',
+        channel_type: 'group',
+        channel: 'C123',
+        thread_ts: '1672531200.1234',
+        ts: '1672531200.1234',
+        user: 'U1',
+        text: '<@U_KANVY> fix AFCP-3013'
+      }
+    });
+    const signature = await buildSlackSignature('secret', nowTs, rawBody);
+    const request = new Request('https://example.test/api/integrations/slack/events', {
+      method: 'POST',
+      headers: slackHeaders(nowTs, signature),
+      body: rawBody
+    });
+
+    const response = await handleSlackEvents(request, env);
+    expect(response.status).toBe(200);
+    expect(fetchIssue).toHaveBeenCalledWith('AFCP-3013', 'team_one');
+    expect(tenantAuthDbMocks.upsertSlackIntakeSession).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        tenantId: 'team_one',
+        channelId: 'C123',
+        threadTs: '1672531200.1234',
+        status: 'active',
+        data: expect.objectContaining({
+          jiraKey: 'AFCP-3013',
+          pendingConfirmation: expect.objectContaining({
+            repoId: 'repo_alpha'
+          })
+        })
+      })
+    );
+  });
+
+  it('accepts plain thread replies without @kanvy when intake session is active', async () => {
+    const repoBoard = makeRepoBoard({ taskId: 'task_plain_yes', runId: 'run_plain_yes' });
+    const env = makeEnv('secret', repoBoard);
+    await env.SECRETS_KV.put('slack/bot-token', 'xoxb-test');
+    tenantAuthDbMocks.getSlackIntakeSession.mockResolvedValue({
+      id: 'intake_plain_yes',
+      tenantId: 'team_one',
+      channelId: 'C123',
+      threadTs: '1672531200.1234',
+      status: 'active',
+      turnCount: 1,
+      data: {
+        pendingConfirmation: {
+          repoId: 'repo_alpha',
+          title: 'Fix issue',
+          prompt: 'Fix issue from thread.',
+          acceptanceCriteria: ['Issue is fixed']
+        }
+      },
+      lastActivityAt: new Date().toISOString(),
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z'
+    });
+    fetchSpy.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('https://slack.com/api/chat.postMessage')) {
+        const payload = JSON.parse(String(init?.body ?? '{}')) as { thread_ts?: string };
+        return new Response(JSON.stringify({ ok: true, ts: payload.thread_ts ?? '1672531200.1234' }), { status: 200 });
+      }
+      return new Response('{}', { status: 200 });
+    });
+
+    const rawBody = JSON.stringify({
+      type: 'event_callback',
+      event_id: 'EvPlainReply1',
+      team_id: 'team_one',
+      event: {
+        type: 'message',
+        channel_type: 'group',
+        channel: 'C123',
+        thread_ts: '1672531200.1234',
+        ts: '1672531200.1242',
+        user: 'U1',
+        text: 'yes'
+      }
+    });
+    const signature = await buildSlackSignature('secret', nowTs, rawBody);
+    const request = new Request('https://example.test/api/integrations/slack/events', {
+      method: 'POST',
+      headers: slackHeaders(nowTs, signature),
+      body: rawBody
+    });
+
+    const response = await handleSlackEvents(request, env);
+    expect(response.status).toBe(200);
+    expect(repoBoard.createTask).toHaveBeenCalledTimes(1);
+    expect(repoBoard.startRun).toHaveBeenCalledTimes(1);
+  });
+
+  it('accepts plain numeric repo choice replies without @kanvy in active intake threads', async () => {
+    const env = makeEnv('secret');
+    await env.SECRETS_KV.put('slack/bot-token', 'xoxb-test');
+    tenantAuthDbMocks.getSlackIntakeSession.mockResolvedValue({
+      id: 'intake_plain_number',
+      tenantId: 'team_one',
+      channelId: 'C123',
+      threadTs: '1672531200.1234',
+      status: 'active',
+      turnCount: 1,
+      data: {
+        intent: 'create_task',
+        taskTitle: 'Fix flaky checkout',
+        taskPrompt: 'Fix flaky checkout test.',
+        missingFields: ['repo'],
+        repoChoices: ['repo_alpha', 'repo_beta', 'repo_gamma']
+      },
+      lastActivityAt: new Date().toISOString(),
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z'
+    });
+    fetchSpy.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('https://slack.com/api/conversations.replies')) {
+        return new Response(JSON.stringify({
+          ok: true,
+          messages: [
+            { ts: '1672531200.1230', user: 'U1', text: '<@U_KANVY> fix flaky checkout' },
+            { ts: '1672531200.1243', user: 'U1', text: '3' }
+          ]
+        }), { status: 200 });
+      }
+      if (url.includes('/v1/chat/completions')) {
+        return new Response(JSON.stringify({
+          choices: [{
+            message: {
+              content: JSON.stringify({
+                intent: 'create_task',
+                confidence: 0.88,
+                jiraKey: '',
+                repoHint: '',
+                repoId: '',
+                taskTitle: 'Fix flaky checkout',
+                taskPrompt: 'Fix flaky checkout test.',
+                acceptanceCriteria: ['Checkout test passes consistently'],
+                missingFields: [],
+                clarifyingQuestion: ''
+              })
+            }
+          }]
+        }), { status: 200 });
+      }
+      if (url.includes('https://slack.com/api/reactions.add')) {
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }
+      if (url.includes('https://slack.com/api/chat.postMessage')) {
+        const payload = JSON.parse(String(init?.body ?? '{}')) as { thread_ts?: string };
+        return new Response(JSON.stringify({ ok: true, ts: payload.thread_ts ?? '1672531200.1234' }), { status: 200 });
+      }
+      return new Response('{}', { status: 200 });
+    });
+
+    const rawBody = JSON.stringify({
+      type: 'event_callback',
+      event_id: 'EvPlainReplyNumber1',
+      team_id: 'team_one',
+      event: {
+        type: 'message',
+        channel_type: 'group',
+        channel: 'C123',
+        thread_ts: '1672531200.1234',
+        ts: '1672531200.1243',
+        user: 'U1',
+        text: '3'
+      }
+    });
+    const signature = await buildSlackSignature('secret', nowTs, rawBody);
+    const request = new Request('https://example.test/api/integrations/slack/events', {
+      method: 'POST',
+      headers: slackHeaders(nowTs, signature),
+      body: rawBody
+    });
+
+    const response = await handleSlackEvents(request, env);
+    expect(response.status).toBe(200);
+    expect(tenantAuthDbMocks.upsertSlackIntakeSession).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        tenantId: 'team_one',
+        channelId: 'C123',
+        threadTs: '1672531200.1234',
+        data: expect.objectContaining({
+          pendingConfirmation: expect.objectContaining({
+            repoId: 'repo_gamma'
+          })
+        })
+      })
+    );
+  });
+
   it('accepts @kanvy 👍 as affirmative confirmation for pending task creation', async () => {
     const repoBoard = makeRepoBoard({ taskId: 'task_emoji_confirm', runId: 'run_emoji_confirm' });
     const env = makeEnv('secret', repoBoard);
