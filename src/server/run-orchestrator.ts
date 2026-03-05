@@ -1,7 +1,7 @@
 import { getSandbox, type ExecResult } from '@cloudflare/sandbox';
 import type { RepoBoardDO } from './durable/repo-board';
 import type { BoardIndexDO } from './durable/board-index';
-import type { AutoReviewProvider, LlmReasoningEffort, Repo, RunCommand, RunCommandPhase, RunEvent, Task } from '../ui/domain/types';
+import type { AutoReviewProvider, LlmReasoningEffort, Repo, ReviewFinding, RunCommand, RunCommandPhase, RunEvent, Task } from '../ui/domain/types';
 import { buildRunLog, type RunJobParams } from './shared/real-run';
 import { NonRetryableError } from 'cloudflare:workflows';
 import { buildWorkflowInvocationId } from './workflow-id';
@@ -29,7 +29,7 @@ import {
 } from './shared/review-contract';
 import { executePromptWithLlmAdapter } from './llm/runtime';
 import { getReviewPostingAdapter } from './review-posting/registry';
-import type { ReviewContextComment } from './review-posting/adapter';
+import type { ReviewContextComment, ReviewReplyContext } from './review-posting/adapter';
 import { normalizeRepoCheckpointConfig } from '../shared/checkpoint';
 
 type WorkflowBinding<T> = {
@@ -792,14 +792,27 @@ fi`)}`
       throw new Error(checkout.stderr || `Failed to prepare review branch ${run.branchName}.`);
     }
 
-    const reviewContextComments = await loadReviewContextComments({
+    const previousReviewFindings = await loadPreviousReviewFindings({
+      repoBoard,
+      task,
+      runId
+    });
+    const reviewConversationContext = await loadReviewConversationContext({
       env,
       repoBoard,
       repo,
       task,
       run,
-      autoReview
+      autoReview,
+      findingIds: previousReviewFindings.findingIds
     });
+    const reviewContextComments = reviewConversationContext.comments;
+    const previousFindingsWithReplies = previousReviewFindings.findings.map((finding) => ({
+      ...finding,
+      replyContext: reviewConversationContext.replyContext[finding.findingId]?.length
+        ? reviewConversationContext.replyContext[finding.findingId]
+        : finding.replyContext
+    }));
     if (reviewContextComments.length) {
       await repoBoard.appendRunLogs(runId, [
         buildRunLog(
@@ -823,7 +836,8 @@ fi`)}`
         reasoningEffort: llmReasoningEffort,
         sleepFn,
         autoReview,
-        reviewContextComments
+        reviewContextComments,
+        previousFindings: previousFindingsWithReplies
       })
       : await runStructuredReview({
         llmAdapter,
@@ -835,7 +849,8 @@ fi`)}`
         reasoningEffort: llmReasoningEffort,
         sleepFn,
         autoReview,
-        reviewContextComments
+        reviewContextComments,
+        previousFindings: previousFindingsWithReplies
       });
     if (!parsed.ok) {
       throw new Error(`${parsed.code}: ${parsed.message}`);
@@ -844,7 +859,7 @@ fi`)}`
     const postingStartedAt = new Date().toISOString();
     let postErrors: string[] = [];
     let postedCount = 0;
-    let findings = parsed.findings;
+    let findings = suppressDismissedFindings(parsed.findings, previousFindingsWithReplies);
     let agentReportedPostedCount = 0;
     let platformFallbackTriggered = false;
     let summaryPosted: boolean | undefined;
@@ -1026,7 +1041,8 @@ function buildReviewPrompt(
   repo: Repo,
   run: Awaited<ReturnType<RepoBoardDO['getRun']>>,
   autoReview: { prompt?: string; provider: AutoReviewProvider; postingMode: 'platform' | 'agent'; postInline: boolean },
-  reviewContextComments: ReviewContextComment[] = []
+  reviewContextComments: ReviewContextComment[] = [],
+  previousFindings: ReviewFinding[] = []
 ) {
   const customPrompt = autoReview.prompt;
   const useNativeReview = !customPrompt?.trim();
@@ -1042,6 +1058,7 @@ function buildReviewPrompt(
   const reviewNumber = run.reviewNumber ?? run.prNumber;
   const reviewUrl = run.reviewUrl ?? run.prUrl;
   const normalizedReviewContextComments = dedupeReviewContextComments(reviewContextComments);
+  const previousFindingLines = formatPreviousFindingsForPrompt(previousFindings);
   const agentPostingGuidance = autoReview.postingMode === 'agent'
     ? [
         '',
@@ -1083,6 +1100,13 @@ function buildReviewPrompt(
           ...normalizedReviewContextComments.map((comment, index) => `${index + 1}. (${comment.source}) ${comment.body}`)
         ]
       : []),
+    ...(previousFindingLines.length
+      ? [
+          '',
+          'Previous review findings and statuses (do not re-report ignored/addressed findings unless new evidence is explicit):',
+          ...previousFindingLines
+        ]
+      : []),
     '',
     'Return JSON only using this exact schema shape:',
     '{ "findings": [ { "severity": "critical|high|medium|low|info", "title": "string", "description": "string", "filePath": "string|null?", "lineStart": "number|null?", "lineEnd": "number|null?", "providerThreadId": "string|null?" } ] }',
@@ -1100,7 +1124,8 @@ async function runStructuredReview({
   reasoningEffort,
   sleepFn,
   autoReview,
-  reviewContextComments = []
+  reviewContextComments = [],
+  previousFindings = []
 }: {
   llmAdapter: ReturnType<typeof getLlmAdapter>;
   llmContext: { env: Env; sandbox: ReturnType<typeof getSandbox>; repoBoard: DurableObjectStub<RepoBoardDO>; runId: string };
@@ -1112,6 +1137,7 @@ async function runStructuredReview({
   sleepFn: SleepFn;
   autoReview: { prompt?: string; provider: AutoReviewProvider; postingMode: 'platform' | 'agent'; postInline: boolean };
   reviewContextComments: ReviewContextComment[];
+  previousFindings: ReviewFinding[];
 }) {
   const promptResult = await executePromptWithLlmAdapter(
     llmAdapter,
@@ -1121,7 +1147,7 @@ async function runStructuredReview({
       task,
       run,
       cwd: '/workspace/repo',
-      prompt: buildReviewPrompt(task, repo, run, autoReview, reviewContextComments),
+      prompt: buildReviewPrompt(task, repo, run, autoReview, reviewContextComments, previousFindings),
       model,
       reasoningEffort,
       timeoutMs: 180_000,
@@ -1137,6 +1163,7 @@ async function runStructuredReview({
         : promptResult.message
     );
   }
+  await appendLlmRawOutputLogs(llmContext.repoBoard, llmContext.runId, 'review_structured', promptResult.rawOutput);
   return parseReviewFindings(promptResult.rawOutput);
 }
 
@@ -1150,7 +1177,8 @@ async function runNativeReviewAndNormalize({
   reasoningEffort,
   sleepFn,
   autoReview,
-  reviewContextComments = []
+  reviewContextComments = [],
+  previousFindings = []
 }: {
   llmAdapter: ReturnType<typeof getLlmAdapter>;
   llmContext: { env: Env; sandbox: ReturnType<typeof getSandbox>; repoBoard: DurableObjectStub<RepoBoardDO>; runId: string };
@@ -1162,6 +1190,7 @@ async function runNativeReviewAndNormalize({
   sleepFn: SleepFn;
   autoReview: { prompt?: string; provider: AutoReviewProvider; postingMode: 'platform' | 'agent'; postInline: boolean };
   reviewContextComments: ReviewContextComment[];
+  previousFindings: ReviewFinding[];
 }) {
   const nativeReviewResult = await executePromptWithLlmAdapter(
     llmAdapter,
@@ -1171,7 +1200,7 @@ async function runNativeReviewAndNormalize({
       task,
       run,
       cwd: '/workspace/repo',
-      prompt: buildNativeReviewPrompt(task, repo, run, reviewContextComments),
+      prompt: buildNativeReviewPrompt(task, repo, run, reviewContextComments, previousFindings),
       model,
       reasoningEffort,
       timeoutMs: 180_000,
@@ -1187,6 +1216,7 @@ async function runNativeReviewAndNormalize({
         : nativeReviewResult.message
     );
   }
+  await appendLlmRawOutputLogs(llmContext.repoBoard, llmContext.runId, 'review_native', nativeReviewResult.rawOutput);
 
   const normalizeResult = await executePromptWithLlmAdapter(
     llmAdapter,
@@ -1213,6 +1243,7 @@ async function runNativeReviewAndNormalize({
         : normalizeResult.message
     );
   }
+  await appendLlmRawOutputLogs(llmContext.repoBoard, llmContext.runId, 'review_normalization', normalizeResult.rawOutput);
   return parseReviewFindings(normalizeResult.rawOutput);
 }
 
@@ -1220,9 +1251,11 @@ function buildNativeReviewPrompt(
   task: Task,
   repo: Repo,
   run: Awaited<ReturnType<RepoBoardDO['getRun']>>,
-  reviewContextComments: ReviewContextComment[] = []
+  reviewContextComments: ReviewContextComment[] = [],
+  previousFindings: ReviewFinding[] = []
 ) {
   const normalizedReviewContextComments = dedupeReviewContextComments(reviewContextComments);
+  const previousFindingLines = formatPreviousFindingsForPrompt(previousFindings);
   return [
     `You are reviewing code changes for ${repo.slug}.`,
     `Run: ${run.runId}`,
@@ -1240,13 +1273,91 @@ function buildNativeReviewPrompt(
           ...normalizedReviewContextComments.map((comment, index) => `${index + 1}. (${comment.source}) ${comment.body}`)
         ]
       : []),
+    ...(previousFindingLines.length
+      ? [
+          '',
+          'Previous review findings and statuses (do not re-report ignored/addressed findings unless new evidence is explicit):',
+          ...previousFindingLines
+        ]
+      : []),
     '',
     'Run /review on the current branch diff and return a concise narrative review.',
     'Focus on correctness, regressions, security risks, and missing tests.'
   ].filter(Boolean).join('\n');
 }
 
-async function loadReviewContextComments(input: {
+function formatPreviousFindingsForPrompt(findings: ReviewFinding[]): string[] {
+  return findings.slice(0, 30).map((finding) => {
+    const location = finding.filePath
+      ? `${finding.filePath}${finding.lineStart ? `:${finding.lineStart}` : ''}`
+      : 'n/a';
+    const replies = finding.replyContext?.slice(0, 2).join(' | ');
+    return [
+      `- ${finding.findingId} [${finding.status}] ${finding.title} @ ${location}`,
+      replies ? `  replies: ${replies}` : undefined
+    ].filter(Boolean).join('\n');
+  });
+}
+
+function buildFindingFingerprint(finding: Pick<ReviewFinding, 'title' | 'filePath' | 'lineStart' | 'lineEnd'>): string {
+  const title = finding.title.trim().toLowerCase().replace(/\s+/g, ' ');
+  const filePath = finding.filePath?.trim().toLowerCase() ?? '';
+  const lineStart = finding.lineStart ?? 0;
+  const lineEnd = finding.lineEnd ?? 0;
+  return `${title}|${filePath}|${lineStart}|${lineEnd}`;
+}
+
+function suppressDismissedFindings(findings: ReviewFinding[], previousFindings: ReviewFinding[]) {
+  const dismissedFingerprints = new Set(
+    previousFindings
+      .filter((finding) => finding.status === 'ignored' || finding.status === 'addressed')
+      .map((finding) => buildFindingFingerprint(finding))
+  );
+  if (!dismissedFingerprints.size) {
+    return findings;
+  }
+  return findings.filter((finding) => !dismissedFingerprints.has(buildFindingFingerprint(finding)));
+}
+
+async function appendLlmRawOutputLogs(
+  repoBoard: DurableObjectStub<RepoBoardDO>,
+  runId: string,
+  step: string,
+  rawOutput: string
+) {
+  const sanitized = redactSensitiveText(rawOutput);
+  const content = sanitized.trim() || '(empty)';
+  const chunkSize = 3500;
+  const chunks: string[] = [];
+  for (let index = 0; index < content.length; index += chunkSize) {
+    chunks.push(content.slice(index, index + chunkSize));
+  }
+  const total = Math.max(1, chunks.length);
+  await repoBoard.appendRunLogs(runId, chunks.map((chunk, index) =>
+    buildRunLog(runId, `LLM raw response (${step}) ${index + 1}/${total}:\n${chunk}`, 'pr')
+  ));
+}
+
+async function loadPreviousReviewFindings(input: {
+  repoBoard: DurableObjectStub<RepoBoardDO>;
+  task: Task;
+  runId: string;
+}) {
+  const taskDetail = await input.repoBoard.getTask(input.task.taskId);
+  const runs = Array.isArray((taskDetail as { runs?: unknown }).runs)
+    ? (taskDetail as { runs: Awaited<ReturnType<RepoBoardDO['getTask']>>['runs'] }).runs
+    : [];
+  const previousRunWithFindings = runs
+    .filter((candidate) => candidate.runId !== input.runId)
+    .find((candidate) => Array.isArray(candidate.reviewFindings) && candidate.reviewFindings.length > 0);
+  const findings = previousRunWithFindings?.reviewFindings ?? [];
+  return {
+    findings,
+    findingIds: findings.map((finding) => finding.findingId)
+  };
+}
+
+async function loadReviewConversationContext(input: {
   env: Stage3Env;
   repoBoard: DurableObjectStub<RepoBoardDO>;
   repo: Repo;
@@ -1255,27 +1366,40 @@ async function loadReviewContextComments(input: {
   autoReview: {
     provider: AutoReviewProvider;
   };
-}): Promise<ReviewContextComment[]> {
+  findingIds?: string[];
+}): Promise<{ comments: ReviewContextComment[]; replyContext: ReviewReplyContext }> {
   const reviewNumber = input.run.reviewNumber ?? input.run.prNumber;
   if (!reviewNumber) {
-    return [];
+    return { comments: [], replyContext: {} };
   }
 
   const reviewCredential = getReviewPostingCredential(input.env, input.autoReview.provider);
   if (!reviewCredential) {
-    return [];
+    return { comments: [], replyContext: {} };
   }
 
   try {
     const postingAdapter = getReviewPostingAdapter(input.autoReview.provider);
-    const comments = await postingAdapter.fetchReviewContextComments({
-      repo: input.repo,
-      task: input.task,
-      run: input.run,
-      findingIds: [],
-      credential: reviewCredential
-    });
-    return dedupeReviewContextComments(comments.filter((comment) => comment.body.trim()), { includeSourceOrdering: true });
+    const [comments, replyContext] = await Promise.all([
+      postingAdapter.fetchReviewContextComments({
+        repo: input.repo,
+        task: input.task,
+        run: input.run,
+        findingIds: input.findingIds ?? [],
+        credential: reviewCredential
+      }),
+      postingAdapter.fetchReplyContext({
+        repo: input.repo,
+        task: input.task,
+        run: input.run,
+        findingIds: input.findingIds ?? [],
+        credential: reviewCredential
+      })
+    ]);
+    return {
+      comments: dedupeReviewContextComments(comments.filter((comment) => comment.body.trim()), { includeSourceOrdering: true }),
+      replyContext
+    };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     await input.repoBoard.appendRunLogs(input.run.runId, [
@@ -1284,7 +1408,7 @@ async function loadReviewContextComments(input: {
         reviewNumber
       })
     ]);
-    return [];
+    return { comments: [], replyContext: {} };
   }
 }
 
