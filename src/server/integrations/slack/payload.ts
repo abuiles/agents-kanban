@@ -65,7 +65,9 @@ type SlackEventPayload = {
   teamId?: string;
   event?: {
     type?: string;
+    subtype?: string;
     channelId?: string;
+    channelType?: string;
     threadTs?: string;
     text?: string;
     userId?: string;
@@ -258,7 +260,9 @@ export function parseSlackEventBody(rawBody: string): SlackEventPayload {
       const read = (value: unknown) => (typeof value === 'string' && value.trim() ? value.trim() : undefined);
       return {
         type: read(event.type),
+        subtype: read(event.subtype),
         channelId: read(event.channel),
+        channelType: read(event.channel_type),
         threadTs: read(event.thread_ts),
         text: read(event.text),
         userId: read(event.user),

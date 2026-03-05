@@ -191,6 +191,7 @@ export async function parseSlackIntentWithLlm(
     settings: SlackIntentSettings;
     priorTurns: number;
     availableRepos?: string[];
+    onRequestStart?: (meta: { model: string; attempt: number; priorTurns: number; textPreview: string }) => Promise<void> | void;
   }
 ): Promise<SlackIntentParseResult> {
   const trimmed = input.text.trim();
@@ -225,14 +226,27 @@ export async function parseSlackIntentWithLlm(
     const attempt = index + 1;
     const isLastAttempt = attempt >= uniqueModels.length;
     try {
+      const requestPreview = previewText(trimmed);
       console.info(JSON.stringify({
         event: 'slack_intent_parse',
         phase: 'request',
         model,
         priorTurns: input.priorTurns,
         attempt,
-        textPreview: previewText(trimmed)
+        textPreview: requestPreview
       }));
+      if (input.onRequestStart) {
+        try {
+          await input.onRequestStart({
+            model,
+            attempt,
+            priorTurns: input.priorTurns,
+            textPreview: requestPreview
+          });
+        } catch {
+          // Non-critical callback should never block intent parsing.
+        }
+      }
       const response = await fetch('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
         headers: {

@@ -209,7 +209,7 @@ describe('slack handlers', () => {
       && String(entry[1].body).includes('I can create this task from *ABC-100*:')
     );
     expect(confirmationThreadPost).toBeTruthy();
-    expect(confirmationThreadPost?.[1].body).toContain('Reply `yes` to create it');
+    expect(confirmationThreadPost?.[1].body).toContain('Reply `yes` or 👍 to create it');
   });
 
   it('uses LLM intent detection to route "fix jira issue <KEY>" through Jira fast-path', async () => {
@@ -348,7 +348,7 @@ describe('slack handlers', () => {
       && String(entry[1].body).includes('Stabilize banner rendering on overview')
     );
     expect(confirmationThreadPost).toBeTruthy();
-    expect(confirmationThreadPost?.[1].body).toContain('Reply `yes` to create it');
+    expect(confirmationThreadPost?.[1].body).toContain('Reply `yes` or 👍 to create it');
   });
 
   it('uses channel context repo when Jira project mapping is missing', async () => {
@@ -1373,5 +1373,302 @@ describe('slack handlers', () => {
     const response = await handleSlackEvents(request, makeEnv('secret'));
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ challenge: 'challenge-123' });
+  });
+
+  it('starts a review-only run from @kanvy mention in a thread', async () => {
+    const repoBoard = makeRepoBoard({ taskId: 'task_review_mention', runId: 'run_review_mention' });
+    const boardIndex = makeBoardIndex([
+      {
+        repoId: 'repo_alpha',
+        slug: 'acme/repo-alpha',
+        scmProvider: 'github',
+        scmBaseUrl: 'https://github.com',
+        projectPath: 'acme/repo-alpha'
+      } as unknown as { repoId: string; slug: string }
+    ]);
+    const env = makeEnv('secret', repoBoard, boardIndex);
+    await env.SECRETS_KV.put('slack/bot-token', 'xoxb-test');
+    fetchSpy.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('https://slack.com/api/chat.postMessage')) {
+        const payload = JSON.parse(String(init?.body ?? '{}')) as { thread_ts?: string };
+        return new Response(JSON.stringify({ ok: true, ts: payload.thread_ts ?? '1672531200.1234' }), { status: 200 });
+      }
+      return new Response('{}', { status: 200 });
+    });
+
+    const rawBody = JSON.stringify({
+      type: 'event_callback',
+      event_id: 'EvMentionReview1',
+      team_id: 'team_one',
+      event: {
+        type: 'app_mention',
+        channel: 'C123',
+        thread_ts: '1672531200.1234',
+        ts: '1672531200.1235',
+        user: 'U1',
+        text: '<@U_KANVY> review 12041'
+      }
+    });
+    const signature = await buildSlackSignature('secret', nowTs, rawBody);
+    const request = new Request('https://example.test/api/integrations/slack/events', {
+      method: 'POST',
+      headers: slackHeaders(nowTs, signature),
+      body: rawBody
+    });
+
+    const response = await handleSlackEvents(request, env);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ ok: true, status: 'accepted' });
+    expect(repoBoard.createTask).toHaveBeenCalledWith(expect.objectContaining({
+      repoId: 'repo_alpha',
+      sourceRef: 'pull/12041/head',
+      autoReviewMode: 'on'
+    }));
+    expect(runOrchestratorMocks.scheduleRunJob).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({ mode: 'review_only', repoId: 'repo_alpha' })
+    );
+  });
+
+  it('handles @kanvy free-text mention using thread context', async () => {
+    const env = makeEnv('secret');
+    await env.SECRETS_KV.put('slack/bot-token', 'xoxb-test');
+    tenantAuthDbMocks.getSlackIntakeSession.mockResolvedValue(undefined);
+    fetchSpy.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('https://slack.com/api/conversations.replies')) {
+        return new Response(JSON.stringify({
+          ok: true,
+          messages: [
+            { ts: '1672531200.1000', user: 'U2', text: 'AFCP-3042 — Ready for Review' },
+            { ts: '1672531200.1001', user: 'U2', text: 'MR: https://gitlab.example.com/group/repo/-/merge_requests/12041' },
+            { ts: '1672531200.1234', user: 'U1', text: '<@U_KANVY> fix this based on this thread' }
+          ]
+        }), { status: 200 });
+      }
+      if (url.includes('https://slack.com/api/chat.postMessage')) {
+        const payload = JSON.parse(String(init?.body ?? '{}')) as { thread_ts?: string };
+        return new Response(JSON.stringify({ ok: true, ts: payload.thread_ts ?? '1672531200.1234' }), { status: 200 });
+      }
+      return new Response('{}', { status: 200 });
+    });
+
+    const rawBody = JSON.stringify({
+      type: 'event_callback',
+      event_id: 'EvMentionIntent1',
+      team_id: 'team_one',
+      event: {
+        type: 'app_mention',
+        channel: 'C123',
+        thread_ts: '1672531200.1234',
+        ts: '1672531200.1234',
+        user: 'U1',
+        text: '<@U_KANVY> fix this based on this thread'
+      }
+    });
+    const signature = await buildSlackSignature('secret', nowTs, rawBody);
+    const request = new Request('https://example.test/api/integrations/slack/events', {
+      method: 'POST',
+      headers: slackHeaders(nowTs, signature),
+      body: rawBody
+    });
+
+    const response = await handleSlackEvents(request, env);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ ok: true, status: 'accepted' });
+    expect(fetchSpy).toHaveBeenCalledWith(
+      expect.stringContaining('https://slack.com/api/conversations.replies'),
+      expect.any(Object)
+    );
+    expect(tenantAuthDbMocks.upsertSlackIntakeSession).toHaveBeenCalled();
+  });
+
+  it('posts :eyes: once when intent parsing starts, even if parser retries', async () => {
+    const env = makeEnv('secret');
+    await env.SECRETS_KV.put('slack/bot-token', 'xoxb-test');
+    tenantAuthDbMocks.getSlackIntakeSession.mockResolvedValue(undefined);
+    let llmAttempts = 0;
+    fetchSpy.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('https://slack.com/api/conversations.replies')) {
+        return new Response(JSON.stringify({
+          ok: true,
+          messages: [
+            { ts: '1672531200.1000', user: 'U2', text: 'please fix this issue' },
+            { ts: '1672531200.1234', user: 'U1', text: '<@U_KANVY> fix this' }
+          ]
+        }), { status: 200 });
+      }
+      if (url.includes('/v1/chat/completions')) {
+        llmAttempts += 1;
+        if (llmAttempts === 1) {
+          return new Response(JSON.stringify({ choices: [{ message: {} }] }), { status: 200 });
+        }
+        return new Response(JSON.stringify({
+          choices: [{
+            message: {
+              content: JSON.stringify({
+                intent: 'create_task',
+                confidence: 0.42,
+                jiraKey: '',
+                repoHint: '',
+                repoId: '',
+                taskTitle: 'Fix issue',
+                taskPrompt: 'Fix the issue from the thread.',
+                acceptanceCriteria: [],
+                missingFields: ['repo'],
+                clarifyingQuestion: 'Which repo should I use?'
+              })
+            }
+          }]
+        }), { status: 200 });
+      }
+      if (url.includes('https://slack.com/api/chat.postMessage')) {
+        const payload = JSON.parse(String(init?.body ?? '{}')) as { thread_ts?: string };
+        return new Response(JSON.stringify({ ok: true, ts: payload.thread_ts ?? '1672531200.1234' }), { status: 200 });
+      }
+      return new Response('{}', { status: 200 });
+    });
+
+    const rawBody = JSON.stringify({
+      type: 'event_callback',
+      event_id: 'EvMentionEyesRetry1',
+      team_id: 'team_one',
+      event: {
+        type: 'app_mention',
+        channel: 'C123',
+        thread_ts: '1672531200.1234',
+        ts: '1672531200.1234',
+        user: 'U1',
+        text: '<@U_KANVY> fix this'
+      }
+    });
+    const signature = await buildSlackSignature('secret', nowTs, rawBody);
+    const request = new Request('https://example.test/api/integrations/slack/events', {
+      method: 'POST',
+      headers: slackHeaders(nowTs, signature),
+      body: rawBody
+    });
+
+    const response = await handleSlackEvents(request, env);
+    expect(response.status).toBe(200);
+    expect(llmAttempts).toBe(2);
+    const calls = vi.mocked(global.fetch).mock.calls as Array<[RequestInfo | URL, RequestInit]>;
+    const eyesPosts = calls.filter((entry) =>
+      String(entry[0]).includes('https://slack.com/api/chat.postMessage')
+      && String(entry[1].body).includes('":eyes:"')
+    );
+    expect(eyesPosts).toHaveLength(1);
+  });
+
+  it('accepts 👍 as affirmative confirmation for pending task creation', async () => {
+    const repoBoard = makeRepoBoard({ taskId: 'task_emoji_confirm', runId: 'run_emoji_confirm' });
+    const env = makeEnv('secret', repoBoard);
+    await env.SECRETS_KV.put('slack/bot-token', 'xoxb-test');
+    tenantAuthDbMocks.getSlackIntakeSession.mockResolvedValue({
+      id: 'intake_confirm',
+      tenantId: 'team_one',
+      channelId: 'C123',
+      threadTs: '1672531200.1234',
+      status: 'active',
+      turnCount: 1,
+      data: {
+        pendingConfirmation: {
+          repoId: 'repo_alpha',
+          title: 'Fix issue',
+          prompt: 'Fix issue from thread.',
+          acceptanceCriteria: ['Issue is fixed']
+        }
+      },
+      lastActivityAt: new Date().toISOString(),
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z'
+    });
+    fetchSpy.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('https://slack.com/api/chat.postMessage')) {
+        const payload = JSON.parse(String(init?.body ?? '{}')) as { thread_ts?: string };
+        return new Response(JSON.stringify({ ok: true, ts: payload.thread_ts ?? '1672531200.1234' }), { status: 200 });
+      }
+      return new Response('{}', { status: 200 });
+    });
+
+    const rawBody = JSON.stringify({
+      type: 'event_callback',
+      event_id: 'EvEmojiConfirm1',
+      team_id: 'team_one',
+      event: {
+        type: 'message',
+        channel: 'C123',
+        thread_ts: '1672531200.1234',
+        ts: '1672531200.1240',
+        user: 'U1',
+        text: '👍'
+      }
+    });
+    const signature = await buildSlackSignature('secret', nowTs, rawBody);
+    const request = new Request('https://example.test/api/integrations/slack/events', {
+      method: 'POST',
+      headers: slackHeaders(nowTs, signature),
+      body: rawBody
+    });
+
+    const response = await handleSlackEvents(request, env);
+    expect(response.status).toBe(200);
+    expect(repoBoard.createTask).toHaveBeenCalledTimes(1);
+    expect(repoBoard.startRun).toHaveBeenCalledTimes(1);
+  });
+
+  it('accepts :+1: as affirmative confirmation for pending task creation', async () => {
+    const repoBoard = makeRepoBoard({ taskId: 'task_alias_confirm', runId: 'run_alias_confirm' });
+    const env = makeEnv('secret', repoBoard);
+    await env.SECRETS_KV.put('slack/bot-token', 'xoxb-test');
+    tenantAuthDbMocks.getSlackIntakeSession.mockResolvedValue({
+      id: 'intake_confirm_alias',
+      tenantId: 'team_one',
+      channelId: 'C123',
+      threadTs: '1672531200.1234',
+      status: 'active',
+      turnCount: 1,
+      data: {
+        pendingConfirmation: {
+          repoId: 'repo_alpha',
+          title: 'Fix issue',
+          prompt: 'Fix issue from thread.',
+          acceptanceCriteria: ['Issue is fixed']
+        }
+      },
+      lastActivityAt: new Date().toISOString(),
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z'
+    });
+    fetchSpy.mockResolvedValue(new Response(JSON.stringify({ ok: true, ts: '1672531200.1234' }), { status: 200 }));
+
+    const rawBody = JSON.stringify({
+      type: 'event_callback',
+      event_id: 'EvEmojiAliasConfirm1',
+      team_id: 'team_one',
+      event: {
+        type: 'message',
+        channel: 'C123',
+        thread_ts: '1672531200.1234',
+        ts: '1672531200.1241',
+        user: 'U1',
+        text: ':+1:'
+      }
+    });
+    const signature = await buildSlackSignature('secret', nowTs, rawBody);
+    const request = new Request('https://example.test/api/integrations/slack/events', {
+      method: 'POST',
+      headers: slackHeaders(nowTs, signature),
+      body: rawBody
+    });
+
+    const response = await handleSlackEvents(request, env);
+    expect(response.status).toBe(200);
+    expect(repoBoard.createTask).toHaveBeenCalledTimes(1);
+    expect(repoBoard.startRun).toHaveBeenCalledTimes(1);
   });
 });
