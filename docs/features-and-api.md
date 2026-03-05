@@ -80,8 +80,10 @@ Operational notes:
 - `POST /api/integrations/slack/commands`
   - Verified with Slack signing secret and replay window checks.
   - Accepts `/kanvy fix <JIRA_KEY>`, `/kanvy review <MR_NUMBER|MR_URL>`, `/kanvy help`, and `/kanvy <free-text request>`.
+  - `/kanvy fix` and `/kanvy review` accept trailing task context and natural-language execution overrides such as `use codex 5.3 medium`.
   - `/kanvy review` starts a review-only run and does not execute coding/test/push phases.
   - For free-text commands sent outside a thread, auto-creates a thread kickoff and responds with an ephemeral handoff link.
+  - Task execution settings resolve in this order: Slack override -> explicit task values -> repo task defaults -> hardcoded fallback (`codex` / `gpt-5.1-codex-mini` / `medium`).
   - Acknowledges immediately and continues Jira/repo/run processing asynchronously.
 - `POST /api/integrations/slack/interactions`
   - Supports actions: `repo_disambiguation`, `review_repo_disambiguation`, `approve_rerun`, `pause`, `close`.

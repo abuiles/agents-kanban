@@ -235,12 +235,35 @@ describe('RepoForm', () => {
 
     render(<RepoForm onSubmit={vi.fn()} />);
 
-    expect(screen.getByRole('option', { name: 'gpt-5.4' })).toBeInTheDocument();
-    expect(screen.getByRole('option', { name: 'xhigh' })).toBeInTheDocument();
+    expect(screen.getAllByRole('option', { name: 'gpt-5.4' }).length).toBeGreaterThan(0);
+    expect(screen.getAllByRole('option', { name: 'xhigh' }).length).toBeGreaterThan(0);
 
     await user.selectOptions(getSelectField('Review LLM adapter')! as unknown as Element, 'cursor_cli');
 
-    expect(screen.queryByRole('option', { name: 'xhigh' })).not.toBeInTheDocument();
+    const reviewReasoning = getSelectField('Review reasoning effort');
+    expect(reviewReasoning).not.toBeNull();
+    expect(Array.from(reviewReasoning!.options).some((option) => option.value === 'xhigh')).toBe(false);
+  });
+
+  it('submits repo-level task execution defaults', async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+
+    render(<RepoForm onSubmit={onSubmit} />);
+
+    await user.type(getInputField('Project path')!, 'abuiles/minions');
+    await user.type(getInputField('Baseline URL')!, 'https://repo.example.com');
+    await user.selectOptions(getSelectField('Task LLM adapter')! as unknown as Element, 'codex');
+    await user.selectOptions(getSelectField('Task LLM model')! as unknown as Element, 'gpt-5.3-codex-spark');
+    await user.selectOptions(getSelectField('Task reasoning effort')! as unknown as Element, 'high');
+
+    await user.click(screen.getByRole('button', { name: 'Add repo' }));
+
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
+      llmAdapter: 'codex',
+      llmModel: 'gpt-5.3-codex-spark',
+      llmReasoningEffort: 'high'
+    }));
   });
 });
 
@@ -340,5 +363,31 @@ describe('TaskForm', () => {
     await user.selectOptions(getSelectField('LLM adapter')! as unknown as Element, 'cursor_cli');
 
     expect(screen.queryByRole('option', { name: 'xhigh' })).not.toBeInTheDocument();
+  });
+
+  it('prefills new task execution settings from the selected repo defaults', () => {
+    render(
+      <TaskForm
+        repos={[
+          {
+            repoId: 'repo_demo',
+            slug: 'abuiles/minions-demo',
+            defaultBranch: 'main',
+            baselineUrl: 'https://minions-demo.abuiles.workers.dev/',
+            enabled: true,
+            llmAdapter: 'codex',
+            llmModel: 'gpt-5.3-codex-spark',
+            llmReasoningEffort: 'high',
+            createdAt: '2026-01-01T00:00:00.000Z',
+            updatedAt: '2026-01-01T00:00:00.000Z'
+          }
+        ]}
+        onSubmit={vi.fn()}
+      />
+    );
+
+    expect(getSelectField('LLM adapter')?.value).toBe('codex');
+    expect(getSelectField('LLM model')?.value).toBe('gpt-5.3-codex-spark');
+    expect(getSelectField('Reasoning effort')?.value).toBe('high');
   });
 });

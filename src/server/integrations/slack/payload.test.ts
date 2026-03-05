@@ -19,6 +19,7 @@ describe('slack payload parsing', () => {
   it('keeps deterministic Jira fast-path parsing for fix <JIRA_KEY>', () => {
     expect(parseJiraFastPathIssueKey('fix ABC-123')).toBe('ABC-123');
     expect(parseJiraFastPathIssueKey('fix abc-123')).toBe('ABC-123');
+    expect(parseJiraFastPathIssueKey('fix ABC-123 use codex 5.3 medium')).toBe('ABC-123');
     expect(parseJiraFastPathIssueKey('fix jira issue ABC-123')).toBeUndefined();
     expect(parseJiraFastPathIssueKey('draft mr')).toBeUndefined();
   });
@@ -38,10 +39,18 @@ describe('slack payload parsing', () => {
 
   it('parses review fast-path number input', () => {
     expect(parseReviewFastPathInput('review 1234')).toEqual({ reviewNumber: 1234 });
+    expect(parseReviewFastPathInput('review 1234 use codex 5.3 medium')).toEqual({ reviewNumber: 1234 });
   });
 
   it('parses review fast-path GitHub URL input', () => {
     expect(parseReviewFastPathInput('review https://github.com/abuiles/agents-kanban/pull/101')).toEqual({
+      reviewNumber: 101,
+      reviewUrl: 'https://github.com/abuiles/agents-kanban/pull/101',
+      providerHint: 'github',
+      repoHostHint: 'github.com',
+      projectPathHint: 'abuiles/agents-kanban'
+    });
+    expect(parseReviewFastPathInput('review https://github.com/abuiles/agents-kanban/pull/101 use codex 5.3 medium')).toEqual({
       reviewNumber: 101,
       reviewUrl: 'https://github.com/abuiles/agents-kanban/pull/101',
       providerHint: 'github',

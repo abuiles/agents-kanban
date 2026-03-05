@@ -28,7 +28,7 @@ import { getTaskDetail, getTasksForRepo } from '../domain/selectors';
 import { LocalBoardStore } from '../store/local-board-store';
 import { parseImportedBoard } from '../store/import-export';
 import { RunSimulator } from './run-simulator';
-import { normalizeOperatorSession, normalizeRunLlmState, normalizeTaskUiMeta } from '../../shared/llm';
+import { normalizeOperatorSession, normalizeRunLlmState, normalizeTaskUiMeta, resolveRepoTaskLlmDefaults } from '../../shared/llm';
 import { DEFAULT_REPO_CHECKPOINT_CONFIG, normalizeRepoCheckpointConfig } from '../../shared/checkpoint';
 import { getAutoReviewProviderDefaultForScm, normalizeCredentialHost, normalizeRepo } from '../../shared/scm';
 import { DEFAULT_REPO_SENTINEL_CONFIG, normalizeRepoSentinelConfig } from '../../shared/sentinel';
@@ -249,6 +249,8 @@ export class LocalAgentBoardApi implements AgentBoardApi {
       sentinelConfig: normalizedSentinelConfig,
       projectPath: input.projectPath,
       llmAdapter: input.llmAdapter,
+      llmModel: input.llmModel,
+      llmReasoningEffort: input.llmReasoningEffort,
       llmProfileId: input.llmProfileId,
       llmAuthBundleR2Key: input.llmAuthBundleR2Key ?? input.codexAuthBundleR2Key,
       defaultBranch: input.defaultBranch ?? 'main',
@@ -542,6 +544,9 @@ export class LocalAgentBoardApi implements AgentBoardApi {
 
   async createTask(input: CreateTaskInput): Promise<Task> {
     const timestamp = nowIso();
+    const repo = this.store.getSnapshot().repos.find((candidate) => candidate.repoId === input.repoId);
+    const repoLlmDefaults = resolveRepoTaskLlmDefaults(repo);
+    const effectiveAdapter = input.llmAdapter ?? repoLlmDefaults.llmAdapter;
     const task: Task = {
       taskId: randomId('task'),
       repoId: input.repoId,
@@ -564,11 +569,15 @@ export class LocalAgentBoardApi implements AgentBoardApi {
         simulationProfile: input.simulationProfile ?? 'happy_path',
         autoReviewMode: input.autoReviewMode,
         autoReviewPrompt: input.autoReviewPrompt,
-        llmAdapter: input.llmAdapter,
-        llmModel: input.llmModel,
-        llmReasoningEffort: input.llmReasoningEffort,
-        codexModel: input.codexModel,
-        codexReasoningEffort: input.codexReasoningEffort
+        llmAdapter: effectiveAdapter,
+        llmModel: input.llmModel ?? input.codexModel ?? repoLlmDefaults.llmModel,
+        llmReasoningEffort: input.llmReasoningEffort ?? input.codexReasoningEffort ?? repoLlmDefaults.llmReasoningEffort,
+        codexModel: effectiveAdapter === 'codex'
+          ? (input.codexModel ?? input.llmModel as CreateTaskInput['codexModel'] ?? repoLlmDefaults.llmModel as CreateTaskInput['codexModel'])
+          : undefined,
+        codexReasoningEffort: effectiveAdapter === 'codex'
+          ? (input.codexReasoningEffort ?? input.llmReasoningEffort as CreateTaskInput['codexReasoningEffort'] ?? repoLlmDefaults.llmReasoningEffort as CreateTaskInput['codexReasoningEffort'])
+          : undefined
       })
     };
 

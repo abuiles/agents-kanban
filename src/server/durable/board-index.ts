@@ -1270,6 +1270,8 @@ function buildRepoRecord(input: CreateRepoInput | Repo): Repo {
     sentinelConfig: normalizedSentinelConfig,
     checkpointConfig: normalizedCheckpointConfig,
     llmAdapter: input.llmAdapter,
+    llmModel: input.llmModel,
+    llmReasoningEffort: input.llmReasoningEffort,
     llmAuthMode: input.llmAuthMode,
     llmProfileId: input.llmProfileId,
     githubAuthMode: 'githubAuthMode' in input ? input.githubAuthMode : undefined,

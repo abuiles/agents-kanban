@@ -16,6 +16,14 @@ import {
   parseUpsertScmCredentialInput
 } from './validation';
 
+function createRepoPayload(overrides: Record<string, unknown> = {}) {
+  return {
+    projectPath: 'abuiles/minions',
+    baselineUrl: 'https://repo.example.com',
+    ...overrides
+  };
+}
+
 function createTaskPayload(overrides: Record<string, unknown> = {}) {
   return {
     repoId: 'repo_demo',
@@ -239,6 +247,35 @@ describe('task validation', () => {
         })
       )
     ).toThrow('Invalid autoReviewMode.');
+  });
+});
+
+describe('repo validation', () => {
+  it('parses repo-level task llm defaults', () => {
+    const parsed = parseCreateRepoInput(createRepoPayload({
+      llmAdapter: 'codex',
+      llmModel: 'gpt-5.3-codex-spark',
+      llmReasoningEffort: 'high'
+    }));
+
+    expect(parsed).toMatchObject({
+      llmAdapter: 'codex',
+      llmModel: 'gpt-5.3-codex-spark',
+      llmReasoningEffort: 'high'
+    });
+  });
+
+  it('parses repo patch with codex compatibility aliases into repo llm defaults', () => {
+    const parsed = parseUpdateRepoInput({
+      codexModel: 'gpt-5.4',
+      codexReasoningEffort: 'xhigh'
+    });
+
+    expect(parsed).toMatchObject({
+      llmAdapter: 'codex',
+      llmModel: 'gpt-5.4',
+      llmReasoningEffort: 'xhigh'
+    });
   });
 });
 

@@ -78,6 +78,8 @@ export function normalizeRepo(repo: RepoScmLike & Omit<Repo, 'slug' | 'scmProvid
         scmProvider,
         scmBaseUrl: normalizeScmBaseUrl(scmProvider, repo.scmBaseUrl),
         projectPath,
+        llmModel: repo.llmModel?.trim() || undefined,
+        llmReasoningEffort: repo.llmReasoningEffort,
         llmAuthMode: repo.llmAuthMode === 'api' ? 'api' : 'bundle',
         commitConfig: (commitConfig.messageTemplate || commitConfig.messageRegex || commitConfig.messageExamples)
           ? commitConfig

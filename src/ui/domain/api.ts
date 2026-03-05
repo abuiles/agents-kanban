@@ -91,6 +91,8 @@ export type CreateRepoInput = {
   scmBaseUrl?: string;
   projectPath?: string;
   llmAdapter?: Repo['llmAdapter'];
+  llmModel?: Repo['llmModel'];
+  llmReasoningEffort?: Repo['llmReasoningEffort'];
   llmAuthMode?: Repo['llmAuthMode'];
   llmProfileId?: string;
   llmAuthBundleR2Key?: string;

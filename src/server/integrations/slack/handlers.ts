@@ -88,6 +88,21 @@ type LlmReviewIntent = {
   providerHint?: 'github' | 'gitlab';
 };
 
+type SlackTaskLlmOverride = {
+  llmAdapter: CreateTaskInput['llmAdapter'];
+  llmModel: string;
+  llmReasoningEffort: CreateTaskInput['llmReasoningEffort'];
+  codexModel?: CreateTaskInput['codexModel'];
+  codexReasoningEffort?: CreateTaskInput['codexReasoningEffort'];
+};
+
+type ParsedSlackTaskLlmOverride = {
+  cleanedText: string;
+  override?: SlackTaskLlmOverride;
+  invalidReason?: string;
+  requestedText?: string;
+};
+
 function shouldAttemptReviewIntentLlm(text: string): boolean {
   const normalized = text.trim().toLowerCase();
   if (!normalized) {
@@ -99,6 +114,143 @@ function shouldAttemptReviewIntentLlm(text: string): boolean {
     || normalized.includes('mr#')
     || normalized.includes(' pr ')
     || normalized.includes('pr#');
+}
+
+function normalizeSlackTextWhitespace(value: string) {
+  return value.replace(/\s+/g, ' ').trim();
+}
+
+function parseSlackTaskLlmOverride(text: string): ParsedSlackTaskLlmOverride {
+  const match = text.match(/\buse\s+([a-z0-9._\- ]+?)(?=(?:\s+(?:and|with)\b|[,.!?;:)]|$))/i);
+  if (!match || typeof match.index !== 'number') {
+    return { cleanedText: text.trim() };
+  }
+
+  const requestedText = normalizeSlackTextWhitespace(match[1] ?? '');
+  if (!requestedText) {
+    return { cleanedText: text.trim() };
+  }
+
+  const phrase = requestedText.toLowerCase();
+  const cleanedText = normalizeSlackTextWhitespace(`${text.slice(0, match.index)} ${text.slice(match.index + match[0].length)}`);
+  const llmReasoningEffort = phrase.includes('xhigh')
+    ? 'xhigh'
+    : phrase.includes('high')
+      ? 'high'
+      : phrase.includes('medium')
+        ? 'medium'
+        : phrase.includes('low')
+          ? 'low'
+          : undefined;
+
+  if (phrase.includes('cursor')) {
+    return {
+      cleanedText,
+      override: {
+        llmAdapter: 'cursor_cli',
+        llmModel: phrase.includes('default') ? 'cursor-default' : requestedText,
+        llmReasoningEffort: llmReasoningEffort && llmReasoningEffort !== 'xhigh' ? llmReasoningEffort : 'medium'
+      },
+      requestedText
+    };
+  }
+
+  if (phrase.includes('claude')) {
+    const llmModel = phrase.includes('opus')
+      ? 'claude-opus-4-1'
+      : phrase.includes('sonnet')
+        ? 'claude-sonnet-4-0'
+        : requestedText;
+    return {
+      cleanedText,
+      override: {
+        llmAdapter: 'claude_code',
+        llmModel,
+        llmReasoningEffort: llmReasoningEffort && llmReasoningEffort !== 'xhigh' ? llmReasoningEffort : 'medium'
+      },
+      requestedText
+    };
+  }
+
+  if (phrase.includes('codex') || phrase.includes('gpt')) {
+    let codexModel: CreateTaskInput['codexModel'] | undefined;
+    if (phrase.includes('5.4') || phrase.includes('gpt-5.4')) {
+      codexModel = 'gpt-5.4';
+    } else if ((phrase.includes('5.3') || phrase.includes('gpt-5.3')) && phrase.includes('spark')) {
+      codexModel = 'gpt-5.3-codex-spark';
+    } else if (phrase.includes('5.3') || phrase.includes('gpt-5.3')) {
+      codexModel = 'gpt-5.3-codex';
+    } else if (phrase.includes('5.1') || phrase.includes('mini')) {
+      codexModel = 'gpt-5.1-codex-mini';
+    }
+
+    if (!codexModel) {
+      return {
+        cleanedText,
+        invalidReason: `I couldn't map "${requestedText}" to a supported Codex model. Try \`use codex 5.3 medium\`, \`use codex 5.3 spark\`, or \`use gpt-5.4 high\`.`,
+        requestedText
+      };
+    }
+
+    const normalizedReasoningEffort = (llmReasoningEffort ?? 'medium') as CreateTaskInput['codexReasoningEffort'];
+    return {
+      cleanedText,
+      override: {
+        llmAdapter: 'codex',
+        llmModel: codexModel,
+        llmReasoningEffort: normalizedReasoningEffort,
+        codexModel,
+        codexReasoningEffort: normalizedReasoningEffort
+      },
+      requestedText
+    };
+  }
+
+  return {
+    cleanedText,
+    invalidReason: `I couldn't parse the requested model "${requestedText}". Try phrases like \`use codex 5.3 medium\`, \`use claude sonnet medium\`, or \`use cursor default low\`.`,
+    requestedText
+  };
+}
+
+function applyTaskLlmOverride(task: CreateTaskInput, override?: SlackTaskLlmOverride): CreateTaskInput {
+  if (!override) {
+    return task;
+  }
+  return {
+    ...task,
+    llmAdapter: override.llmAdapter,
+    llmModel: override.llmModel,
+    llmReasoningEffort: override.llmReasoningEffort,
+    codexModel: override.llmAdapter === 'codex' ? override.codexModel : undefined,
+    codexReasoningEffort: override.llmAdapter === 'codex' ? override.codexReasoningEffort : undefined
+  };
+}
+
+function normalizeTaskLlmOverride(value: unknown): SlackTaskLlmOverride | undefined {
+  if (!value || typeof value !== 'object') {
+    return undefined;
+  }
+  const record = value as Record<string, unknown>;
+  const llmAdapter = record.llmAdapter === 'codex' || record.llmAdapter === 'cursor_cli' || record.llmAdapter === 'claude_code'
+    ? record.llmAdapter
+    : undefined;
+  const llmModel = typeof record.llmModel === 'string' && record.llmModel.trim() ? record.llmModel.trim() : undefined;
+  const llmReasoningEffort = record.llmReasoningEffort === 'low' || record.llmReasoningEffort === 'medium' || record.llmReasoningEffort === 'high' || record.llmReasoningEffort === 'xhigh'
+    ? record.llmReasoningEffort
+    : undefined;
+  if (!llmAdapter || !llmModel || !llmReasoningEffort) {
+    return undefined;
+  }
+  return {
+    llmAdapter,
+    llmModel,
+    llmReasoningEffort,
+    codexModel: llmAdapter === 'codex' && typeof record.codexModel === 'string' ? record.codexModel as CreateTaskInput['codexModel'] : undefined,
+    codexReasoningEffort: llmAdapter === 'codex' && (record.codexReasoningEffort === 'low' || record.codexReasoningEffort === 'medium' || record.codexReasoningEffort === 'high' || record.codexReasoningEffort === 'xhigh')
+      ? record.codexReasoningEffort as CreateTaskInput['codexReasoningEffort']
+      : undefined
+  };
 }
 
 type ResolvedReviewCommand = {
@@ -778,6 +930,7 @@ function buildSlackTaskSummary(input: {
   prompt: string;
   acceptanceCriteria: string[];
   issueKey?: string;
+  llmOverride?: SlackTaskLlmOverride;
 }) {
   const title = truncateForText(toSingleLine(input.title), MAX_TASK_TITLE_CHARS);
   const prompt = truncateForText(toSingleLine(input.prompt), MAX_SLACK_PROMPT_PREVIEW_CHARS);
@@ -789,6 +942,7 @@ function buildSlackTaskSummary(input: {
       ? `I can create this task from *${input.issueKey}*:`
       : 'I can create this task:',
     `*Repo:* \`${input.repoId}\``,
+    ...(input.llmOverride ? [`*Execution:* \`${input.llmOverride.llmAdapter}\` / \`${input.llmOverride.llmModel}\` / \`${input.llmOverride.llmReasoningEffort}\``] : []),
     `*Title:* ${title}`,
     '*Prompt:*',
     `>${prompt}`,
@@ -813,11 +967,11 @@ function buildTaskPromptFromIssue(issue: IntegrationIssueRef) {
 function buildTaskPayloadFromIssue(
   issue: IntegrationIssueRef,
   repoId: string,
-  model = DEFAULT_TASK_LLM_MODEL
+  llmOverride?: SlackTaskLlmOverride
 ): CreateTaskInput {
   const issueTitle = toSingleLine(issue.title) || issue.issueKey;
   const description = truncateForText(`Jira ${issue.issueKey}: ${issueTitle}`, MAX_TASK_DESCRIPTION_CHARS);
-  return {
+  return applyTaskLlmOverride({
     repoId,
     title: truncateForText(`[${issue.issueKey}] ${issueTitle}`.trim(), MAX_TASK_TITLE_CHARS),
     description,
@@ -831,11 +985,8 @@ function buildTaskPayloadFromIssue(
         ? [{ id: `jira:${issue.issueKey}`, label: `Jira issue ${issue.issueKey}`, url: issue.url }]
         : [],
       notes: `Imported from Jira issue ${issue.issueKey}: ${issue.title}`
-    },
-    llmAdapter: JIRA_LLM_ADAPTER,
-    codexModel: model,
-    codexReasoningEffort: JIRA_LLM_REASONING_EFFORT
-  };
+    }
+  }, llmOverride);
 }
 
 function ensureIssueKeyInTitle(title: string, issueKey: string) {
@@ -857,18 +1008,18 @@ async function buildTaskPayloadFromIssueWithLlmTransform(
     repoId: string;
     issue: IntegrationIssueRef;
     commandText: string;
-    llmModel: CreateTaskInput['codexModel'];
+    llmOverride?: SlackTaskLlmOverride;
     settings: ReturnType<typeof resolveSlackIntentSettings>;
   }
 ): Promise<CreateTaskInput> {
-  const fallbackPayload = buildTaskPayloadFromIssue(input.issue, input.repoId, input.llmModel);
+  const fallbackPayload = buildTaskPayloadFromIssue(input.issue, input.repoId, input.llmOverride);
   console.info(JSON.stringify({
     event: 'slack_jira_transform_started',
     tenantId: input.tenantId,
     channelId: input.channelId,
     issueKey: input.issue.issueKey,
     repoId: input.repoId,
-    llmModel: input.llmModel
+    llmOverride: input.llmOverride?.llmModel ?? null
   }));
   try {
     const parsed = await parseSlackIntentWithLlm(env, {
@@ -983,7 +1134,20 @@ async function queueJiraConfirmation(
         repoId: input.payload.repoId,
         title,
         prompt,
-        acceptanceCriteria
+        acceptanceCriteria,
+        ...(input.payload.llmAdapter && input.payload.llmModel && input.payload.llmReasoningEffort
+          ? {
+              llmOverride: {
+                llmAdapter: input.payload.llmAdapter,
+                llmModel: input.payload.llmModel,
+                llmReasoningEffort: input.payload.llmReasoningEffort,
+                ...(input.payload.llmAdapter === 'codex' ? {
+                  codexModel: input.payload.codexModel,
+                  codexReasoningEffort: input.payload.codexReasoningEffort
+                } : {})
+              }
+            }
+          : {})
       }
     }
   });
@@ -1001,7 +1165,18 @@ async function queueJiraConfirmation(
       title,
       prompt,
       acceptanceCriteria,
-      issueKey: input.issue.issueKey
+      issueKey: input.issue.issueKey,
+      llmOverride: input.payload.llmAdapter && input.payload.llmModel && input.payload.llmReasoningEffort
+        ? {
+            llmAdapter: input.payload.llmAdapter,
+            llmModel: input.payload.llmModel,
+            llmReasoningEffort: input.payload.llmReasoningEffort,
+            ...(input.payload.llmAdapter === 'codex' ? {
+              codexModel: input.payload.codexModel,
+              codexReasoningEffort: input.payload.codexReasoningEffort
+            } : {})
+          }
+        : undefined
     })
   ].join('\n');
 
@@ -1032,7 +1207,7 @@ function buildTaskPayloadFromIntent(input: {
   title: string;
   prompt: string;
   acceptanceCriteria: string[];
-  model: CreateTaskInput['codexModel'];
+  llmOverride?: SlackTaskLlmOverride;
 }): CreateTaskInput {
   const normalizedTitle = truncateForText(toSingleLine(input.title) || 'Slack intake task', MAX_TASK_TITLE_CHARS);
   const normalizedPrompt = formatTaskPromptMarkdown({
@@ -1041,7 +1216,7 @@ function buildTaskPayloadFromIntent(input: {
     contextLines: ['Source: Slack /kanvy intake'],
     acceptanceCriteria: input.acceptanceCriteria
   });
-  return {
+  return applyTaskLlmOverride({
     repoId: input.repoId,
     title: normalizedTitle,
     description: truncateForText(toSingleLine(input.prompt), MAX_TASK_DESCRIPTION_CHARS),
@@ -1051,11 +1226,8 @@ function buildTaskPayloadFromIntent(input: {
     context: {
       links: [],
       notes: 'Created from Slack /kanvy intent intake.'
-    },
-    llmAdapter: JIRA_LLM_ADAPTER,
-    codexModel: input.model,
-    codexReasoningEffort: 'medium'
-  };
+    }
+  }, input.llmOverride);
 }
 
 function resolveReviewProviderFromRepo(repo: Pick<Repo, 'scmProvider' | 'repoId'>): 'github' | 'gitlab' | undefined {
@@ -1088,6 +1260,7 @@ function buildReviewTaskPayload(input: {
   reviewNumber: number;
   reviewUrl?: string;
   draftContext?: string;
+  llmOverride?: SlackTaskLlmOverride;
 }): CreateTaskInput {
   const reviewLlmAdapter = input.repo.autoReview?.llmAdapter ?? JIRA_LLM_ADAPTER;
   const reviewLlmModel = input.repo.autoReview?.llmModel
@@ -1100,7 +1273,7 @@ function buildReviewTaskPayload(input: {
     ? `PR #${input.reviewNumber}`
     : `MR !${input.reviewNumber}`;
   const reviewGoal = `Review existing ${reviewLabel} and post actionable findings only.`;
-  return {
+  return applyTaskLlmOverride({
     repoId: input.repoId,
     title: truncateForText(`[Review] ${reviewLabel}`.trim(), MAX_TASK_TITLE_CHARS),
     description: truncateForText(toSingleLine(reviewGoal), MAX_TASK_DESCRIPTION_CHARS),
@@ -1147,7 +1320,7 @@ function buildReviewTaskPayload(input: {
     codexReasoningEffort: reviewLlmAdapter === 'codex'
       ? (reviewLlmReasoningEffort as CreateTaskInput['codexReasoningEffort'])
       : undefined
-  };
+  }, input.llmOverride);
 }
 
 async function listTenantRepos(env: Env, tenantId: string): Promise<Repo[]> {
@@ -1582,6 +1755,7 @@ function normalizePendingConfirmation(data: unknown): {
   title: string;
   prompt: string;
   acceptanceCriteria: string[];
+  llmOverride?: SlackTaskLlmOverride;
 } | undefined {
   if (!data || typeof data !== 'object') {
     return undefined;
@@ -1603,7 +1777,8 @@ function normalizePendingConfirmation(data: unknown): {
       .filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
       .map((item) => item.trim())
     : [];
-  return { repoId, title, prompt, acceptanceCriteria };
+  const llmOverride = normalizeTaskLlmOverride(record.llmOverride);
+  return { repoId, title, prompt, acceptanceCriteria, llmOverride };
 }
 
 function normalizePendingReviewSelection(data: unknown): {
@@ -1687,6 +1862,7 @@ function normalizePendingReviewStart(data: unknown): {
   sourceRef: string;
   reviewUrl?: string;
   draftContext?: string;
+  llmOverride?: SlackTaskLlmOverride;
 } | undefined {
   if (!data || typeof data !== 'object') {
     return undefined;
@@ -1711,10 +1887,11 @@ function normalizePendingReviewStart(data: unknown): {
   const draftContext = typeof record.draftContext === 'string' && record.draftContext.trim()
     ? record.draftContext.trim()
     : undefined;
+  const llmOverride = normalizeTaskLlmOverride(record.llmOverride);
   if (!repoId || !reviewNumber || reviewNumber < 1 || !reviewProvider || !sourceRef) {
     return undefined;
   }
-  return { repoId, reviewNumber, reviewProvider, sourceRef, reviewUrl, draftContext };
+  return { repoId, reviewNumber, reviewProvider, sourceRef, reviewUrl, draftContext, llmOverride };
 }
 
 function resolveRepoFromReply(text: string, choices: string[]): string | undefined {
@@ -2151,6 +2328,7 @@ async function startReviewRunForTask(
   repo: Repo,
   review: ResolvedReviewCommand,
   draftContext?: string,
+  llmOverride?: SlackTaskLlmOverride,
 ): Promise<RunKickoff> {
   const repoId = repo.repoId;
   const repoBoard = env.REPO_BOARD.getByName(repoId);
@@ -2161,7 +2339,8 @@ async function startReviewRunForTask(
     reviewProvider: review.reviewProvider,
     reviewNumber: review.reviewNumber,
     reviewUrl: review.reviewUrl,
-    draftContext
+    draftContext,
+    llmOverride
   }));
   const run = await repoBoard.startRun(task.taskId, { tenantId });
   await repoBoard.transitionRun(run.runId, {
@@ -2497,6 +2676,7 @@ async function queuePendingReviewStart(
     repoId: string;
     review: ResolvedReviewCommand;
     draftContext?: string;
+    llmOverride?: SlackTaskLlmOverride;
   }
 ) {
   const existingSession = await tenantAuthDb.getSlackIntakeSession(env, input.tenantId, input.channelId, input.threadTs);
@@ -2516,7 +2696,8 @@ async function queuePendingReviewStart(
         reviewProvider: input.review.reviewProvider,
         sourceRef: input.review.sourceRef,
         ...(input.review.reviewUrl ? { reviewUrl: input.review.reviewUrl } : {}),
-        ...(input.draftContext?.trim() ? { draftContext: input.draftContext.trim() } : {})
+        ...(input.draftContext?.trim() ? { draftContext: input.draftContext.trim() } : {}),
+        ...(input.llmOverride ? { llmOverride: input.llmOverride } : {})
       }
     }
   });
@@ -2534,6 +2715,23 @@ async function processReviewCommandFlow(
     commandText?: string;
   }
 ): Promise<RunKickoff | undefined> {
+  const parsedOverride = parseSlackTaskLlmOverride(input.commandText ?? '');
+  if (parsedOverride.invalidReason) {
+    if (input.responseUrl) {
+      await postSlackResponse(input.responseUrl, {
+        response_type: 'ephemeral',
+        text: parsedOverride.invalidReason
+      });
+    } else {
+      await postThreadPrompt(env, {
+        tenantId: input.tenantId,
+        channelId: input.channelId,
+        threadTs: input.threadTs,
+        text: parsedOverride.invalidReason
+      });
+    }
+    return undefined;
+  }
   logSlackMentionIngestion({
     checkpoint: 'review_flow_started',
     tenantId: input.tenantId,
@@ -2597,6 +2795,11 @@ async function processReviewCommandFlow(
         lastConfidence: existingSession?.lastConfidence,
         data: {
           ...(existingSession?.data ?? {}),
+          ...(parsedOverride.override ? {
+            llmAdapter: parsedOverride.override.llmAdapter,
+            llmModel: parsedOverride.override.llmModel,
+            llmReasoningEffort: parsedOverride.override.llmReasoningEffort
+          } : {}),
           pendingReviewSelection: {
             reviewNumber: input.review.reviewNumber,
             reviewUrl: input.review.reviewUrl,
@@ -2641,7 +2844,7 @@ async function processReviewCommandFlow(
     return undefined;
   }
   const review = resolveReviewCommandForRepo(repo, input.review);
-  const inlineDraftContext = extractReviewDraftContext(input.commandText);
+  const inlineDraftContext = extractReviewDraftContext(parsedOverride.cleanedText || input.commandText);
   const existingReview = await findLatestReviewRunForRepo(env, input.tenantId, repo.repoId, review);
   if (existingReview) {
     const existingSession = await tenantAuthDb.getSlackIntakeSession(env, input.tenantId, input.channelId, input.threadTs);
@@ -2708,10 +2911,12 @@ async function processReviewCommandFlow(
     threadTs: input.threadTs,
     repoId: repo.repoId,
     review,
-    draftContext: inlineDraftContext
+    draftContext: inlineDraftContext,
+    llmOverride: parsedOverride.override
   });
   const confirmationText = [
     `Ready to run a review-only task for ${review.reviewProvider} #${review.reviewNumber} in ${repo.repoId}.`,
+    ...(parsedOverride.override ? [`Execution override: \`${parsedOverride.override.llmAdapter}\` / \`${parsedOverride.override.llmModel}\` / \`${parsedOverride.override.llmReasoningEffort}\`.`] : []),
     'Reply `@kanvy yes` (or `@kanvy :+1:`) to start.',
     'Reply `@kanvy <extra context>` to include additional guidance before starting.',
     'Reply `@kanvy no` to cancel.'
@@ -2744,11 +2949,27 @@ async function processJiraIssueFlow(
     latestReviewRound?: number;
   },
   responseUrl: string | undefined,
-  llmModel: CreateTaskInput['codexModel'] = DEFAULT_TASK_LLM_MODEL,
   commandText = `fix ${issue.issueKey}`,
   settings = resolveSlackIntentSettings([], { tenantId, channelId: bindings.channelId }),
   preferredRepoId: string | undefined = undefined
 ): Promise<RunKickoff | undefined> {
+  const parsedOverride = parseSlackTaskLlmOverride(commandText);
+  if (parsedOverride.invalidReason) {
+    if (responseUrl) {
+      await postSlackResponse(responseUrl, {
+        response_type: 'ephemeral',
+        text: parsedOverride.invalidReason
+      });
+    } else if (bindings.threadTs) {
+      await postThreadPrompt(env, {
+        tenantId,
+        channelId: bindings.channelId,
+        threadTs: bindings.threadTs,
+        text: parsedOverride.invalidReason
+      });
+    }
+    return undefined;
+  }
   const issueProjectKey = issueProjectKeyFromIssue(issue.issueKey);
   const mappings = await tenantAuthDb.listJiraProjectRepoMappingsByProject(env, tenantId, issueProjectKey, true);
   console.info(JSON.stringify({
@@ -2776,8 +2997,8 @@ async function processJiraIssueFlow(
         channelId: bindings.channelId,
         repoId: preferredRepoId.trim(),
         issue,
-        commandText,
-        llmModel,
+        commandText: parsedOverride.cleanedText || commandText,
+        llmOverride: parsedOverride.override,
         settings
       });
       if (!bindings.threadTs) {
@@ -2857,8 +3078,8 @@ async function processJiraIssueFlow(
     channelId: bindings.channelId,
     repoId,
     issue,
-    commandText,
-    llmModel,
+    commandText: parsedOverride.cleanedText || commandText,
+    llmOverride: parsedOverride.override,
     settings
   });
   if (!bindings.threadTs) {
@@ -3027,9 +3248,23 @@ async function runIntentIntake(
     responseUrl?: string;
   }
 ): Promise<RunKickoff | undefined> {
-  const userText = input.userText.trim();
-  const intentText = (input.intentText ?? input.userText).trim();
+  const parsedOverride = parseSlackTaskLlmOverride(input.userText);
+  if (parsedOverride.invalidReason) {
+    await postThreadPrompt(env, {
+      tenantId: input.tenantId,
+      channelId: input.channelId,
+      threadTs: input.threadTs,
+      text: parsedOverride.invalidReason
+    });
+    return undefined;
+  }
+  const userText = (parsedOverride.cleanedText || input.userText).trim();
+  const intentText = input.intentText?.includes('latest_user_message:')
+    ? input.intentText.replace(/latest_user_message:\n[\s\S]*$/, `latest_user_message:\n${userText}`).trim()
+    : userText;
   const existing = await tenantAuthDb.getSlackIntakeSession(env, input.tenantId, input.channelId, input.threadTs);
+  const previousLlmOverride = normalizeTaskLlmOverride(existing?.data);
+  const effectiveLlmOverride = parsedOverride.override ?? previousLlmOverride;
   const expired = existing ? isSessionExpired(existing.lastActivityAt) : false;
   if (existing && expired && existing.status === 'active') {
     await tenantAuthDb.upsertSlackIntakeSession(env, {
@@ -3080,7 +3315,8 @@ async function runIntentIntake(
           ...(existing?.data ?? {}),
           pendingReviewStart: {
             ...pendingReviewStart,
-            ...(mergedDraftContext ? { draftContext: mergedDraftContext } : {})
+            ...(mergedDraftContext ? { draftContext: mergedDraftContext } : {}),
+            ...(effectiveLlmOverride ? { llmOverride: effectiveLlmOverride } : {})
           },
           lastUserText: userText
         }
@@ -3089,7 +3325,11 @@ async function runIntentIntake(
         tenantId: input.tenantId,
         channelId: input.channelId,
         threadTs: input.threadTs,
-        text: 'Saved your review context. Reply `@kanvy yes` (or `@kanvy :+1:`) to start, or `@kanvy no` to cancel.'
+        text: [
+          'Saved your review context.',
+          ...(effectiveLlmOverride ? [`Execution override set to \`${effectiveLlmOverride.llmAdapter}\` / \`${effectiveLlmOverride.llmModel}\` / \`${effectiveLlmOverride.llmReasoningEffort}\`.`] : []),
+          'Reply `@kanvy yes` (or `@kanvy :+1:`) to start, or `@kanvy no` to cancel.'
+        ].join(' ')
       });
       return undefined;
     }
@@ -3116,7 +3356,8 @@ async function runIntentIntake(
       input.tenantId,
       repo,
       review,
-      pendingReviewStart.draftContext
+      pendingReviewStart.draftContext,
+      pendingReviewStart.llmOverride ?? effectiveLlmOverride
     );
     await tenantAuthDb.upsertSlackThreadBinding(env, {
       tenantId: input.tenantId,
@@ -3288,7 +3529,8 @@ async function runIntentIntake(
           channelId: input.channelId,
           threadTs: input.threadTs,
           repoId: repo.repoId,
-          review
+          review,
+          llmOverride: effectiveLlmOverride
         });
         await postThreadPrompt(env, {
           tenantId: input.tenantId,
@@ -3365,9 +3607,7 @@ async function runIntentIntake(
       acceptanceCriteria: pendingConfirmation.acceptanceCriteria.length > 0
         ? pendingConfirmation.acceptanceCriteria
         : ['Task is complete and validated in the target repository.'],
-      model: toSupportedCodexModel((await resolveSlackIntentScopeConfig(env, input.tenantId, {
-        channelId: input.channelId
-      })).settings.intentModel)
+      llmOverride: pendingConfirmation.llmOverride ?? effectiveLlmOverride
     });
     const started = await startRunForTask(env, ctx, input.tenantId, pendingConfirmation.repoId, payload);
     await tenantAuthDb.upsertSlackThreadBinding(env, {
@@ -3478,7 +3718,7 @@ async function runIntentIntake(
         repoId: repoResolution.repoId,
         issue,
         commandText: userText,
-        llmModel: toSupportedCodexModel(settings.intentModel),
+        llmOverride: parsedOverride.override,
         settings
       });
       await queueJiraConfirmation(env, {
@@ -3551,12 +3791,18 @@ async function runIntentIntake(
       lastConfidence: parsed.confidence,
       data: {
         ...parsed,
+        ...(effectiveLlmOverride ? {
+          llmAdapter: effectiveLlmOverride.llmAdapter,
+          llmModel: effectiveLlmOverride.llmModel,
+          llmReasoningEffort: effectiveLlmOverride.llmReasoningEffort
+        } : {}),
         lastUserText: userText,
         pendingConfirmation: {
           repoId: repoResolution.repoId,
           title,
           prompt,
-          acceptanceCriteria
+          acceptanceCriteria,
+          ...(effectiveLlmOverride ? { llmOverride: effectiveLlmOverride } : {})
         }
       }
     });
@@ -3568,7 +3814,8 @@ async function runIntentIntake(
         repoId: repoResolution.repoId,
         title,
         prompt,
-        acceptanceCriteria
+        acceptanceCriteria,
+        llmOverride: effectiveLlmOverride
       })
     });
     return undefined;
@@ -3596,6 +3843,11 @@ async function runIntentIntake(
     lastConfidence: parsed.confidence,
     data: {
       ...parsed,
+      ...(effectiveLlmOverride ? {
+        llmAdapter: effectiveLlmOverride.llmAdapter,
+        llmModel: effectiveLlmOverride.llmModel,
+        llmReasoningEffort: effectiveLlmOverride.llmReasoningEffort
+      } : {}),
       missingFields,
       clarifyingQuestion: question,
       lastUserText: userText,
@@ -3893,7 +4145,7 @@ async function runSlackCommandAsync(
       channelId: payload.channelId,
       threadTs: issueThreadTs,
       latestReviewRound: DEFAULT_REVIEW_ROUND
-    }, payload.responseUrl, toSupportedCodexModel(settings.intentModel), payload.text, settings, preferredRepoId);
+    }, payload.responseUrl, payload.text, settings, preferredRepoId);
     if (started) {
       logSlackCommandLifecycle({
         checkpoint: 'task_started',

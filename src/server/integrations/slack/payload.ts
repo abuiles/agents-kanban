@@ -305,7 +305,7 @@ export function parseSlackEventBody(rawBody: string): SlackEventPayload {
 }
 
 export function parseJiraFastPathIssueKey(text: string): string | undefined {
-  const match = /^fix\s+([A-Z][A-Z0-9_]*-\d+)\s*$/i.exec(text.trim());
+  const match = /^fix\s+([A-Z][A-Z0-9_]*-\d+)(?:\s+.*)?$/i.exec(text.trim());
   if (!match?.[1]) {
     return undefined;
   }
@@ -383,8 +383,10 @@ export function parseReviewFastPathInput(text: string): SlackReviewFastPathInput
   if (!match?.[1]) {
     return undefined;
   }
-  const target = normalizeReviewTarget(match[1]);
-  const asNumber = parsePositiveInt(target);
+  const rawTarget = match[1].trim();
+  const firstToken = rawTarget.split(/\s+/)[0] ?? rawTarget;
+  const target = normalizeReviewTarget(firstToken);
+  const asNumber = parsePositiveInt(target.replace(/^#!/, '').replace(/^#/, ''));
   if (asNumber) {
     return { reviewNumber: asNumber };
   }

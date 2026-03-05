@@ -26,7 +26,7 @@ import { executeRunJob } from '../run-orchestrator';
 import { refreshDependencyStates } from '../shared/dependency-state';
 import { buildLatestRunsByTaskId, isDependencyMergedToDefaultBranch } from '../shared/dependency-readiness';
 import { resolveRunSource } from '../shared/run-source-resolution';
-import { normalizeOperatorSession, normalizeRunLlmState, normalizeTaskUiMeta } from '../../shared/llm';
+import { normalizeOperatorSession, normalizeRunLlmState, normalizeTaskUiMeta, resolveRepoTaskLlmDefaults } from '../../shared/llm';
 import { hasRunReview, normalizeDependencyReviewMetadata, normalizeRunReviewMetadata, normalizeTaskBranchSourceReviewMetadata } from '../../shared/scm';
 import { DEFAULT_TENANT_ID, normalizeTenantId } from '../../shared/tenant';
 import { mapRunStatusToLifecycleMilestone, mirrorRunLifecycleMilestone, mirrorSlackReviewCompletion } from '../integrations/slack/timeline';
@@ -118,6 +118,7 @@ export class RepoBoardDO extends DurableObject<Env> {
   async createTask(input: CreateTaskInput): Promise<Task> {
     await this.ready;
     const repo = await this.getRepo(input.repoId);
+    const repoLlmDefaults = resolveRepoTaskLlmDefaults(repo);
     const now = new Date().toISOString();
     const taskId = createTaskId(input.repoId);
     validateDependenciesForTask(input.repoId, taskId, input.dependencies);
@@ -144,11 +145,15 @@ export class RepoBoardDO extends DurableObject<Env> {
         simulationProfile: input.simulationProfile ?? 'happy_path',
         autoReviewMode: input.autoReviewMode,
         autoReviewPrompt: input.autoReviewPrompt,
-        llmAdapter: input.llmAdapter,
-        llmModel: input.llmModel,
-        llmReasoningEffort: input.llmReasoningEffort,
-        codexModel: input.codexModel,
-        codexReasoningEffort: input.codexReasoningEffort
+        llmAdapter: input.llmAdapter ?? repoLlmDefaults.llmAdapter,
+        llmModel: input.llmModel ?? input.codexModel ?? repoLlmDefaults.llmModel,
+        llmReasoningEffort: input.llmReasoningEffort ?? input.codexReasoningEffort ?? repoLlmDefaults.llmReasoningEffort,
+        codexModel: (input.llmAdapter ?? repoLlmDefaults.llmAdapter) === 'codex'
+          ? (input.codexModel ?? input.llmModel as CreateTaskInput['codexModel'] ?? repoLlmDefaults.llmModel as CreateTaskInput['codexModel'])
+          : undefined,
+        codexReasoningEffort: (input.llmAdapter ?? repoLlmDefaults.llmAdapter) === 'codex'
+          ? (input.codexReasoningEffort ?? input.llmReasoningEffort as CreateTaskInput['codexReasoningEffort'] ?? repoLlmDefaults.llmReasoningEffort as CreateTaskInput['codexReasoningEffort'])
+          : undefined
       })
     };
 

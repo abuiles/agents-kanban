@@ -324,6 +324,15 @@ function readTaskLlmFields(body: Record<string, unknown>, mode: 'create' | 'upda
   };
 }
 
+function readRepoTaskLlmFields(body: Record<string, unknown>, mode: 'create' | 'update') {
+  const llmFields = readTaskLlmFields(body, mode);
+  return {
+    llmAdapter: llmFields.llmAdapter,
+    llmModel: llmFields.llmModel,
+    llmReasoningEffort: llmFields.llmReasoningEffort
+  };
+}
+
 function readPreviewConfig(value: unknown, field: string, required = true): CreateRepoInput['previewConfig'] | undefined {
   if (!required && typeof value === 'undefined') {
     return undefined;
@@ -681,6 +690,7 @@ export function parseCreateRepoInput(body: unknown): CreateRepoInput {
   const autoReviewEnabled = autoReviewConfig?.enabled ?? false;
   const autoReviewProvider = autoReviewConfig?.provider
     ?? (autoReviewEnabled ? getAutoReviewProviderDefaultForScm(scmProvider) : 'gitlab');
+  const repoLlmFields = readRepoTaskLlmFields(body, 'create');
 
   return normalizeRepoPreviewFields({
     tenantId: readTrimmedString(body.tenantId, 'tenantId', false),
@@ -688,7 +698,9 @@ export function parseCreateRepoInput(body: unknown): CreateRepoInput {
     scmProvider,
     scmBaseUrl: readTrimmedString(body.scmBaseUrl, 'scmBaseUrl', false),
     projectPath: projectPath ?? slug,
-    llmAdapter: readEnumValue(body.llmAdapter, 'llmAdapter', LLM_ADAPTERS, false),
+    llmAdapter: repoLlmFields.llmAdapter,
+    llmModel: repoLlmFields.llmModel,
+    llmReasoningEffort: repoLlmFields.llmReasoningEffort,
     llmAuthMode: readEnumValue(body.llmAuthMode, 'llmAuthMode', LLM_AUTH_MODES, false),
     llmProfileId: readTrimmedString(body.llmProfileId, 'llmProfileId', false),
     llmAuthBundleR2Key: readTrimmedString(body.llmAuthBundleR2Key, 'llmAuthBundleR2Key', false)
@@ -733,12 +745,21 @@ export function parseUpdateRepoInput(body: unknown): UpdateRepoInput {
   }
 
   const patch: UpdateRepoInput = {};
+  const repoLlmFields = readRepoTaskLlmFields(body, 'update');
   if (hasOwn(body, 'slug')) patch.slug = readTrimmedString(body.slug, 'slug', false);
   if (hasOwn(body, 'tenantId')) patch.tenantId = readTrimmedString(body.tenantId, 'tenantId', false);
   if (hasOwn(body, 'scmProvider')) patch.scmProvider = readEnumValue(body.scmProvider, 'scmProvider', SCM_PROVIDERS, false);
   if (hasOwn(body, 'scmBaseUrl')) patch.scmBaseUrl = readTrimmedString(body.scmBaseUrl, 'scmBaseUrl', false);
   if (hasOwn(body, 'projectPath')) patch.projectPath = readTrimmedString(body.projectPath, 'projectPath', false);
-  if (hasOwn(body, 'llmAdapter')) patch.llmAdapter = readEnumValue(body.llmAdapter, 'llmAdapter', LLM_ADAPTERS, false);
+  if (hasOwn(body, 'llmAdapter') || hasOwn(body, 'llmModel') || hasOwn(body, 'llmReasoningEffort') || hasOwn(body, 'codexModel') || hasOwn(body, 'codexReasoningEffort')) {
+    patch.llmAdapter = repoLlmFields.llmAdapter;
+  }
+  if (hasOwn(body, 'llmModel') || hasOwn(body, 'codexModel')) {
+    patch.llmModel = repoLlmFields.llmModel;
+  }
+  if (hasOwn(body, 'llmReasoningEffort') || hasOwn(body, 'codexReasoningEffort')) {
+    patch.llmReasoningEffort = repoLlmFields.llmReasoningEffort;
+  }
   if (hasOwn(body, 'llmAuthMode')) patch.llmAuthMode = readEnumValue(body.llmAuthMode, 'llmAuthMode', LLM_AUTH_MODES, false);
   if (hasOwn(body, 'llmProfileId')) patch.llmProfileId = readTrimmedString(body.llmProfileId, 'llmProfileId', false);
   if (hasOwn(body, 'llmAuthBundleR2Key')) patch.llmAuthBundleR2Key = readTrimmedString(body.llmAuthBundleR2Key, 'llmAuthBundleR2Key', false);

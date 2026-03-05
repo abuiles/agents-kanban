@@ -1,4 +1,4 @@
-import type { AutoReviewMode, AgentRun, CodexModel, CodexReasoningEffort, LlmAdapter, LlmReasoningEffort, OperatorSession, TaskUiMeta } from '../ui/domain/types';
+import type { AutoReviewMode, AgentRun, CodexModel, CodexReasoningEffort, LlmAdapter, LlmReasoningEffort, OperatorSession, Repo, TaskUiMeta } from '../ui/domain/types';
 
 export const DEFAULT_LLM_ADAPTER: LlmAdapter = 'codex';
 export const DEFAULT_CODEX_MODEL: CodexModel = 'gpt-5.1-codex-mini';
@@ -9,6 +9,16 @@ export const DEFAULT_SUPPORTS_RESUME_BY_ADAPTER: Record<LlmAdapter, boolean> = {
   cursor_cli: false,
   claude_code: false
 };
+
+export function resolveRepoTaskLlmDefaults(repo?: Pick<Repo, 'llmAdapter' | 'llmModel' | 'llmReasoningEffort'>) {
+  const llmAdapter = repo?.llmAdapter ?? DEFAULT_LLM_ADAPTER;
+  const llmModel = repo?.llmModel?.trim()
+    || (llmAdapter === 'codex' ? DEFAULT_CODEX_MODEL : llmAdapter === 'claude_code' ? 'claude-sonnet-4-0' : 'cursor-default');
+  const llmReasoningEffort = repo?.llmReasoningEffort
+    ?? (llmAdapter === 'codex' ? DEFAULT_REASONING_EFFORT : 'medium');
+
+  return { llmAdapter, llmModel, llmReasoningEffort };
+}
 
 export function normalizeTaskUiMeta(uiMeta?: TaskUiMeta): TaskUiMeta | undefined {
   if (!uiMeta) {

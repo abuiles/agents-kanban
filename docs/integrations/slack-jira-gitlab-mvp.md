@@ -41,13 +41,16 @@ Out of scope (this phase):
 ## Operator day-to-day flow (no dashboard required)
 
 1. In Slack, run `/kanvy fix ABC-123` for deterministic Jira flow, or `/kanvy <free-text request>` from channel or thread.
-2. If free-text starts in channel (non-thread), the system posts a thread kickoff and sends an ephemeral handoff link; continue clarification in that thread.
-3. For free-text flow, answer clarifying questions in the same thread (max 4 turns before structured handoff prompt).
-4. For usage guidance, run `/kanvy help`.
-5. If multiple repo mappings are available, click a repo disambiguation button (Jira flow) or reply with repo id (free-text flow).
-6. Monitor status and MR feedback in the same Slack thread.
-7. When feedback arrives and run enters `DECISION_REQUIRED`, click `Approve rerun`.
-8. Continue the thread loop until `DONE`, `PAUSED`, or `FAILED`.
+2. Add extra task context directly in the command when needed, including execution overrides such as `/kanvy fix ABC-123 use codex 5.3 medium include rollback notes in the task`.
+3. Use the same pattern for review tasks, for example `/kanvy review 1234 use claude sonnet medium focus on auth regressions`.
+4. If no per-task override is provided, the task uses the repo's default task execution settings (`LLM adapter`, `LLM model`, `Reasoning effort`) from repo settings.
+5. If free-text starts in channel (non-thread), the system posts a thread kickoff and sends an ephemeral handoff link; continue clarification in that thread.
+6. For free-text flow, answer clarifying questions in the same thread (max 4 turns before structured handoff prompt).
+7. For usage guidance, run `/kanvy help`.
+8. If multiple repo mappings are available, click a repo disambiguation button (Jira flow) or reply with repo id (free-text flow).
+9. Monitor status and MR feedback in the same Slack thread.
+10. When feedback arrives and run enters `DECISION_REQUIRED`, click `Approve rerun`.
+11. Continue the thread loop until `DONE`, `PAUSED`, or `FAILED`.
 
 ## Reliability and hardening behavior
 
@@ -125,6 +128,7 @@ Execution sequencing for task pack remains strict:
 
 Model config standard for task creation:
 
-- `codex`
-- `gpt-5.1-codex-mini` (default; override via scoped Slack config `intentModel`)
-- `medium` (generic/default intake), deterministic Jira remains compatible
+- Task defaults come from the repo settings fields `LLM adapter`, `LLM model`, and `Reasoning effort`.
+- The task form can override those values per task without mutating the repo defaults.
+- Slack can override those values per task with natural-language command text such as `use codex 5.3 medium`.
+- If neither task nor repo specifies values, the final fallback remains `codex` / `gpt-5.1-codex-mini` / `medium`.

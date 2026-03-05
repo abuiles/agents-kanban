@@ -57,13 +57,16 @@ AgentsKanban helps you run AI-assisted software work the same way you already ma
 ### Slack, Jira, and GitLab MVP Loop
 
 - Trigger task execution from Slack slash commands with a Jira issue key (`/kanvy fix ABC-123`).
+- Append task context and execution overrides directly in Slack (`/kanvy fix ABC-123 use codex 5.3 medium include rollback notes in the task`).
 - Trigger review-only execution against an existing PR/MR (`/kanvy review 1234` or `/kanvy review https://github.com/org/repo/pull/101`).
+- Override the review task model from Slack for a single task (`/kanvy review 1234 use claude sonnet medium focus on auth regressions`).
 - Show concise slash command usage help directly in Slack (`/kanvy help`).
 - Allow free-text `/kanvy <request>` from channel or thread; channel commands auto-create a thread handoff for intake continuation.
 - Resolve Jira project -> repository mapping and start the first run from `main`.
 - Mirror GitLab MR lifecycle and review feedback into the same Slack thread.
 - Gate reruns behind explicit Slack approval (`approve rerun`) in-thread.
 - Keep one Slack thread binding per task across review rounds for day-to-day operator flow.
+- Configure repo-level default task execution settings (`LLM adapter`, `LLM model`, `Reasoning effort`) in repo settings, with per-task overrides in the task form or Slack command text.
 
 ### Operator Controls
 

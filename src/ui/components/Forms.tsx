@@ -14,6 +14,7 @@ import type {
   TaskDependency,
   TaskStatus
 } from '../domain/types';
+import { resolveRepoTaskLlmDefaults } from '../../shared/llm';
 import { normalizeRepoPreviewConfig } from '../../shared/preview';
 
 const DEFAULT_SCM_BASE_URLS: Record<ScmProvider, string> = {
@@ -94,6 +95,8 @@ export function RepoForm({
   const initialDefaultBranch = initialValues?.defaultBranch ?? 'main';
   const initialBaselineUrl = initialValues?.baselineUrl ?? '';
   const initialLlmAdapter = initialValues?.llmAdapter ?? 'codex';
+  const initialLlmModel = initialValues?.llmModel ?? DEFAULT_LLM_MODELS[initialLlmAdapter];
+  const initialLlmReasoningEffort = initialValues?.llmReasoningEffort ?? 'medium';
   const initialLlmAuthMode = initialValues?.llmAuthMode ?? 'bundle';
   const initialLlmProfileId = initialValues?.llmProfileId ?? '';
   const initialLlmAuthBundleR2Key = initialValues?.llmAuthBundleR2Key ?? initialValues?.codexAuthBundleR2Key ?? '';
@@ -145,6 +148,8 @@ export function RepoForm({
   const [previewAdapter, setPreviewAdapter] = useState<PreviewAdapterKind>(initialPreviewAdapter);
   const [previewCheckName, setPreviewCheckName] = useState(initialPreviewCheckName);
   const [llmAdapter, setLlmAdapter] = useState<LlmAdapter>(initialLlmAdapter);
+  const [llmModel, setLlmModel] = useState(initialLlmModel);
+  const [llmReasoningEffort, setLlmReasoningEffort] = useState<LlmReasoningEffort>(initialLlmReasoningEffort);
   const [llmAuthMode, setLlmAuthMode] = useState<NonNullable<CreateRepoInput['llmAuthMode']>>(initialLlmAuthMode);
   const [llmProfileId, setLlmProfileId] = useState(initialLlmProfileId);
   const [llmAuthBundleR2Key, setLlmAuthBundleR2Key] = useState(initialLlmAuthBundleR2Key);
@@ -183,6 +188,8 @@ export function RepoForm({
     setPreviewAdapter(initialPreviewAdapter);
     setPreviewCheckName(initialPreviewCheckName);
     setLlmAdapter(initialLlmAdapter);
+    setLlmModel(initialLlmModel);
+    setLlmReasoningEffort(initialLlmReasoningEffort);
     setLlmAuthMode(initialLlmAuthMode);
     setLlmProfileId(initialLlmProfileId);
     setLlmAuthBundleR2Key(initialLlmAuthBundleR2Key);
@@ -227,6 +234,8 @@ export function RepoForm({
     initialPreviewAdapter,
     initialPreviewCheckName,
     initialLlmAdapter,
+    initialLlmModel,
+    initialLlmReasoningEffort,
     initialLlmAuthMode,
     initialLlmProfileId,
     initialLlmAuthBundleR2Key,
@@ -289,6 +298,8 @@ export function RepoForm({
           scmBaseUrl,
           projectPath,
           llmAdapter,
+          llmModel: llmModel || undefined,
+          llmReasoningEffort,
           llmAuthMode,
           llmProfileId: llmProfileId || undefined,
           llmAuthBundleR2Key: llmAuthBundleR2Key || undefined,
@@ -343,6 +354,8 @@ export function RepoForm({
         setPreviewAdapter('cloudflare_checks');
         setPreviewCheckName('');
         setLlmAdapter('codex');
+        setLlmModel('gpt-5.1-codex-mini');
+        setLlmReasoningEffort('medium');
         setLlmAuthMode('bundle');
         setLlmProfileId('');
         setLlmAuthBundleR2Key('');
@@ -556,13 +569,50 @@ export function RepoForm({
         </FieldShell>
       </div>
       <div className="grid gap-4 md:grid-cols-3">
-        <FieldShell label="LLM adapter">
-          <select className={inputClass()} value={llmAdapter} onChange={(event) => setLlmAdapter(event.target.value as LlmAdapter)}>
+        <FieldShell label="Task LLM adapter" hint="Default executor for new tasks in this repo.">
+          <select
+            className={inputClass()}
+            value={llmAdapter}
+            onChange={(event) => {
+              const nextAdapter = event.target.value as LlmAdapter;
+              setLlmAdapter(nextAdapter);
+              if (!llmModel || llmModel === DEFAULT_LLM_MODELS.codex || llmModel === DEFAULT_LLM_MODELS.cursor_cli || llmModel === DEFAULT_LLM_MODELS.claude_code) {
+                setLlmModel(DEFAULT_LLM_MODELS[nextAdapter]);
+              }
+              if (nextAdapter !== 'codex' && llmReasoningEffort === 'xhigh') {
+                setLlmReasoningEffort('medium');
+              }
+            }}
+          >
             <option value="codex">Codex</option>
             <option value="cursor_cli">Cursor CLI</option>
             <option value="claude_code">Claude Code</option>
           </select>
         </FieldShell>
+        <FieldShell label="Task LLM model" hint="Default model for new tasks in this repo.">
+          {llmAdapter === 'codex' ? (
+            <select className={inputClass()} value={llmModel} onChange={(event) => setLlmModel(event.target.value)}>
+              {CODEX_MODELS.map((model) => (
+                <option key={model.value} value={model.value}>
+                  {model.label}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <input className={inputClass()} value={llmModel} onChange={(event) => setLlmModel(event.target.value)} placeholder="cursor-default" />
+          )}
+        </FieldShell>
+        <FieldShell label="Task reasoning effort" hint="Default executor reasoning effort for new tasks.">
+          <select className={inputClass()} value={llmReasoningEffort} onChange={(event) => setLlmReasoningEffort(event.target.value as LlmReasoningEffort)}>
+            {(llmAdapter === 'codex' ? CODEX_REASONING_EFFORT_OPTIONS : LLM_REASONING_EFFORT_OPTIONS).map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </FieldShell>
+      </div>
+      <div className="grid gap-4 md:grid-cols-3">
         <FieldShell label="LLM auth mode" hint="API mode skips .codex restore and requires OPENAI_API_KEY.">
           <select className={inputClass()} value={llmAuthMode} onChange={(event) => setLlmAuthMode(event.target.value as NonNullable<CreateRepoInput['llmAuthMode']>)}>
             <option value="bundle">Codex bundle (.codex)</option>
@@ -784,6 +834,8 @@ export function TaskForm({
   submitLabel?: string;
 }) {
   const initialRepoId = initialValues?.repoId ?? repos[0]?.repoId ?? '';
+  const initialRepo = repos.find((repo) => repo.repoId === initialRepoId);
+  const initialRepoLlmDefaults = resolveRepoTaskLlmDefaults(initialRepo);
   const initialTitle = initialValues?.title ?? '';
   const initialDescription = initialValues?.description ?? '';
   const initialSourceRef = initialValues?.sourceRef ?? '';
@@ -795,9 +847,9 @@ export function TaskForm({
   const initialTaskStatus = initialValues?.status ?? initialStatus;
   const initialBaselineUrlOverride = initialValues?.baselineUrlOverride ?? '';
   const initialAutoStartEligible = initialValues?.automationState?.autoStartEligible ?? false;
-  const initialLlmAdapter = initialValues?.llmAdapter ?? 'codex';
-  const initialLlmModel = initialValues?.llmModel ?? initialValues?.codexModel ?? DEFAULT_LLM_MODELS[initialLlmAdapter];
-  const initialLlmReasoningEffort = initialValues?.llmReasoningEffort ?? initialValues?.codexReasoningEffort ?? 'medium';
+  const initialLlmAdapter = initialValues?.llmAdapter ?? initialRepoLlmDefaults.llmAdapter;
+  const initialLlmModel = initialValues?.llmModel ?? initialValues?.codexModel ?? initialRepoLlmDefaults.llmModel;
+  const initialLlmReasoningEffort = initialValues?.llmReasoningEffort ?? initialValues?.codexReasoningEffort ?? initialRepoLlmDefaults.llmReasoningEffort;
   const initialAutoReviewMode = initialValues?.autoReviewMode ?? 'inherit';
   const initialAutoReviewPrompt = initialValues?.autoReviewPrompt ?? '';
 
@@ -829,6 +881,16 @@ export function TaskForm({
       setRepoId(repos[0].repoId);
     }
   }, [repoId, repos]);
+
+  useEffect(() => {
+    if (initialValues?.repoId || !repoId) {
+      return;
+    }
+    const repoDefaults = resolveRepoTaskLlmDefaults(repos.find((repo) => repo.repoId === repoId));
+    setLlmAdapter(repoDefaults.llmAdapter);
+    setLlmModel(repoDefaults.llmModel);
+    setLlmReasoningEffort(repoDefaults.llmReasoningEffort);
+  }, [initialValues?.repoId, repoId, repos]);
 
   useEffect(() => {
     setRepoId(initialRepoId);
@@ -913,9 +975,10 @@ export function TaskForm({
         setAutoStartEligible(false);
         setAutoReviewMode('inherit');
         setAutoReviewPrompt('');
-        setLlmAdapter('codex');
-        setLlmModel('gpt-5.1-codex-mini');
-        setLlmReasoningEffort('medium');
+        const resetRepoDefaults = resolveRepoTaskLlmDefaults(repos.find((repo) => repo.repoId === repoId));
+        setLlmAdapter(resetRepoDefaults.llmAdapter);
+        setLlmModel(resetRepoDefaults.llmModel);
+        setLlmReasoningEffort(resetRepoDefaults.llmReasoningEffort);
       }}
     >
       <div className="grid gap-4 md:grid-cols-2">

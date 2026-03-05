@@ -362,6 +362,8 @@ export type Repo = {
   scmBaseUrl?: string;
   projectPath?: string;
   llmAdapter?: LlmAdapter;
+  llmModel?: string;
+  llmReasoningEffort?: LlmReasoningEffort;
   llmAuthMode?: 'bundle' | 'api';
   llmProfileId?: string;
   llmAuthBundleR2Key?: string;
