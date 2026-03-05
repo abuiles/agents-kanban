@@ -163,6 +163,7 @@ export async function executeRunJob(env: Env, params: RunJobParams, sleepFn: Sle
 
     if (params.mode === 'review_only') {
       await executeRunReview(env as Stage3Env, repoBoard, detail.task, repo, params.runId, 'manual_rerun', sleepFn);
+      await finalizeReviewOnlyTaskStatus(repoBoard, detail.task.taskId, params.runId);
       return;
     }
 
@@ -1033,6 +1034,21 @@ fi`)}`
           },
       appendTimelineNote: `Review failed (round ${round}): ${message}`
     });
+  }
+}
+
+async function finalizeReviewOnlyTaskStatus(
+  repoBoard: DurableObjectStub<RepoBoardDO>,
+  taskId: string,
+  runId: string
+) {
+  const run = await repoBoard.getRun(runId);
+  if (run.reviewExecution?.status === 'completed') {
+    await repoBoard.updateTask(taskId, { status: 'DONE' });
+    return;
+  }
+  if (run.reviewExecution?.status === 'failed') {
+    await repoBoard.updateTask(taskId, { status: 'REVIEW' });
   }
 }
 

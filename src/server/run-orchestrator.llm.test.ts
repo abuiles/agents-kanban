@@ -220,11 +220,12 @@ function createHarness(task: Task, repo: Repo) {
   const logs: RunLogEntry[] = [];
   const events: RunEvent[] = [];
   const commands: RunCommand[] = [];
+  let currentTask = { ...task };
   let run = createRealRun(task, 'run_1', new Date('2026-03-02T00:00:00.000Z'));
 
   const repoBoard = {
     async getTask() {
-      return { task };
+      return { task: currentTask };
     },
     async getRun() {
       return run;
@@ -248,6 +249,14 @@ function createHarness(task: Task, repo: Repo) {
     async transitionRun(_runId: string, patch: Record<string, unknown> & { appendTimelineNote?: string }) {
       run = applyRunTransition(run, patch, new Date().toISOString());
       return run;
+    },
+    async updateTask(_taskId: string, patch: Partial<Task>) {
+      currentTask = {
+        ...currentTask,
+        ...patch,
+        updatedAt: new Date().toISOString()
+      };
+      return currentTask;
     },
     async updateOperatorSession(_runId: string, session?: Parameters<typeof normalizeOperatorSession>[0]) {
       run = normalizeRunLlmState({
@@ -289,6 +298,7 @@ function createHarness(task: Task, repo: Repo) {
   return {
     env,
     repoBoard,
+    getTask: () => currentTask,
     getRun: () => run,
     logs,
     events,
@@ -1208,6 +1218,120 @@ describe('executeRunJob LLM adapter coverage', () => {
     expect(harness.commands.some((command) => command.command === 'rm -rf /workspace/repo')).toBe(true);
     expect(harness.getRun().reviewExecution).toMatchObject({ status: 'completed', round: 1, trigger: 'manual_rerun' });
     expect(harness.getRun().reviewSandboxId).toMatch(/^sbx-review-/);
+  });
+
+  it('marks review-only tasks as done after review completion', async () => {
+    const task = buildTask({
+      status: 'REVIEW',
+      sourceRef: 'refs/merge-requests/12/head',
+      tags: ['review_only'],
+      uiMeta: {
+        llmAdapter: 'codex',
+        llmModel: 'gpt-5.3-codex',
+        llmReasoningEffort: 'medium'
+      }
+    });
+    const repo = buildRepo({
+      scmProvider: 'gitlab',
+      scmBaseUrl: 'https://gitlab.example.com',
+      projectPath: 'acme/minions',
+      slug: 'acme/minions',
+      autoReview: {
+        enabled: true,
+        provider: 'gitlab',
+        postInline: true,
+        postingMode: 'platform'
+      }
+    });
+    const harness = createHarness(task, repo);
+    const sandbox = buildSandbox([
+      { type: 'stdout', data: 'Review complete.\n' },
+      { type: 'exit', exitCode: 0 }
+    ]);
+    const baseExec = sandbox.exec.bind(sandbox);
+    sandbox.exec = async (command) => {
+      if (command.includes('/workspace/prompt-last-message.txt')) {
+        return {
+          success: true,
+          exitCode: 0,
+          stdout: '\n===CODEX_LAST_MESSAGE===\n{"findings":[]}\n'
+        };
+      }
+      return baseExec(command);
+    };
+    sandboxState.current = sandbox;
+
+    await executeRunJob(
+      harness.env,
+      {
+        tenantId: 'tenant_legacy',
+        repoId: repo.repoId,
+        taskId: task.taskId,
+        runId: 'run_1',
+        mode: 'review_only'
+      },
+      async () => {}
+    );
+
+    expect(harness.getRun().reviewExecution).toMatchObject({ status: 'completed', round: 1 });
+    expect(harness.getTask().status).toBe('DONE');
+  });
+
+  it('returns review-only tasks to review when review execution fails', async () => {
+    const task = buildTask({
+      status: 'ACTIVE',
+      sourceRef: 'refs/merge-requests/12/head',
+      tags: ['review_only'],
+      uiMeta: {
+        llmAdapter: 'codex',
+        llmModel: 'gpt-5.3-codex',
+        llmReasoningEffort: 'medium'
+      }
+    });
+    const repo = buildRepo({
+      scmProvider: 'gitlab',
+      scmBaseUrl: 'https://gitlab.example.com',
+      projectPath: 'acme/minions',
+      slug: 'acme/minions',
+      autoReview: {
+        enabled: true,
+        provider: 'gitlab',
+        postInline: true,
+        postingMode: 'platform'
+      }
+    });
+    const harness = createHarness(task, repo);
+    const sandbox = buildSandbox([
+      { type: 'stdout', data: 'Review failed.\n' },
+      { type: 'exit', exitCode: 0 }
+    ]);
+    const baseExec = sandbox.exec.bind(sandbox);
+    sandbox.exec = async (command) => {
+      if (command.includes('/workspace/prompt-last-message.txt')) {
+        return {
+          success: true,
+          exitCode: 0,
+          stdout: '\n===CODEX_LAST_MESSAGE===\nnot-json\n'
+        };
+      }
+      return baseExec(command);
+    };
+    sandboxState.current = sandbox;
+
+    await executeRunJob(
+      harness.env,
+      {
+        tenantId: 'tenant_legacy',
+        repoId: repo.repoId,
+        taskId: task.taskId,
+        runId: 'run_1',
+        mode: 'review_only'
+      },
+      async () => {}
+    );
+
+    expect(harness.getRun().reviewExecution).toMatchObject({ status: 'failed', round: 1 });
+    expect(harness.getTask().status).toBe('REVIEW');
   });
 
   it('skips auto-review when effective setting is disabled', async () => {
