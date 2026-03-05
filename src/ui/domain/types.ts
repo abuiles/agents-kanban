@@ -81,6 +81,12 @@ export type SlackIntakeSessionData = {
     prompt: string;
     acceptanceCriteria?: string[];
   };
+  pendingReviewSelection?: {
+    reviewNumber: number;
+    reviewUrl?: string;
+    reviewProviderHint?: 'github' | 'gitlab';
+    choices: string[];
+  };
 };
 export type SlackIntakeSession = {
   id: string;

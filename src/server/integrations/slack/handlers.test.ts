@@ -1514,6 +1514,233 @@ describe('slack handlers', () => {
     );
   });
 
+  it('starts a review-only run from @kanvy mention using thread context for review intent', async () => {
+    const repoBoard = makeRepoBoard({ taskId: 'task_review_context', runId: 'run_review_context' });
+    const boardIndex = makeBoardIndex([
+      {
+        repoId: 'repo_alpha',
+        slug: 'acme/repo-alpha',
+        scmProvider: 'github',
+        scmBaseUrl: 'https://github.com',
+        projectPath: 'acme/repo-alpha',
+        autoReview: {
+          enabled: true,
+          provider: 'github',
+          postInline: false
+        }
+      } as unknown as { repoId: string; slug: string }
+    ]);
+    const env = makeEnv('secret', repoBoard, boardIndex);
+    await env.SECRETS_KV.put('slack/bot-token', 'xoxb-test');
+    let openAiCalled = 0;
+    fetchSpy.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('https://slack.com/api/conversations.replies')) {
+        return new Response(JSON.stringify({
+          ok: true,
+          messages: [
+            { ts: '1772660529.450500', user: 'U1', text: 'Draft MR created for ACME-1234' },
+            { ts: '1772660529.450600', user: 'U1', text: 'https://github.com/acme/repo-alpha/pull/12041' },
+            { ts: '1772660529.450700', user: 'U2', text: 'Looks good but needs review' }
+          ]
+        }), { status: 200 });
+      }
+      if (url.includes('https://api.openai.com/v1/chat/completions')) {
+        openAiCalled += 1;
+        return new Response(JSON.stringify({
+          choices: [{
+            message: {
+              content: JSON.stringify({
+                isReview: true,
+                reviewUrl: 'https://github.com/acme/repo-alpha/pull/12041'
+              })
+            }
+          }]
+        }), { status: 200 });
+      }
+      if (url.includes('https://slack.com/api/chat.postMessage')) {
+        const payload = JSON.parse(String(init?.body ?? '{}')) as { thread_ts?: string };
+        return new Response(JSON.stringify({ ok: true, ts: payload.thread_ts ?? '1772660529.450679' }), { status: 200 });
+      }
+      return new Response('{}', { status: 200 });
+    });
+
+    const rawBody = JSON.stringify({
+      type: 'event_callback',
+      event_id: 'EvMentionReviewContext',
+      team_id: 'team_one',
+      event: {
+        type: 'app_mention',
+        channel: 'C0AH77Y53NC',
+        thread_ts: '1772660529.450679',
+        ts: '1772677754.188400',
+        user: 'U02MV9VJUGN',
+        text: '<@U0AJQ0GPJQL> review this',
+        channel_type: 'channel'
+      }
+    });
+    const signature = await buildSlackSignature('secret', nowTs, rawBody);
+    const request = new Request('https://example.test/api/integrations/slack/events', {
+      method: 'POST',
+      headers: slackHeaders(nowTs, signature),
+      body: rawBody
+    });
+
+    const response = await handleSlackEvents(request, env);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ ok: true, status: 'accepted' });
+    expect(openAiCalled).toBe(1);
+    const calls = vi.mocked(global.fetch).mock.calls as Array<[RequestInfo | URL, RequestInit]>;
+    const reviewIntentRequest = calls.find((entry) =>
+      String(entry[0]).includes('https://api.openai.com/v1/chat/completions')
+      && String(entry[1].body).includes('thread_context')
+    );
+    expect(reviewIntentRequest).toBeTruthy();
+    expect(repoBoard.createTask).toHaveBeenCalledWith(expect.objectContaining({
+      repoId: 'repo_alpha',
+      sourceRef: 'pull/12041/head',
+      autoReviewMode: 'on'
+    }));
+    expect(runOrchestratorMocks.scheduleRunJob).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({ mode: 'review_only', repoId: 'repo_alpha' })
+    );
+  });
+
+  it('starts a review-only run when @kanvy mention includes a Slack-formatted GitLab MR URL', async () => {
+    const repoBoard = makeRepoBoard({ taskId: 'task_review_slack_link', runId: 'run_review_slack_link' });
+    const boardIndex = makeBoardIndex([
+      {
+        repoId: 'repo_checkout',
+        slug: 'engineering/customcheckout',
+        scmProvider: 'gitlab',
+        scmBaseUrl: 'https://gitlab.rechargeapps.net',
+        projectPath: 'engineering/customcheckout'
+      } as unknown as { repoId: string; slug: string }
+    ]);
+    const env = makeEnv('secret', repoBoard, boardIndex);
+    await env.SECRETS_KV.put('slack/bot-token', 'xoxb-test');
+    fetchSpy.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('https://slack.com/api/chat.postMessage')) {
+        const payload = JSON.parse(String(init?.body ?? '{}')) as { thread_ts?: string };
+        return new Response(JSON.stringify({ ok: true, ts: payload.thread_ts ?? '1672531200.1234' }), { status: 200 });
+      }
+      return new Response('{}', { status: 200 });
+    });
+
+    const rawBody = JSON.stringify({
+      type: 'event_callback',
+      event_id: 'EvMentionReviewSlackLink',
+      team_id: 'team_one',
+      event: {
+        type: 'message',
+        channel: 'C0AH77Y53NC',
+        thread_ts: '1772660529.450679',
+        ts: '1772677754.188369',
+        user: 'U02MV9VJUGN',
+        text: '<@U0AJQ0GPJQL> review <https://gitlab.rechargeapps.net/engineering/customcheckout/-/merge_requests/31446|31446>',
+        channel_type: 'channel'
+      }
+    });
+    const signature = await buildSlackSignature('secret', nowTs, rawBody);
+    const request = new Request('https://example.test/api/integrations/slack/events', {
+      method: 'POST',
+      headers: slackHeaders(nowTs, signature),
+      body: rawBody
+    });
+
+    const response = await handleSlackEvents(request, env);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ ok: true, status: 'accepted' });
+    expect(repoBoard.createTask).toHaveBeenCalledWith(expect.objectContaining({
+      repoId: 'repo_checkout',
+      sourceRef: 'refs/merge-requests/31446/head',
+      autoReviewMode: 'on'
+    }));
+    expect(runOrchestratorMocks.scheduleRunJob).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({ mode: 'review_only', repoId: 'repo_checkout' })
+    );
+  });
+
+  it('starts review-only run when replying with a repo number after review disambiguation', async () => {
+    const repoBoard = makeRepoBoard({ taskId: 'task_review_reply', runId: 'run_review_reply' });
+    const boardIndex = makeBoardIndex([
+      {
+        repoId: 'repo_alpha',
+        slug: 'acme/repo-alpha',
+        scmProvider: 'github',
+        scmBaseUrl: 'https://github.com',
+        projectPath: 'acme/repo-alpha'
+      } as unknown as { repoId: string; slug: string },
+      {
+        repoId: 'repo_beta',
+        slug: 'acme/repo-beta',
+        scmProvider: 'github',
+        scmBaseUrl: 'https://github.com',
+        projectPath: 'acme/repo-beta'
+      } as unknown as { repoId: string; slug: string }
+    ]);
+    const env = makeEnv('secret', repoBoard, boardIndex);
+    await env.SECRETS_KV.put('slack/bot-token', 'xoxb-test');
+    tenantAuthDbMocks.getSlackIntakeSession.mockResolvedValue({
+      id: 'intake_1',
+      tenantId: 'tenant_local',
+      channelId: 'C123',
+      threadTs: '1672531200.1234',
+      status: 'active',
+      turnCount: 1,
+      lastConfidence: 1,
+      data: {
+        pendingReviewSelection: {
+          reviewNumber: 77,
+          reviewUrl: 'https://github.com/acme/repo-alpha/pull/77',
+          choices: ['repo_alpha', 'repo_beta']
+        }
+      },
+      lastActivityAt: new Date().toISOString(),
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    });
+    const rawBody = JSON.stringify({
+      type: 'event_callback',
+      event_id: 'EvReviewDisambiguationReply',
+      team_id: 'team_one',
+      event: {
+        type: 'message',
+        channel: 'C123',
+        thread_ts: '1672531200.1234',
+        ts: '1672531200.1238',
+        user: 'U1',
+        text: '2',
+        channel_type: 'channel'
+      }
+    });
+    const signature = await buildSlackSignature('secret', nowTs, rawBody);
+    const request = new Request('https://example.test/api/integrations/slack/events', {
+      method: 'POST',
+      headers: slackHeaders(nowTs, signature),
+      body: rawBody
+    });
+
+    const response = await handleSlackEvents(request, env);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ ok: true, status: 'accepted' });
+    expect(repoBoard.createTask).toHaveBeenCalledWith(expect.objectContaining({
+      repoId: 'repo_beta',
+      sourceRef: 'pull/77/head',
+      autoReviewMode: 'on'
+    }));
+    expect(runOrchestratorMocks.scheduleRunJob).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({ mode: 'review_only', repoId: 'repo_beta' })
+    );
+  });
+
   it('handles @kanvy free-text mention using thread context', async () => {
     const env = makeEnv('secret');
     await env.SECRETS_KV.put('slack/bot-token', 'xoxb-test');

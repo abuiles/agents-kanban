@@ -244,7 +244,7 @@ async function detectReviewCommandWithIntent(
         reviewUrl: { type: 'string' },
         providerHint: { type: 'string', enum: ['github', 'gitlab', 'unknown'] }
       },
-      required: ['isReview', 'reviewNumber', 'reviewUrl', 'providerHint']
+      required: ['isReview']
     },
     strict: true
   } as const;
@@ -282,6 +282,10 @@ async function detectReviewCommandWithIntent(
               role: 'system',
               content: [
                 'Classify whether the user requests a code review run.',
+                'Input may include thread_context and latest_user_message.',
+                'Treat `latest_user_message` as the current user intent and `thread_context` as prior messages in that thread.',
+                'When latest_user_message is a shorthand like "review this", "please review", "can you review", infer target from thread_context.',
+                'If no explicit target exists in thread_context, return isReview=false.',
                 'If review is requested, extract the MR/PR number and optional URL.',
                 'Return strict JSON only.'
               ].join(' ')
@@ -327,7 +331,25 @@ async function detectReviewCommandWithIntent(
         continue;
       }
       const parsed = JSON.parse(content) as LlmReviewIntent;
-      if (!parsed.isReview || !Number.isFinite(parsed.reviewNumber) || Number(parsed.reviewNumber) < 1) {
+      let reviewNumber = Number.isFinite(parsed.reviewNumber) ? Math.trunc(Number(parsed.reviewNumber)) : undefined;
+      let reviewUrl = typeof parsed.reviewUrl === 'string' && parsed.reviewUrl.trim()
+        ? parsed.reviewUrl.trim()
+        : undefined;
+      let providerHint = parsed.providerHint === 'github' || parsed.providerHint === 'gitlab'
+        ? parsed.providerHint
+        : undefined;
+
+      if ((!reviewNumber || reviewNumber < 1) && reviewUrl) {
+        const inferred = parseReviewFastPathInput(`review ${reviewUrl}`);
+        if (inferred?.reviewNumber) {
+          reviewNumber = inferred.reviewNumber;
+        }
+        if (!providerHint && inferred?.providerHint) {
+          providerHint = inferred.providerHint;
+        }
+      }
+
+      if (!parsed.isReview || !reviewNumber || reviewNumber < 1) {
         console.info(JSON.stringify({
           event: 'slack_review_intent',
           phase: 'classified_not_review',
@@ -338,9 +360,6 @@ async function detectReviewCommandWithIntent(
         }));
         return undefined;
       }
-      const providerHint = parsed.providerHint === 'github' || parsed.providerHint === 'gitlab'
-        ? parsed.providerHint
-        : undefined;
       console.info(JSON.stringify({
         event: 'slack_review_intent',
         phase: 'classified_review',
@@ -348,13 +367,13 @@ async function detectReviewCommandWithIntent(
         channelId: input.channelId,
         model,
         attempt: index + 1,
-        reviewNumber: Math.trunc(Number(parsed.reviewNumber)),
-        hasReviewUrl: Boolean(typeof parsed.reviewUrl === 'string' && parsed.reviewUrl.trim()),
+        reviewNumber,
+        hasReviewUrl: Boolean(reviewUrl),
         providerHint: providerHint ?? null
       }));
       return {
-        reviewNumber: Math.trunc(Number(parsed.reviewNumber)),
-        reviewUrl: typeof parsed.reviewUrl === 'string' && parsed.reviewUrl.trim() ? parsed.reviewUrl.trim() : undefined,
+        reviewNumber,
+        reviewUrl,
         providerHint
       };
     } catch (error) {
@@ -542,8 +561,11 @@ function buildIntentTextWithThreadContext(
     return command;
   }
   const contextLines = messages
-    .filter((message) => !message.botId)
-    .map((message) => truncateForText(toSingleLine(message.text), 220))
+    .map((message) => {
+      const role = message.botId ? 'assistant' : 'user';
+      const ts = message.ts ? ` [${message.ts}]` : '';
+      return `${role}${ts}: ${truncateForText(toSingleLine(message.text), 220)}`;
+    })
     .filter(Boolean)
     .slice(-8);
   if (contextLines.length === 0) {
@@ -551,6 +573,7 @@ function buildIntentTextWithThreadContext(
   }
   return [
     'thread_context:',
+    'oldest to latest:',
     ...contextLines.map((line) => `- ${line}`),
     'latest_user_message:',
     command
@@ -1746,12 +1769,12 @@ async function resolvePreferredRepoFromThreadContext(
     return undefined;
   }
 
-  const pending = normalizePendingConfirmation(session.pendingConfirmation);
+  const pending = normalizePendingConfirmation(session.data?.pendingConfirmation);
   if (pending?.repoId?.trim()) {
     return pending.repoId.trim();
   }
 
-  const intentData = normalizeSessionIntentData(session.intentData);
+  const intentData = normalizeSessionIntentData(session.data);
   if (intentData.repoId?.trim()) {
     return intentData.repoId.trim();
   }
@@ -2620,9 +2643,8 @@ async function runIntentIntake(
           env,
           ctx,
           input.tenantId,
-          repo.repoId,
+          repo,
           review,
-          DEFAULT_TASK_LLM_MODEL
         );
         await tenantAuthDb.upsertSlackThreadBinding(env, {
           tenantId: input.tenantId,
@@ -2947,11 +2969,26 @@ async function runSlackCommandAsync(
   const normalizedText = payload.text.trim();
   const reviewInput = parseReviewFastPathInput(normalizedText)
     ?? (normalizedText && normalizedText.toLowerCase() !== 'help' && shouldAttemptReviewIntentLlm(normalizedText)
-      ? await detectReviewCommandWithIntent(env, {
-        tenantId,
-        channelId: payload.channelId,
-        text: normalizedText
-      })
+      ? await (async () => {
+        const reviewPromptText = payload.threadTs
+          ? await (async (threadTs: string) => {
+            const threadMessages = await fetchSlackThreadMessages(env, {
+              tenantId,
+              channelId: payload.channelId,
+              threadTs,
+              limit: 12
+            });
+            return threadMessages.length > 0
+              ? buildIntentTextWithThreadContext(normalizedText, threadMessages)
+              : normalizedText;
+          })(payload.threadTs)
+          : normalizedText;
+        return detectReviewCommandWithIntent(env, {
+          tenantId,
+          channelId: payload.channelId,
+          text: reviewPromptText
+        });
+      })()
       : undefined);
   let issueKey = reviewInput ? undefined : parseJiraFastPathIssueKey(payload.text);
   if (!reviewInput && !issueKey && normalizedText && normalizedText.toLowerCase() !== 'help') {
@@ -3239,13 +3276,32 @@ async function runSlackMentionAsync(
     return;
   }
 
+  let threadMessagesForReview: Array<{ text: string; botId?: string; ts?: string }> | undefined;
+  const getThreadMessages = async () => {
+    if (threadMessagesForReview !== undefined) {
+      return threadMessagesForReview;
+    }
+    threadMessagesForReview = await fetchSlackThreadMessages(env, {
+      tenantId,
+      channelId: payload.channelId,
+      threadTs: payload.threadTs,
+      limit: 12
+    });
+    return threadMessagesForReview;
+  };
   const reviewInput = parseReviewFastPathInput(normalizedText)
     ?? (shouldAttemptReviewIntentLlm(normalizedText)
-      ? await detectReviewCommandWithIntent(env, {
-        tenantId,
-        channelId: payload.channelId,
-        text: normalizedText
-      })
+      ? await (async () => {
+        const threadMessages = await getThreadMessages();
+        const reviewPromptText = threadMessages.length > 0
+          ? buildIntentTextWithThreadContext(normalizedText, threadMessages)
+          : normalizedText;
+        return detectReviewCommandWithIntent(env, {
+          tenantId,
+          channelId: payload.channelId,
+          text: reviewPromptText
+        });
+      })()
       : undefined);
   if (reviewInput) {
     logSlackMentionIngestion({
@@ -3342,12 +3398,7 @@ async function runSlackMentionAsync(
     return;
   }
 
-  const threadMessages = await fetchSlackThreadMessages(env, {
-    tenantId,
-    channelId: payload.channelId,
-    threadTs: payload.threadTs,
-    limit: 12
-  });
+  const threadMessages = threadMessagesForReview ?? await getThreadMessages();
   const intakeText = buildIntentTextWithThreadContext(normalizedText, threadMessages);
   logSlackMentionIngestion({
     checkpoint: 'intent_flow_started',
