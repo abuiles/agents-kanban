@@ -490,6 +490,34 @@ function parseSlackIntakeSessionData(value: unknown): SlackIntakeSessionData {
         choices
       };
     };
+    const readPendingReviewRerun = (raw: unknown): SlackIntakeSessionData['pendingReviewRerun'] => {
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+        return undefined;
+      }
+      const record = raw as Record<string, unknown>;
+      const repoId = readString(record.repoId);
+      const taskId = readString(record.taskId);
+      const runId = readString(record.runId);
+      const reviewNumber = typeof record.reviewNumber === 'number' && Number.isFinite(record.reviewNumber)
+        ? Math.trunc(record.reviewNumber)
+        : undefined;
+      const reviewProviderCandidate = readString(record.reviewProvider);
+      const reviewProvider = reviewProviderCandidate === 'github' || reviewProviderCandidate === 'gitlab'
+        ? reviewProviderCandidate
+        : undefined;
+      const reviewUrl = readString(record.reviewUrl);
+      if (!repoId || !taskId || !runId || !reviewNumber || reviewNumber < 1 || !reviewProvider) {
+        return undefined;
+      }
+      return {
+        repoId,
+        taskId,
+        runId,
+        reviewNumber,
+        reviewProvider,
+        ...(reviewUrl ? { reviewUrl } : {})
+      };
+    };
     return {
       intent: data.intent === 'fix_jira' || data.intent === 'create_task' || data.intent === 'unknown' ? data.intent : undefined,
       confidence: typeof data.confidence === 'number' && Number.isFinite(data.confidence) ? data.confidence : undefined,
@@ -504,7 +532,8 @@ function parseSlackIntakeSessionData(value: unknown): SlackIntakeSessionData {
       lastUserText: readString(data.lastUserText),
       repoChoices: readStringArray(data.repoChoices),
       pendingConfirmation: readPendingConfirmation(data.pendingConfirmation),
-      pendingReviewSelection: readPendingReviewSelection(data.pendingReviewSelection)
+      pendingReviewSelection: readPendingReviewSelection(data.pendingReviewSelection),
+      pendingReviewRerun: readPendingReviewRerun(data.pendingReviewRerun)
     };
   } catch {
     return {};

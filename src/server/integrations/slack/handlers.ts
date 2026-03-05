@@ -1,6 +1,6 @@
 import type { IntegrationIssueRef } from '../interfaces';
 import type { CreateTaskInput } from '../../../ui/domain/api';
-import type { Repo } from '../../../ui/domain/types';
+import type { Repo, Task } from '../../../ui/domain/types';
 import { badRequest } from '../../http/errors';
 import { handleError, json } from '../../http/response';
 import * as tenantAuthDb from '../../tenant-auth-db';
@@ -458,6 +458,8 @@ function logSlackMentionIngestion(input: {
     | 'review_repo_candidates'
     | 'review_reply_resolved'
     | 'review_reply_invalid'
+    | 'review_rerun_pending'
+    | 'review_rerun_started'
     | 'review_started'
     | 'intent_flow_started';
   tenantId?: string;
@@ -1557,6 +1559,41 @@ function normalizePendingReviewSelection(data: unknown): {
   return { reviewNumber, reviewUrl, reviewProviderHint, choices };
 }
 
+function normalizePendingReviewRerun(data: unknown): {
+  repoId: string;
+  taskId: string;
+  runId: string;
+  reviewNumber: number;
+  reviewProvider: 'github' | 'gitlab';
+  reviewUrl?: string;
+} | undefined {
+  if (!data || typeof data !== 'object') {
+    return undefined;
+  }
+  const root = data as Record<string, unknown>;
+  const pending = root.pendingReviewRerun;
+  if (!pending || typeof pending !== 'object') {
+    return undefined;
+  }
+  const record = pending as Record<string, unknown>;
+  const repoId = typeof record.repoId === 'string' && record.repoId.trim() ? record.repoId.trim() : undefined;
+  const taskId = typeof record.taskId === 'string' && record.taskId.trim() ? record.taskId.trim() : undefined;
+  const runId = typeof record.runId === 'string' && record.runId.trim() ? record.runId.trim() : undefined;
+  const reviewNumber = typeof record.reviewNumber === 'number' && Number.isFinite(record.reviewNumber)
+    ? Math.trunc(record.reviewNumber)
+    : undefined;
+  const reviewProvider = record.reviewProvider === 'github' || record.reviewProvider === 'gitlab'
+    ? record.reviewProvider
+    : undefined;
+  const reviewUrl = typeof record.reviewUrl === 'string' && record.reviewUrl.trim()
+    ? record.reviewUrl.trim()
+    : undefined;
+  if (!repoId || !taskId || !runId || !reviewNumber || reviewNumber < 1 || !reviewProvider) {
+    return undefined;
+  }
+  return { repoId, taskId, runId, reviewNumber, reviewProvider, reviewUrl };
+}
+
 function resolveRepoFromReply(text: string, choices: string[]): string | undefined {
   const byNumber = resolveRepoFromNumberReply(text, choices);
   if (byNumber) {
@@ -2003,6 +2040,80 @@ async function startReviewRunForTask(
   return { taskId: task.taskId, runId: run.runId };
 }
 
+async function findLatestReviewRunForRepo(
+  env: Env,
+  tenantId: string,
+  repoId: string,
+  review: ResolvedReviewCommand
+): Promise<{ taskId: string; runId: string } | undefined> {
+  const repoBoard = env.REPO_BOARD.getByName(repoId);
+  const listTasks = (repoBoard as unknown as { listTasks?: (tenantId?: string) => Promise<Task[]> }).listTasks;
+  if (!listTasks) {
+    return undefined;
+  }
+  const tasks = await listTasks(tenantId);
+  const scopedTasks = tasks.filter((task) =>
+    task.repoId === repoId
+    && task.sourceRef === review.sourceRef
+  );
+  if (!scopedTasks.length) {
+    return undefined;
+  }
+
+  let latest: { taskId: string; runId: string; startedAt: string } | undefined;
+  for (const task of scopedTasks) {
+    const detail = await repoBoard.getTask(task.taskId, tenantId);
+    const candidate = detail.runs.find((run) =>
+      run.reviewNumber === review.reviewNumber
+      && run.reviewProvider === review.reviewProvider
+    );
+    if (!candidate) {
+      continue;
+    }
+    if (!latest || candidate.startedAt > latest.startedAt) {
+      latest = { taskId: detail.task.taskId, runId: candidate.runId, startedAt: candidate.startedAt };
+    }
+  }
+
+  if (!latest) {
+    return undefined;
+  }
+  return { taskId: latest.taskId, runId: latest.runId };
+}
+
+async function rerunExistingReviewTask(
+  env: Env,
+  ctx: ExecutionContext<unknown> | undefined,
+  tenantId: string,
+  input: {
+    repoId: string;
+    baseRunId: string;
+    prompt: string;
+  }
+): Promise<RunKickoff> {
+  const repoBoard = env.REPO_BOARD.getByName(input.repoId);
+  const run = await repoBoard.requestRunChanges(
+    input.baseRunId,
+    {
+      prompt: input.prompt.trim() || 'Rerun review with latest merge request context.'
+    },
+    tenantId
+  );
+  const workflow = await scheduleRunJob(env, executionContextOrNoop(ctx), {
+    tenantId,
+    repoId: input.repoId,
+    taskId: run.taskId,
+    runId: run.runId,
+    mode: 'review_only'
+  });
+  await repoBoard.transitionRun(run.runId, {
+    workflowInstanceId: workflow.id,
+    orchestrationMode: workflow.id.startsWith('local-alarm-') ? 'local_alarm' : 'workflow',
+    appendTimelineNote: 'Review rerun queued from Slack intake.'
+  }, tenantId);
+  return { taskId: run.taskId, runId: run.runId };
+}
+
 async function syncSlackBindingAfterRunStart(
   env: Env,
   tenantId: string,
@@ -2344,6 +2455,64 @@ async function processReviewCommandFlow(
     return undefined;
   }
   const review = resolveReviewCommandForRepo(repo, input.review);
+  const existingReview = await findLatestReviewRunForRepo(env, input.tenantId, repo.repoId, review);
+  if (existingReview) {
+    const existingSession = await tenantAuthDb.getSlackIntakeSession(env, input.tenantId, input.channelId, input.threadTs);
+    const nextTurn = existingSession?.status === 'active' ? existingSession.turnCount : 0;
+    await tenantAuthDb.upsertSlackIntakeSession(env, {
+      tenantId: input.tenantId,
+      channelId: input.channelId,
+      threadTs: input.threadTs,
+      status: 'active',
+      turnCount: nextTurn,
+      lastConfidence: existingSession?.lastConfidence,
+      data: {
+        ...(existingSession?.data ?? {}),
+        pendingReviewRerun: {
+          repoId: repo.repoId,
+          taskId: existingReview.taskId,
+          runId: existingReview.runId,
+          reviewNumber: review.reviewNumber,
+          reviewProvider: review.reviewProvider,
+          ...(review.reviewUrl ? { reviewUrl: review.reviewUrl } : {})
+        }
+      }
+    });
+
+    const prompt = [
+      `An existing review task already covers ${review.reviewProvider} #${review.reviewNumber} in ${repo.repoId}.`,
+      'Reply with extra context to include on rerun, or reply `yes` / `:+1:` to rerun with default context.',
+      'Reply `no` to cancel.'
+    ].join('\n');
+
+    if (input.responseUrl) {
+      await postSlackResponse(input.responseUrl, {
+        response_type: 'ephemeral',
+        text: prompt
+      });
+    } else {
+      await postThreadPrompt(env, {
+        tenantId: input.tenantId,
+        channelId: input.channelId,
+        threadTs: input.threadTs,
+        text: prompt
+      });
+    }
+
+    logSlackMentionIngestion({
+      checkpoint: 'review_rerun_pending',
+      tenantId: input.tenantId,
+      channelId: input.channelId,
+      threadTs: input.threadTs,
+      reviewNumber: review.reviewNumber,
+      reviewUrl: review.reviewUrl,
+      reviewProviderHint: review.reviewProvider,
+      repoId: repo.repoId,
+      taskId: existingReview.taskId,
+      runId: existingReview.runId
+    });
+    return undefined;
+  }
   const started = await startReviewRunForTask(
     env,
     ctx,
@@ -2698,6 +2867,93 @@ async function runIntentIntake(
   }
 
   const currentTurn = existing?.status === 'active' && !expired ? existing.turnCount : 0;
+  const pendingReviewRerun = existing?.status === 'active' && !expired
+    ? normalizePendingReviewRerun(existing.data)
+    : undefined;
+  if (pendingReviewRerun) {
+    if (isNegativeConfirmation(input.text)) {
+      await tenantAuthDb.upsertSlackIntakeSession(env, {
+        tenantId: input.tenantId,
+        channelId: input.channelId,
+        threadTs: input.threadTs,
+        status: 'completed',
+        turnCount: currentTurn,
+        data: {
+          lastUserText: input.text
+        }
+      });
+      await postThreadPrompt(env, {
+        tenantId: input.tenantId,
+        channelId: input.channelId,
+        threadTs: input.threadTs,
+        text: 'Understood. I will not rerun that review.'
+      });
+      return undefined;
+    }
+
+    const rerunContext = isAffirmativeConfirmation(input.text)
+      ? ''
+      : input.text.trim();
+    if (!rerunContext && !isAffirmativeConfirmation(input.text)) {
+      await postThreadPrompt(env, {
+        tenantId: input.tenantId,
+        channelId: input.channelId,
+        threadTs: input.threadTs,
+        text: 'Reply with `yes` (or :+1:) to rerun, `no` to cancel, or provide extra rerun context.'
+      });
+      return undefined;
+    }
+
+    const started = await rerunExistingReviewTask(
+      env,
+      ctx,
+      input.tenantId,
+      {
+        repoId: pendingReviewRerun.repoId,
+        baseRunId: pendingReviewRerun.runId,
+        prompt: rerunContext
+          ? `Rerun review with additional operator context:\n${rerunContext}`
+          : `Rerun review for ${pendingReviewRerun.reviewProvider} #${pendingReviewRerun.reviewNumber} using latest MR/PR discussion context.`
+      }
+    );
+    await tenantAuthDb.upsertSlackThreadBinding(env, {
+      tenantId: input.tenantId,
+      taskId: pendingReviewRerun.taskId,
+      channelId: input.channelId,
+      threadTs: input.threadTs,
+      currentRunId: started.runId,
+      latestReviewRound: DEFAULT_REVIEW_ROUND
+    });
+    await tenantAuthDb.upsertSlackIntakeSession(env, {
+      tenantId: input.tenantId,
+      channelId: input.channelId,
+      threadTs: input.threadTs,
+      status: 'completed',
+      turnCount: currentTurn,
+      data: {
+        lastUserText: input.text
+      }
+    });
+    await postThreadPrompt(env, {
+      tenantId: input.tenantId,
+      channelId: input.channelId,
+      threadTs: input.threadTs,
+      text: `Started review rerun ${started.runId} for ${pendingReviewRerun.reviewProvider} #${pendingReviewRerun.reviewNumber} in ${pendingReviewRerun.repoId}.`
+    });
+    logSlackMentionIngestion({
+      checkpoint: 'review_rerun_started',
+      tenantId: input.tenantId,
+      channelId: input.channelId,
+      threadTs: input.threadTs,
+      repoId: pendingReviewRerun.repoId,
+      taskId: started.taskId,
+      runId: started.runId,
+      reviewNumber: pendingReviewRerun.reviewNumber,
+      reviewUrl: pendingReviewRerun.reviewUrl,
+      reviewProviderHint: pendingReviewRerun.reviewProvider
+    });
+    return started;
+  }
   const pendingReviewSelection = existing?.status === 'active' && !expired
     ? normalizePendingReviewSelection(existing.data)
     : undefined;
