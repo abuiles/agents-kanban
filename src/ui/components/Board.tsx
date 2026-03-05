@@ -1,5 +1,6 @@
 import { DndContext, DragEndEvent, PointerSensor, useDraggable, useDroppable, useSensor, useSensors } from '@dnd-kit/core';
 import { CSS } from '@dnd-kit/utilities';
+import type { CSSProperties } from 'react';
 import type { AgentRun, Repo, Task, TaskStatus } from '../domain/types';
 import { TASK_COLUMNS } from '../domain/selectors';
 
@@ -79,6 +80,15 @@ function deriveRunSignal(run?: AgentRun) {
   }
 }
 
+const clampTwoLines: CSSProperties = {
+  display: '-webkit-box',
+  WebkitLineClamp: 2,
+  WebkitBoxOrient: 'vertical',
+  overflow: 'hidden',
+  overflowWrap: 'anywhere',
+  wordBreak: 'break-word'
+};
+
 function TaskCard({
   task,
   repo,
@@ -119,12 +129,20 @@ function TaskCard({
             </span>
             <span className={`text-[11px] font-semibold uppercase tracking-[0.14em] ${signal.tone}`}>{signal.label}</span>
           </div>
-          <div className="text-sm font-semibold leading-5 text-slate-50">{task.title}</div>
+          <div className="text-sm font-semibold leading-5 text-slate-50 break-words" style={clampTwoLines}>
+            {task.title}
+          </div>
         </div>
         <span className="mt-1 h-2.5 w-2.5 shrink-0 rounded-full bg-slate-600 group-hover:bg-cyan-300" />
       </div>
 
-      {task.description ? <p className="mt-1.5 line-clamp-2 text-xs leading-5 text-slate-400">{task.description}</p> : null}
+      {task.description
+        ? (
+          <p className="mt-1.5 text-xs leading-5 text-slate-400 break-words" style={clampTwoLines}>
+            {task.description}
+          </p>
+        )
+        : null}
 
       <div className="mt-2 flex items-center justify-between text-[11px] text-slate-500">
         <span>{(latestRun?.reviewNumber ?? latestRun?.prNumber) ? `Review #${latestRun.reviewNumber ?? latestRun.prNumber}` : 'No review yet'}</span>

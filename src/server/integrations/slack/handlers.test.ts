@@ -206,8 +206,9 @@ describe('slack handlers', () => {
     const confirmationThreadPost = calls.find((entry) =>
       String(entry[0]).includes('https://slack.com/api/chat.postMessage')
       && String(entry[1].body).includes('"thread_ts":"1672531200.1234"')
-      && String(entry[1].body).includes('I can create this task from ABC-100:')
+      && String(entry[1].body).includes('I can create this task from *ABC-100*:')
     );
+    expect(confirmationThreadPost).toBeTruthy();
     expect(confirmationThreadPost?.[1].body).toContain('Reply `yes` to create it');
   });
 
@@ -262,7 +263,9 @@ describe('slack handlers', () => {
       waitUntilTasks.push(task);
     });
 
-    const response = await handleSlackCommands(request, makeEnv('secret', repoBoard), { waitUntil } as unknown as ExecutionContext<unknown>);
+    const env = makeEnv('secret', repoBoard);
+    await env.SECRETS_KV.put('slack/bot-token', 'xoxb-test');
+    const response = await handleSlackCommands(request, env, { waitUntil } as unknown as ExecutionContext<unknown>);
 
     expect(response.status).toBe(200);
     expect(waitUntil).toHaveBeenCalledTimes(1);
@@ -283,8 +286,12 @@ describe('slack handlers', () => {
     tenantAuthDbMocks.listJiraProjectRepoMappingsByProject.mockResolvedValue([
       { jiraProjectKey: 'ABC', repoId: 'repo_alpha', priority: 0, active: true, id: 'm1', tenantId: 'tenant_local', createdAt: '', updatedAt: '' }
     ]);
-    fetchSpy.mockImplementation(async (input: RequestInfo | URL) => {
+    fetchSpy.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
+      if (url.includes('https://slack.com/api/chat.postMessage')) {
+        const payload = JSON.parse(String(init?.body ?? '{}')) as { thread_ts?: string };
+        return new Response(JSON.stringify({ ok: true, ts: payload.thread_ts ?? '1672531200.1234' }), { status: 200 });
+      }
       if (url.includes('/v1/chat/completions')) {
         return new Response(JSON.stringify({
           choices: [{
@@ -326,16 +333,22 @@ describe('slack handlers', () => {
     const waitUntilTasks: Array<Promise<unknown>> = [];
     const waitUntil = vi.fn((task: Promise<unknown>) => waitUntilTasks.push(task));
 
-    const response = await handleSlackCommands(request, makeEnv('secret', repoBoard), { waitUntil } as unknown as ExecutionContext<unknown>);
+    const env = makeEnv('secret', repoBoard);
+    await env.SECRETS_KV.put('slack/bot-token', 'xoxb-test');
+    const response = await handleSlackCommands(request, env, { waitUntil } as unknown as ExecutionContext<unknown>);
 
     expect(response.status).toBe(200);
     await waitUntilTasks[0];
     expect(repoBoard.createTask).not.toHaveBeenCalled();
     expect(repoBoard.startRun).not.toHaveBeenCalled();
     const calls = vi.mocked(global.fetch).mock.calls as Array<[RequestInfo | URL, RequestInit]>;
-    const confirmationResponse = calls.find((entry) => String(entry[0]).includes('https://hooks.slack.com/commands/response'));
-    expect(confirmationResponse?.[1].body).toContain('[ABC-100] Stabilize banner rendering on overview');
-    expect(confirmationResponse?.[1].body).toContain('Reply `yes` to create it');
+    const confirmationThreadPost = calls.find((entry) =>
+      String(entry[0]).includes('https://slack.com/api/chat.postMessage')
+      && String(entry[1].body).includes('"thread_ts":"1672531200.1234"')
+      && String(entry[1].body).includes('Stabilize banner rendering on overview')
+    );
+    expect(confirmationThreadPost).toBeTruthy();
+    expect(confirmationThreadPost?.[1].body).toContain('Reply `yes` to create it');
   });
 
   it('uses channel context repo when Jira project mapping is missing', async () => {
@@ -484,17 +497,19 @@ describe('slack handlers', () => {
 
     expect(response.status).toBe(200);
     await waitUntilTasks[0];
-    expect(repoBoard.createTask).toHaveBeenCalledWith(expect.objectContaining({
-      repoId: 'repo_alpha',
-      title: 'Improve README',
-      codexModel: 'gpt-5.1-codex-mini'
-    }));
-    expect(repoBoard.startRun).toHaveBeenCalledWith('task_intake', { tenantId: 'team_one' });
+    expect(repoBoard.createTask).not.toHaveBeenCalled();
+    expect(repoBoard.startRun).not.toHaveBeenCalled();
     expect(tenantAuthDbMocks.upsertSlackIntakeSession).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       tenantId: 'team_one',
       channelId: 'C123',
       threadTs: '1672531200.1234',
-      status: 'completed'
+      status: 'active',
+      data: expect.objectContaining({
+        pendingConfirmation: expect.objectContaining({
+          repoId: 'repo_alpha',
+          title: 'Improve README'
+        })
+      })
     }));
   });
 
@@ -727,7 +742,17 @@ describe('slack handlers', () => {
       secondWaitUntilTasks.push(task);
     });
 
+    fetchSpy.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('https://slack.com/api/chat.postMessage')) {
+        const payload = JSON.parse(String(init?.body ?? '{}')) as { thread_ts?: string };
+        return new Response(JSON.stringify({ ok: true, ts: payload.thread_ts ?? '1672531200.1234' }), { status: 200 });
+      }
+      return new Response('{}', { status: 200 });
+    });
     const env = makeEnv('secret', repoBoard);
+    await env.SECRETS_KV.put('slack/bot-token', 'xoxb-test');
+    await env.SECRETS_KV.put('slack/bot-token', 'xoxb-test');
     const firstResponse = await handleSlackCommands(firstRequest, env, { waitUntil: firstWaitUntil } as unknown as ExecutionContext<unknown>);
     const secondResponse = await handleSlackCommands(secondRequest, env, { waitUntil: secondWaitUntil } as unknown as ExecutionContext<unknown>);
 
@@ -738,9 +763,11 @@ describe('slack handlers', () => {
     await firstWaitUntilTasks[0];
     await secondWaitUntilTasks[0];
 
-    expect(repoBoard.createTask).toHaveBeenCalledTimes(1);
-    expect(repoBoard.startRun).toHaveBeenCalledTimes(1);
-    const duplicateReply = JSON.parse(((vi.mocked(global.fetch).mock.calls[1] as [string, RequestInit])[1].body as string));
+    expect(repoBoard.createTask).not.toHaveBeenCalled();
+    expect(repoBoard.startRun).not.toHaveBeenCalled();
+    const duplicateCall = (vi.mocked(global.fetch).mock.calls as Array<[RequestInfo | URL, RequestInit]>)
+      .find((entry) => String(entry[0]).includes('https://hooks.slack.com/commands/response-dup'));
+    const duplicateReply = JSON.parse(String(duplicateCall?.[1].body ?? '{}'));
     expect(duplicateReply.text).toContain('Duplicate /kanvy command ignored');
   });
 

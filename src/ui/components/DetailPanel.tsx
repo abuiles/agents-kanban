@@ -210,8 +210,8 @@ export function DetailPanel({
               ) : null}
             </div>
             <div>
-              <h2 className="text-xl font-semibold tracking-tight text-white">{task.title}</h2>
-              {task.description ? <p className="mt-2 text-sm leading-6 text-slate-400">{task.description}</p> : null}
+              <h2 className="text-xl font-semibold tracking-tight text-white break-words [overflow-wrap:anywhere]">{task.title}</h2>
+              {task.description ? <p className="mt-2 text-sm leading-6 text-slate-400 break-words [overflow-wrap:anywhere]">{task.description}</p> : null}
             </div>
           </div>
           <button
@@ -525,7 +525,7 @@ export function DetailPanel({
           </PanelSection>
 
           <PanelSection title="Prompt">
-            <p className="text-sm leading-6 text-slate-300">{task.taskPrompt}</p>
+            <p className="text-sm leading-6 text-slate-300 break-words [overflow-wrap:anywhere]">{task.taskPrompt}</p>
           </PanelSection>
 
           {task.sourceRef ? (

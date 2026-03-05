@@ -45,6 +45,9 @@ const AUTO_CREATE_CONFIDENCE_THRESHOLD = 0.8;
 const JIRA_TASK_TRANSFORM_CONFIDENCE_THRESHOLD = 0.75;
 const DEFAULT_JIRA_API_PATH_PREFIX = '/rest/api/3/issue';
 const MAX_LOG_MESSAGE_CHARS = 300;
+const MAX_TASK_TITLE_CHARS = 120;
+const MAX_TASK_DESCRIPTION_CHARS = 320;
+const MAX_SLACK_PROMPT_PREVIEW_CHARS = 420;
 const JIRA_KEY_PATTERN = /^[A-Z][A-Z0-9_]*-\d+$/i;
 
 type SlackLifecycleCheckpoint = 'received' | 'deduped' | 'jira_fetch_started' | 'jira_fetch_failed' | 'task_started';
@@ -209,8 +212,89 @@ function formatSlackThreadLink(channelId: string, threadTs: string) {
   return `https://slack.com/app_redirect?channel=${encodeURIComponent(channelId)}&message_ts=${encodeURIComponent(threadTs)}`;
 }
 
+function normalizeMultilineText(value: string | undefined) {
+  return (value ?? '')
+    .replace(/\r\n/g, '\n')
+    .trim();
+}
+
+function toSingleLine(value: string | undefined) {
+  return normalizeMultilineText(value).replace(/\s+/g, ' ').trim();
+}
+
+function truncateForText(value: string, maxChars: number) {
+  if (value.length <= maxChars) {
+    return value;
+  }
+  return `${value.slice(0, Math.max(0, maxChars - 3)).trimEnd()}...`;
+}
+
+function formatTaskPromptMarkdown(input: {
+  goal: string;
+  details?: string;
+  contextLines?: string[];
+  acceptanceCriteria?: string[];
+}) {
+  const goal = normalizeMultilineText(input.goal) || 'Implement the requested change.';
+  const details = normalizeMultilineText(input.details);
+  const contextLines = (input.contextLines ?? [])
+    .map((line) => normalizeMultilineText(line))
+    .filter(Boolean);
+  const acceptanceCriteria = (input.acceptanceCriteria ?? [])
+    .map((item) => toSingleLine(item))
+    .filter(Boolean);
+  const sections = [
+    '## Goal',
+    goal
+  ];
+  if (details) {
+    sections.push('', '## Details', details);
+  }
+  if (contextLines.length > 0) {
+    sections.push('', '## Context', ...contextLines.map((line) => `- ${line}`));
+  }
+  if (acceptanceCriteria.length > 0) {
+    sections.push('', '## Acceptance Criteria', ...acceptanceCriteria.map((item) => `- ${item}`));
+  }
+  return sections.join('\n').trim();
+}
+
+function buildSlackTaskSummary(input: {
+  repoId: string;
+  title: string;
+  prompt: string;
+  acceptanceCriteria: string[];
+  issueKey?: string;
+}) {
+  const title = truncateForText(toSingleLine(input.title), MAX_TASK_TITLE_CHARS);
+  const prompt = truncateForText(toSingleLine(input.prompt), MAX_SLACK_PROMPT_PREVIEW_CHARS);
+  const acceptance = (input.acceptanceCriteria.length > 0 ? input.acceptanceCriteria : ['Task is complete and validated in the target repository.'])
+    .map((item) => `- ${truncateForText(toSingleLine(item), 200)}`)
+    .join('\n');
+  return [
+    input.issueKey
+      ? `I can create this task from *${input.issueKey}*:`
+      : 'I can create this task:',
+    `*Repo:* \`${input.repoId}\``,
+    `*Title:* ${title}`,
+    '*Prompt:*',
+    `>${prompt}`,
+    '*Acceptance:*',
+    acceptance,
+    'Reply `yes` to create it, or send edits in this thread.'
+  ].join('\n');
+}
+
 function buildTaskPromptFromIssue(issue: IntegrationIssueRef) {
-  return `Fix Jira issue ${issue.issueKey}: ${issue.title}\n\n${issue.body}`.trim();
+  return formatTaskPromptMarkdown({
+    goal: `Fix Jira issue ${issue.issueKey}: ${toSingleLine(issue.title) || issue.issueKey}`,
+    details: normalizeMultilineText(issue.body) || 'No Jira description provided.',
+    contextLines: [
+      `Jira issue: ${issue.issueKey}`,
+      ...(issue.url?.trim() ? [`Jira link: ${issue.url.trim()}`] : [])
+    ],
+    acceptanceCriteria: [`Fix ${issue.issueKey} in the mapped repository.`]
+  });
 }
 
 function buildTaskPayloadFromIssue(
@@ -218,10 +302,12 @@ function buildTaskPayloadFromIssue(
   repoId: string,
   model = DEFAULT_TASK_LLM_MODEL
 ): CreateTaskInput {
+  const issueTitle = toSingleLine(issue.title) || issue.issueKey;
+  const description = truncateForText(`Jira ${issue.issueKey}: ${issueTitle}`, MAX_TASK_DESCRIPTION_CHARS);
   return {
     repoId,
-    title: `[${issue.issueKey}] ${issue.title}`.trim(),
-    description: issue.body,
+    title: truncateForText(`[${issue.issueKey}] ${issueTitle}`.trim(), MAX_TASK_TITLE_CHARS),
+    description,
     sourceRef: SOURCE_REF,
     taskPrompt: buildTaskPromptFromIssue(issue),
     acceptanceCriteria: [
@@ -296,10 +382,22 @@ async function buildTaskPayloadFromIssueWithLlmTransform(
       return fallbackPayload;
     }
     const taskPrompt = parsed.taskPrompt?.trim() || fallbackPayload.taskPrompt;
-    const taskTitle = ensureIssueKeyInTitle(parsed.taskTitle?.trim() || fallbackPayload.title, input.issue.issueKey);
+    const taskTitle = truncateForText(
+      ensureIssueKeyInTitle(parsed.taskTitle?.trim() || fallbackPayload.title, input.issue.issueKey),
+      MAX_TASK_TITLE_CHARS
+    );
     const acceptanceCriteria = parsed.acceptanceCriteria.length > 0
       ? parsed.acceptanceCriteria
       : fallbackPayload.acceptanceCriteria;
+    const normalizedPrompt = formatTaskPromptMarkdown({
+      goal: taskTitle,
+      details: taskPrompt,
+      contextLines: [
+        `Jira issue: ${input.issue.issueKey}`,
+        ...(input.issue.url?.trim() ? [`Jira link: ${input.issue.url.trim()}`] : [])
+      ],
+      acceptanceCriteria
+    });
     console.info(JSON.stringify({
       event: 'slack_jira_transform_result',
       issueKey: input.issue.issueKey,
@@ -311,8 +409,8 @@ async function buildTaskPayloadFromIssueWithLlmTransform(
     return {
       ...fallbackPayload,
       title: taskTitle,
-      description: taskPrompt,
-      taskPrompt,
+      description: truncateForText(toSingleLine(taskTitle), MAX_TASK_DESCRIPTION_CHARS),
+      taskPrompt: normalizedPrompt,
       acceptanceCriteria
     };
   } catch {
@@ -385,12 +483,13 @@ async function queueJiraConfirmation(
   }));
 
   const summary = [
-    `I can create this task from ${input.issue.issueKey}:`,
-    `repo: ${input.payload.repoId}`,
-    `title: ${title}`,
-    `prompt: ${prompt}`,
-    `acceptance: ${acceptanceCriteria.join(' | ')}`,
-    'Reply `yes` to create it, or send edits in this thread.'
+    buildSlackTaskSummary({
+      repoId: input.payload.repoId,
+      title,
+      prompt,
+      acceptanceCriteria,
+      issueKey: input.issue.issueKey
+    })
   ].join('\n');
 
   const delivered = await postThreadPrompt(env, {
@@ -422,12 +521,19 @@ function buildTaskPayloadFromIntent(input: {
   acceptanceCriteria: string[];
   model: CreateTaskInput['codexModel'];
 }): CreateTaskInput {
+  const normalizedTitle = truncateForText(toSingleLine(input.title) || 'Slack intake task', MAX_TASK_TITLE_CHARS);
+  const normalizedPrompt = formatTaskPromptMarkdown({
+    goal: normalizedTitle,
+    details: input.prompt,
+    contextLines: ['Source: Slack /kanvy intake'],
+    acceptanceCriteria: input.acceptanceCriteria
+  });
   return {
     repoId: input.repoId,
-    title: input.title,
-    description: input.prompt,
+    title: normalizedTitle,
+    description: truncateForText(toSingleLine(input.prompt), MAX_TASK_DESCRIPTION_CHARS),
     sourceRef: SOURCE_REF,
-    taskPrompt: input.prompt,
+    taskPrompt: normalizedPrompt,
     acceptanceCriteria: input.acceptanceCriteria,
     context: {
       links: [],
@@ -1554,14 +1660,12 @@ async function runIntentIntake(
       tenantId: input.tenantId,
       channelId: input.channelId,
       threadTs: input.threadTs,
-      text: [
-        'I can create this task:',
-        `repo: ${repoResolution.repoId}`,
-        `title: ${title}`,
-        `prompt: ${prompt}`,
-        `acceptance: ${acceptanceCriteria.join(' | ')}`,
-        'Reply `yes` to create it, or send edits in this thread.'
-      ].join('\n')
+      text: buildSlackTaskSummary({
+        repoId: repoResolution.repoId,
+        title,
+        prompt,
+        acceptanceCriteria
+      })
     });
     return undefined;
   }
