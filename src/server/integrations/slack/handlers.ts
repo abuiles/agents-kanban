@@ -1,5 +1,6 @@
 import type { IntegrationIssueRef } from '../interfaces';
 import type { CreateTaskInput } from '../../../ui/domain/api';
+import type { Repo } from '../../../ui/domain/types';
 import { badRequest } from '../../http/errors';
 import { handleError, json } from '../../http/response';
 import * as tenantAuthDb from '../../tenant-auth-db';
@@ -8,15 +9,18 @@ import { scheduleRunJob } from '../../run-orchestrator';
 import { buildIdempotencyKey } from '../idempotency';
 import {
   parseJiraFastPathIssueKey,
+  parseReviewFastPathInput,
   parseSlackEventBody,
   parseSlackInteractionBody,
   parseSlackSlashCommandBody,
-  type ParsedSlackInteraction
+  type ParsedSlackInteraction,
+  type SlackReviewFastPathInput
 } from './payload';
 import { resolveThreadTenant, verifySlackRequest } from './verification';
 import { mirrorRunLifecycleMilestone } from './timeline';
 import { postSlackChannelMessage, postSlackThreadMessage } from './client';
 import { resolveIntegrationConfig } from '../config-resolution';
+import { getRepoHost, getRepoProjectPath } from '../../../shared/scm';
 import {
   parseSlackIntentWithLlm,
   resolveSlackIntentSettings,
@@ -24,6 +28,7 @@ import {
 } from './intent';
 
 const DEFAULT_TASK_ID_PREFIX = 'issue';
+const DEFAULT_REVIEW_TASK_ID_PREFIX = 'review';
 const DEFAULT_REVIEW_ROUND = 0;
 const BOARD_OBJECT_NAME = 'agentboard';
 const SOURCE_REF = 'main';
@@ -35,9 +40,11 @@ const DISAMBIGUATION_MULTIPLE_MAPPINGS_MESSAGE = 'Multiple repositories are mapp
 const DISAMBIGUATION_NO_MAPPING_MESSAGE = 'No active mapping exists for project';
 const INGRESS_DEDUPE_TTL_SECONDS = 10 * 60;
 const KANVY_HELP_TEXT = [
-  'Usage: `/kanvy fix <JIRA_KEY>` or `/kanvy help`.',
+  'Usage: `/kanvy fix <JIRA_KEY>`, `/kanvy review <MR_NUMBER|MR_URL>`, or `/kanvy help`.',
   'Examples:',
   '- Jira fast-path: `/kanvy fix ABC-123`',
+  '- Review fast-path: `/kanvy review 1234`',
+  '- Review fast-path URL: `/kanvy review https://github.com/abuiles/agents-kanban/pull/101`',
   '- Free-text flow: `/kanvy Investigate flaky checkout tests and propose a fix plan`'
 ].join('\n');
 const SESSION_EXPIRY_MS = 24 * 60 * 60 * 1000;
@@ -57,6 +64,19 @@ type RepoDisambiguationChoice = {
   label: string;
 };
 
+type ReviewRepoDisambiguationChoice = {
+  repoId: string;
+  label: string;
+  reviewProvider: 'github' | 'gitlab';
+};
+
+type ResolvedReviewCommand = {
+  reviewNumber: number;
+  reviewUrl?: string;
+  reviewProvider: 'github' | 'gitlab';
+  sourceRef: string;
+};
+
 type RunKickoff = {
   taskId: string;
   runId: string;
@@ -64,6 +84,10 @@ type RunKickoff = {
 
 function buildTaskIdFromIssue(issueKey: string) {
   return `${DEFAULT_TASK_ID_PREFIX}:${issueKey}`;
+}
+
+function buildTaskIdFromReview(reviewProvider: 'github' | 'gitlab', reviewNumber: number) {
+  return `${DEFAULT_REVIEW_TASK_ID_PREFIX}:${reviewProvider}:${reviewNumber}`;
 }
 
 function issueProjectKeyFromIssue(issueKey: string) {
@@ -545,6 +569,120 @@ function buildTaskPayloadFromIntent(input: {
   };
 }
 
+function resolveReviewProviderFromRepo(repo: Pick<Repo, 'scmProvider' | 'repoId'>): 'github' | 'gitlab' | undefined {
+  return repo.scmProvider === 'github' || repo.scmProvider === 'gitlab' ? repo.scmProvider : undefined;
+}
+
+function buildReviewSourceRef(reviewProvider: 'github' | 'gitlab', reviewNumber: number) {
+  return reviewProvider === 'github'
+    ? `pull/${reviewNumber}/head`
+    : `refs/merge-requests/${reviewNumber}/head`;
+}
+
+function buildReviewCanonicalUrl(
+  reviewProvider: 'github' | 'gitlab',
+  host: string,
+  projectPath: string,
+  reviewNumber: number
+) {
+  const origin = `https://${host}`;
+  return reviewProvider === 'github'
+    ? `${origin}/${projectPath}/pull/${reviewNumber}`
+    : `${origin}/${projectPath}/-/merge_requests/${reviewNumber}`;
+}
+
+function buildReviewTaskPayload(input: {
+  repoId: string;
+  sourceRef: string;
+  reviewProvider: 'github' | 'gitlab';
+  reviewNumber: number;
+  reviewUrl?: string;
+  model: CreateTaskInput['codexModel'];
+}): CreateTaskInput {
+  const reviewLabel = input.reviewProvider === 'github'
+    ? `PR #${input.reviewNumber}`
+    : `MR !${input.reviewNumber}`;
+  const reviewGoal = `Review existing ${reviewLabel} and post actionable findings only.`;
+  return {
+    repoId: input.repoId,
+    title: truncateForText(`[Review] ${reviewLabel}`.trim(), MAX_TASK_TITLE_CHARS),
+    description: truncateForText(toSingleLine(reviewGoal), MAX_TASK_DESCRIPTION_CHARS),
+    sourceRef: input.sourceRef,
+    taskPrompt: formatTaskPromptMarkdown({
+      goal: reviewGoal,
+      details: [
+        `Run review-only mode against ${reviewLabel}.`,
+        'Do not implement or modify code; only review and publish findings.'
+      ].join(' '),
+      contextLines: [
+        `Review provider: ${input.reviewProvider}`,
+        `Review number: ${input.reviewNumber}`,
+        ...(input.reviewUrl ? [`Review URL: ${input.reviewUrl}`] : [])
+      ],
+      acceptanceCriteria: [
+        'Review findings are generated for the target review.',
+        'Findings are posted to the review provider.'
+      ]
+    }),
+    acceptanceCriteria: [
+      'Review findings are generated for the target review.',
+      'Findings are posted to the review provider.'
+    ],
+    context: {
+      links: input.reviewUrl
+        ? [{ id: `${input.reviewProvider}:${input.reviewNumber}`, label: reviewLabel, url: input.reviewUrl }]
+        : [],
+      notes: `Created from Slack /kanvy review for ${reviewLabel}.`
+    },
+    autoReviewMode: 'on',
+    llmAdapter: JIRA_LLM_ADAPTER,
+    codexModel: input.model,
+    codexReasoningEffort: 'medium'
+  };
+}
+
+async function listTenantRepos(env: Env, tenantId: string): Promise<Repo[]> {
+  const boardIndex = env.BOARD_INDEX?.getByName(BOARD_OBJECT_NAME);
+  if (!boardIndex?.listRepos) {
+    return [];
+  }
+  try {
+    return await boardIndex.listRepos(tenantId) as Repo[];
+  } catch {
+    return [];
+  }
+}
+
+function findRepoByReviewUrl(
+  repos: Repo[],
+  input: Required<Pick<SlackReviewFastPathInput, 'providerHint' | 'repoHostHint' | 'projectPathHint'>> & Pick<SlackReviewFastPathInput, 'reviewNumber'>
+) {
+  return repos.find((repo) => {
+    const provider = resolveReviewProviderFromRepo(repo);
+    if (!provider || provider !== input.providerHint) {
+      return false;
+    }
+    return getRepoHost(repo).toLowerCase() === input.repoHostHint.toLowerCase()
+      && getRepoProjectPath(repo) === input.projectPathHint;
+  });
+}
+
+function resolveReviewRepoChoices(repos: Repo[]): ReviewRepoDisambiguationChoice[] {
+  return repos
+    .map((repo) => {
+      const provider = resolveReviewProviderFromRepo(repo);
+      if (!provider) {
+        return undefined;
+      }
+      return {
+        repoId: repo.repoId,
+        label: `${repo.slug} (${repo.repoId})`,
+        reviewProvider: provider
+      };
+    })
+    .filter((entry): entry is ReviewRepoDisambiguationChoice => Boolean(entry));
+}
+
 function buildRepoCandidateValue(value: {
   tenantId: string;
   taskId: string;
@@ -566,6 +704,26 @@ function buildRepoCandidateValue(value: {
     issueBody: value.issueBody,
     issueUrl: value.issueUrl,
     repoId: value.repoId
+  });
+}
+
+function buildReviewRepoCandidateValue(value: {
+  tenantId: string;
+  channelId: string;
+  threadTs: string;
+  repoId: string;
+  reviewNumber: number;
+  reviewProvider: 'github' | 'gitlab';
+  reviewUrl?: string;
+}) {
+  return JSON.stringify({
+    tenantId: value.tenantId,
+    channelId: value.channelId,
+    threadTs: value.threadTs,
+    repoId: value.repoId,
+    reviewNumber: value.reviewNumber,
+    reviewProvider: value.reviewProvider,
+    reviewUrl: value.reviewUrl
   });
 }
 
@@ -642,6 +800,49 @@ function buildNoMappingResponse(issue: IntegrationIssueRef, issueProjectKey: str
   return {
     response_type: 'ephemeral' as const,
     text: `${FALLBACK_DISAMBIGUATION_WARNING} ${issueProjectKey ? `No active mapping exists for project ${issueProjectKey}.` : ''} ${issue.issueKey} will not start automatically.`
+  };
+}
+
+function buildReviewRepoDisambiguationResponse(input: {
+  tenantId: string;
+  channelId: string;
+  threadTs: string;
+  reviewNumber: number;
+  reviewUrl?: string;
+  choices: ReviewRepoDisambiguationChoice[];
+}) {
+  const reviewLabel = input.reviewUrl?.trim()
+    ? input.reviewUrl.trim()
+    : `review #${input.reviewNumber}`;
+  const actions = input.choices.map((option) => ({
+    type: 'button' as const,
+    text: { type: 'plain_text' as const, text: option.label },
+    action_id: 'review_repo_disambiguation',
+    value: buildReviewRepoCandidateValue({
+      tenantId: input.tenantId,
+      channelId: input.channelId,
+      threadTs: input.threadTs,
+      repoId: option.repoId,
+      reviewNumber: input.reviewNumber,
+      reviewProvider: option.reviewProvider,
+      reviewUrl: input.reviewUrl
+    })
+  }));
+  return {
+    response_type: 'ephemeral' as const,
+    replace_original: false,
+    text: `Multiple repositories are available for ${reviewLabel}. Pick one to start review-only mode.`,
+    callback_id: 'review_disambiguation',
+    blocks: [
+      {
+        type: 'section' as const,
+        text: { type: 'mrkdwn' as const, text: `Multiple repositories are available for ${reviewLabel}. Pick one to start review-only mode.` }
+      },
+      {
+        type: 'actions' as const,
+        elements: actions
+      }
+    ]
   };
 }
 
@@ -1137,7 +1338,7 @@ async function startRunForTask(
   ctx: ExecutionContext<unknown> | undefined,
   tenantId: string,
   repoId: string,
-  taskPayload: ReturnType<typeof buildTaskPayloadFromIssue>
+  taskPayload: CreateTaskInput
 ): Promise<RunKickoff> {
   const repoBoard = env.REPO_BOARD.getByName(repoId);
   const task = await repoBoard.createTask(taskPayload);
@@ -1156,6 +1357,48 @@ async function startRunForTask(
   await mirrorRunLifecycleMilestone(env, run, 'queued', `${run.runId}:queued`).catch(() => {
     // Slack timeline mirroring is best effort.
   });
+  return { taskId: task.taskId, runId: run.runId };
+}
+
+async function startReviewRunForTask(
+  env: Env,
+  ctx: ExecutionContext<unknown> | undefined,
+  tenantId: string,
+  repoId: string,
+  review: ResolvedReviewCommand,
+  model: CreateTaskInput['codexModel']
+): Promise<RunKickoff> {
+  const repoBoard = env.REPO_BOARD.getByName(repoId);
+  const task = await repoBoard.createTask(buildReviewTaskPayload({
+    repoId,
+    sourceRef: review.sourceRef,
+    reviewProvider: review.reviewProvider,
+    reviewNumber: review.reviewNumber,
+    reviewUrl: review.reviewUrl,
+    model
+  }));
+  const run = await repoBoard.startRun(task.taskId, { tenantId });
+  await repoBoard.transitionRun(run.runId, {
+    status: 'PR_OPEN',
+    branchName: review.sourceRef,
+    reviewProvider: review.reviewProvider,
+    reviewNumber: review.reviewNumber,
+    reviewUrl: review.reviewUrl,
+    prNumber: review.reviewNumber,
+    prUrl: review.reviewUrl
+  }, tenantId);
+  const workflow = await scheduleRunJob(env, executionContextOrNoop(ctx), {
+    tenantId,
+    repoId,
+    taskId: task.taskId,
+    runId: run.runId,
+    mode: 'review_only'
+  });
+  await repoBoard.transitionRun(run.runId, {
+    workflowInstanceId: workflow.id,
+    orchestrationMode: workflow.id.startsWith('local-alarm-') ? 'local_alarm' : 'workflow',
+    appendTimelineNote: `Review-only run queued for ${review.reviewProvider} #${review.reviewNumber}.`
+  }, tenantId);
   return { taskId: task.taskId, runId: run.runId };
 }
 
@@ -1275,6 +1518,154 @@ async function createThreadBindingForSlashCommand(
 async function resolveTenantAndJiraIssue(env: Env, tenantId: string, issueKey: string): Promise<IntegrationIssueRef> {
   const jira = createJiraIssueSourceIntegrationFromEnv(env, tenantId);
   return jira.fetchIssue(issueKey, tenantId);
+}
+
+type ReviewRepoResolution = {
+  repo?: Repo;
+  choices?: ReviewRepoDisambiguationChoice[];
+  errorMessage?: string;
+};
+
+async function resolveRepoForReviewCommand(
+  env: Env,
+  input: {
+    tenantId: string;
+    channelId: string;
+    review: SlackReviewFastPathInput;
+  }
+): Promise<ReviewRepoResolution> {
+  const repos = await listTenantRepos(env, input.tenantId);
+  const reviewRepos = repos.filter((repo) => Boolean(resolveReviewProviderFromRepo(repo)));
+  if (reviewRepos.length === 0) {
+    return {
+      errorMessage: 'No GitHub or GitLab repositories are configured for this tenant.'
+    };
+  }
+
+  if (input.review.providerHint && input.review.repoHostHint && input.review.projectPathHint) {
+    const matched = findRepoByReviewUrl(reviewRepos, {
+      providerHint: input.review.providerHint,
+      repoHostHint: input.review.repoHostHint,
+      projectPathHint: input.review.projectPathHint,
+      reviewNumber: input.review.reviewNumber
+    });
+    if (!matched) {
+      return {
+        errorMessage: `No configured repository matches ${input.review.reviewUrl ?? `${input.review.providerHint} review #${input.review.reviewNumber}`}.`
+      };
+    }
+    return { repo: matched };
+  }
+
+  const { settings, config } = await resolveSlackIntentScopeConfig(env, input.tenantId, {
+    channelId: input.channelId
+  });
+  const scopedRepoId = config?.scopeType === 'repo' && config.scopeId?.trim()
+    ? config.scopeId.trim()
+    : undefined;
+  const contextRepoId = await resolvePreferredRepoFromChannelContext(env, input.tenantId, input.channelId);
+  const preferredRepoIds = [
+    scopedRepoId,
+    settings.defaultRepoId?.trim(),
+    contextRepoId
+  ].filter((value): value is string => Boolean(value));
+  for (const candidateRepoId of preferredRepoIds) {
+    const matched = reviewRepos.find((repo) => repo.repoId === candidateRepoId);
+    if (matched) {
+      return { repo: matched };
+    }
+  }
+
+  if (reviewRepos.length === 1) {
+    return { repo: reviewRepos[0] };
+  }
+
+  return { choices: resolveReviewRepoChoices(reviewRepos) };
+}
+
+function resolveReviewCommandForRepo(repo: Repo, review: SlackReviewFastPathInput): ResolvedReviewCommand {
+  const reviewProvider = resolveReviewProviderFromRepo(repo);
+  if (!reviewProvider) {
+    throw badRequest(`Repo ${repo.repoId} is not configured with a GitHub or GitLab SCM provider.`);
+  }
+  if (review.providerHint && review.providerHint !== reviewProvider) {
+    throw badRequest(`Review provider mismatch: command targets ${review.providerHint} but repo ${repo.repoId} is ${reviewProvider}.`);
+  }
+  const sourceRef = buildReviewSourceRef(reviewProvider, review.reviewNumber);
+  return {
+    reviewProvider,
+    reviewNumber: review.reviewNumber,
+    reviewUrl: review.reviewUrl ?? buildReviewCanonicalUrl(reviewProvider, getRepoHost(repo), getRepoProjectPath(repo), review.reviewNumber),
+    sourceRef
+  };
+}
+
+async function processReviewCommandFlow(
+  env: Env,
+  ctx: ExecutionContext<unknown> | undefined,
+  input: {
+    tenantId: string;
+    channelId: string;
+    threadTs: string;
+    responseUrl?: string;
+    review: SlackReviewFastPathInput;
+  }
+): Promise<RunKickoff | undefined> {
+  const repoResolution = await resolveRepoForReviewCommand(env, {
+    tenantId: input.tenantId,
+    channelId: input.channelId,
+    review: input.review
+  });
+  if (repoResolution.errorMessage) {
+    await postSlackResponse(input.responseUrl, {
+      response_type: 'ephemeral',
+      text: `${repoResolution.errorMessage} Usage: \`/kanvy review <MR_NUMBER|MR_URL>\`.`
+    });
+    return undefined;
+  }
+  if (repoResolution.choices && repoResolution.choices.length > 0) {
+    await postSlackResponse(input.responseUrl, buildReviewRepoDisambiguationResponse({
+      tenantId: input.tenantId,
+      channelId: input.channelId,
+      threadTs: input.threadTs,
+      reviewNumber: input.review.reviewNumber,
+      reviewUrl: input.review.reviewUrl,
+      choices: repoResolution.choices
+    }));
+    return undefined;
+  }
+  const repo = repoResolution.repo;
+  if (!repo) {
+    await postSlackResponse(input.responseUrl, {
+      response_type: 'ephemeral',
+      text: 'Unable to resolve a repository for review command.'
+    });
+    return undefined;
+  }
+  const review = resolveReviewCommandForRepo(repo, input.review);
+  const started = await startReviewRunForTask(
+    env,
+    ctx,
+    input.tenantId,
+    repo.repoId,
+    review,
+    DEFAULT_TASK_LLM_MODEL
+  );
+  await tenantAuthDb.upsertSlackThreadBinding(env, {
+    tenantId: input.tenantId,
+    taskId: started.taskId,
+    channelId: input.channelId,
+    threadTs: input.threadTs,
+    currentRunId: started.runId,
+    latestReviewRound: DEFAULT_REVIEW_ROUND
+  });
+  await postThreadPrompt(env, {
+    tenantId: input.tenantId,
+    channelId: input.channelId,
+    threadTs: input.threadTs,
+    text: `Started review-only run ${started.runId} for ${review.reviewProvider} #${review.reviewNumber} in ${repo.repoId}.`
+  });
+  return started;
 }
 
 async function processJiraIssueFlow(
@@ -1454,7 +1845,7 @@ async function updateBindingForAction(
   tenantId: string,
   interaction: ParsedSlackInteraction
 ) {
-  if (interaction.actionId === 'repo_disambiguation') {
+  if (interaction.actionId === 'repo_disambiguation' || interaction.actionId === 'review_repo_disambiguation') {
     return;
   }
   if (!interaction.taskId) {
@@ -1763,8 +2154,10 @@ async function runSlackCommandAsync(
   ctx?: ExecutionContext<unknown>
 ) {
   const tenantId = await resolveThreadTenantId(env, payload.teamId);
-  let issueKey = parseJiraFastPathIssueKey(payload.text);
-  if (!issueKey && payload.text.trim() && payload.text.trim().toLowerCase() !== 'help') {
+  const normalizedText = payload.text.trim();
+  const reviewInput = parseReviewFastPathInput(normalizedText);
+  let issueKey = reviewInput ? undefined : parseJiraFastPathIssueKey(payload.text);
+  if (!reviewInput && !issueKey && normalizedText && normalizedText.toLowerCase() !== 'help') {
     issueKey = await detectJiraIssueKeyWithIntent(env, {
       tenantId,
       channelId: payload.channelId,
@@ -1779,7 +2172,7 @@ async function runSlackCommandAsync(
     issueKey: issueKey ?? undefined
   });
 
-  if (payload.text.trim().toLowerCase() === 'help') {
+  if (normalizedText.toLowerCase() === 'help') {
     await postSlackResponse(payload.responseUrl, {
       response_type: 'ephemeral',
       text: KANVY_HELP_TEXT
@@ -1787,11 +2180,13 @@ async function runSlackCommandAsync(
     return;
   }
 
-  const dedupeSubject = issueKey ?? (payload.text.trim() || 'empty');
+  const dedupeSubject = reviewInput
+    ? `review:${reviewInput.reviewUrl ?? reviewInput.reviewNumber}`
+    : issueKey ?? (normalizedText || 'empty');
   const slashDedupeKey = buildIdempotencyKey({
     provider: 'slack',
     tenantId,
-    eventType: issueKey ? 'slash_command.fix' : 'slash_command.intent',
+    eventType: reviewInput ? 'slash_command.review' : issueKey ? 'slash_command.fix' : 'slash_command.intent',
     providerEventId: payload.responseUrl ?? `${payload.teamId ?? 'team:default'}:${payload.channelId}:${dedupeSubject}`,
     subjectId: `${payload.channelId}:${payload.threadTs ?? 'root'}`,
     metadata: {
@@ -1827,11 +2222,57 @@ async function runSlackCommandAsync(
     deduped: false
   });
 
-  if (!payload.text.trim()) {
+  if (!normalizedText) {
     await postSlackResponse(payload.responseUrl, {
       response_type: 'ephemeral',
-      text: 'Usage: `/kanvy fix ABC-123` or `/kanvy <free-text request>`.'
+      text: 'Usage: `/kanvy fix ABC-123`, `/kanvy review <MR_NUMBER|MR_URL>`, or `/kanvy <free-text request>`.'
     });
+    return;
+  }
+
+  if (normalizedText.toLowerCase().startsWith('review') && !reviewInput) {
+    await postSlackResponse(payload.responseUrl, {
+      response_type: 'ephemeral',
+      text: 'Invalid review command. Usage: `/kanvy review <MR_NUMBER|MR_URL>`.'
+    });
+    return;
+  }
+
+  if (reviewInput) {
+    const reviewThreadTs = payload.threadTs
+      ?? await ensureThreadForChannelIntake(env, {
+        tenantId,
+        channelId: payload.channelId,
+        userId: payload.userId,
+        responseUrl: payload.responseUrl
+      });
+    if (!reviewThreadTs) {
+      return;
+    }
+    try {
+      const started = await processReviewCommandFlow(env, ctx, {
+        tenantId,
+        channelId: payload.channelId,
+        threadTs: reviewThreadTs,
+        responseUrl: payload.responseUrl,
+        review: reviewInput
+      });
+      if (started) {
+        logSlackCommandLifecycle({
+          checkpoint: 'task_started',
+          tenantId,
+          channelId: payload.channelId,
+          threadTs: reviewThreadTs,
+          taskId: started.taskId,
+          runId: started.runId
+        });
+      }
+    } catch (error) {
+      await postSlackResponse(payload.responseUrl, {
+        response_type: 'ephemeral',
+        text: `Failed to process /kanvy review command: ${toReadableErrorMessage(error)}`
+      });
+    }
     return;
   }
 
@@ -1996,6 +2437,56 @@ async function handleRepoDisambiguationAction(
   });
 }
 
+async function handleReviewRepoDisambiguationAction(
+  env: Env,
+  ctx: ExecutionContext<unknown> | undefined,
+  tenantId: string,
+  interaction: ParsedSlackInteraction
+): Promise<Response> {
+  const repoId = interaction.repoId?.trim();
+  const reviewNumber = interaction.reviewNumber;
+  const reviewProvider = interaction.reviewProvider;
+  if (!repoId || !reviewNumber || !reviewProvider) {
+    throw badRequest('Missing repository or review context in review repo disambiguation action.');
+  }
+  const repos = await listTenantRepos(env, tenantId);
+  const repo = repos.find((candidate) => candidate.repoId === repoId);
+  if (!repo) {
+    throw badRequest(`Repo ${repoId} is not available for this tenant.`);
+  }
+  const review = resolveReviewCommandForRepo(repo, {
+    reviewNumber,
+    reviewProvider,
+    reviewUrl: interaction.reviewUrl,
+    providerHint: reviewProvider
+  });
+  const started = await startReviewRunForTask(
+    env,
+    ctx,
+    tenantId,
+    repoId,
+    review,
+    DEFAULT_TASK_LLM_MODEL
+  );
+  if (interaction.threadTs) {
+    await tenantAuthDb.upsertSlackThreadBinding(env, {
+      tenantId,
+      taskId: started.taskId,
+      channelId: interaction.channelId,
+      threadTs: interaction.threadTs,
+      currentRunId: started.runId,
+      latestReviewRound: DEFAULT_REVIEW_ROUND
+    });
+  }
+  return json({
+    ok: true,
+    action: interaction.actionId,
+    taskId: started.taskId,
+    runId: started.runId,
+    repoId
+  });
+}
+
 export async function handleSlackCommands(
   request: Request,
   env: Env,
@@ -2091,6 +2582,9 @@ export async function handleSlackInteractions(
     }
     if (interaction.actionId === 'repo_disambiguation') {
       return handleRepoDisambiguationAction(env, ctx, tenantId, interaction);
+    }
+    if (interaction.actionId === 'review_repo_disambiguation') {
+      return handleReviewRepoDisambiguationAction(env, ctx, tenantId, interaction);
     }
     if (interaction.actionId === 'approve_rerun') {
       await startSlackApprovedRerun(env, ctx, tenantId, interaction);

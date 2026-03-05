@@ -12,7 +12,15 @@ type SlackSlashCommandPayloadBase = {
 
 export type SlackSlashCommandPayload = SlackSlashCommandPayloadBase;
 
-export type SlackInteractionAction = 'repo_disambiguation' | 'approve_rerun' | 'pause' | 'close';
+export type SlackInteractionAction = 'repo_disambiguation' | 'review_repo_disambiguation' | 'approve_rerun' | 'pause' | 'close';
+
+export type SlackReviewFastPathInput = {
+  reviewNumber: number;
+  reviewUrl?: string;
+  providerHint?: 'github' | 'gitlab';
+  repoHostHint?: string;
+  projectPathHint?: string;
+};
 
 export type SlackInteractionValue = {
   tenantId?: string;
@@ -26,6 +34,9 @@ export type SlackInteractionValue = {
   issueTitle?: string;
   issueBody?: string;
   issueUrl?: string;
+  reviewNumber?: number;
+  reviewUrl?: string;
+  reviewProvider?: 'github' | 'gitlab';
 };
 
 export type ParsedSlackInteraction = {
@@ -42,6 +53,9 @@ export type ParsedSlackInteraction = {
   issueTitle?: string;
   issueBody?: string;
   issueUrl?: string;
+  reviewNumber?: number;
+  reviewUrl?: string;
+  reviewProvider?: 'github' | 'gitlab';
 };
 
 type SlackEventPayload = {
@@ -64,6 +78,7 @@ const ISSUE_KEY_PATTERN = /^[A-Z][A-Z0-9_]*-\d+$/i;
 const SUPPORTED_SLACK_COMMAND = '/kanvy';
 const SUPPORTED_ACTION_IDS: Set<string> = new Set([
   'repo_disambiguation',
+  'review_repo_disambiguation',
   'approve_rerun',
   'pause',
   'close'
@@ -174,6 +189,12 @@ export function parseSlackInteractionBody(rawBody: string): ParsedSlackInteracti
   const container = payload.container as Record<string, unknown> | undefined;
   const team = payload.team as Record<string, unknown> | undefined;
   const tenantId = (value.tenantId ?? undefined) as string | undefined;
+  const reviewProviderRaw = readOptionalString(value.reviewProvider, 'reviewProvider');
+  const reviewProvider = reviewProviderRaw === 'github' || reviewProviderRaw === 'gitlab'
+    ? reviewProviderRaw
+    : reviewProviderRaw
+      ? (() => { throw badRequest('Invalid Slack interaction value reviewProvider.'); })()
+      : undefined;
 
   return {
     actionId,
@@ -200,7 +221,10 @@ export function parseSlackInteractionBody(rawBody: string): ParsedSlackInteracti
     issueKey: readOptionalString(value.issueKey, 'issueKey'),
     issueTitle: readOptionalString(value.issueTitle, 'issueTitle'),
     issueBody: readOptionalString(value.issueBody, 'issueBody'),
-    issueUrl: readOptionalString(value.issueUrl, 'issueUrl')
+    issueUrl: readOptionalString(value.issueUrl, 'issueUrl'),
+    reviewNumber: readOptionalNumber(value.reviewNumber, 'reviewNumber'),
+    reviewUrl: readOptionalString(value.reviewUrl, 'reviewUrl'),
+    reviewProvider
   };
 }
 
@@ -252,4 +276,82 @@ export function parseJiraFastPathIssueKey(text: string): string | undefined {
   }
   const issueKey = match[1].toUpperCase();
   return ISSUE_KEY_PATTERN.test(issueKey) ? issueKey : undefined;
+}
+
+function parsePositiveInt(value: string): number | undefined {
+  if (!/^\d+$/.test(value)) {
+    return undefined;
+  }
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return undefined;
+  }
+  return parsed;
+}
+
+function parseGithubPullUrl(raw: string): SlackReviewFastPathInput | undefined {
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return undefined;
+  }
+  const segments = parsed.pathname.split('/').filter(Boolean);
+  if (segments.length < 4 || segments[2] !== 'pull') {
+    return undefined;
+  }
+  const reviewNumber = parsePositiveInt(segments[3] ?? '');
+  if (!reviewNumber) {
+    return undefined;
+  }
+  const projectPath = `${segments[0]}/${segments[1]}`;
+  return {
+    reviewNumber,
+    reviewUrl: `${parsed.origin}/${projectPath}/pull/${reviewNumber}`,
+    providerHint: 'github',
+    repoHostHint: parsed.host.toLowerCase(),
+    projectPathHint: projectPath
+  };
+}
+
+function parseGitlabMergeRequestUrl(raw: string): SlackReviewFastPathInput | undefined {
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return undefined;
+  }
+  const segments = parsed.pathname.split('/').filter(Boolean);
+  const markerIndex = segments.findIndex((segment) => segment === '-');
+  if (markerIndex < 1 || segments[markerIndex + 1] !== 'merge_requests') {
+    return undefined;
+  }
+  const reviewNumber = parsePositiveInt(segments[markerIndex + 2] ?? '');
+  if (!reviewNumber) {
+    return undefined;
+  }
+  const projectPath = segments.slice(0, markerIndex).join('/');
+  if (!projectPath) {
+    return undefined;
+  }
+  return {
+    reviewNumber,
+    reviewUrl: `${parsed.origin}/${projectPath}/-/merge_requests/${reviewNumber}`,
+    providerHint: 'gitlab',
+    repoHostHint: parsed.host.toLowerCase(),
+    projectPathHint: projectPath
+  };
+}
+
+export function parseReviewFastPathInput(text: string): SlackReviewFastPathInput | undefined {
+  const match = /^review\s+(.+?)\s*$/i.exec(text.trim());
+  if (!match?.[1]) {
+    return undefined;
+  }
+  const target = match[1].trim();
+  const asNumber = parsePositiveInt(target);
+  if (asNumber) {
+    return { reviewNumber: asNumber };
+  }
+  return parseGithubPullUrl(target) ?? parseGitlabMergeRequestUrl(target);
 }
