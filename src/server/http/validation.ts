@@ -390,6 +390,37 @@ function readAutoReviewConfig(value: unknown, field: string, required = true): N
   const provider = readEnumValue(value.provider, `${field}.provider`, AUTO_REVIEW_PROVIDERS, false);
   const postInline = readBoolean(value.postInline, `${field}.postInline`, false);
   const postingMode = readEnumValue(value.postingMode, `${field}.postingMode`, AUTO_REVIEW_POSTING_MODES, false);
+  const llmAdapter = readEnumValue(value.llmAdapter, `${field}.llmAdapter`, LLM_ADAPTERS, false);
+  const llmModel = readTrimmedString(value.llmModel, `${field}.llmModel`, false);
+  const llmReasoningEffort = readEnumValue(value.llmReasoningEffort, `${field}.llmReasoningEffort`, CODEX_REASONING_EFFORTS, false);
+  const codexModel = readEnumValue(value.codexModel, `${field}.codexModel`, CODEX_MODELS, false);
+  const codexReasoningEffort = readEnumValue(value.codexReasoningEffort, `${field}.codexReasoningEffort`, CODEX_REASONING_EFFORTS, false);
+
+  if (llmAdapter && llmAdapter !== 'codex' && (typeof codexModel !== 'undefined' || typeof codexReasoningEffort !== 'undefined')) {
+    throw badRequest(`Invalid ${field}: codex compatibility fields require llmAdapter "codex".`);
+  }
+
+  if (llmModel && codexModel && llmModel !== codexModel) {
+    throw badRequest(`Invalid ${field}: llmModel and codexModel must match when both are provided.`);
+  }
+
+  if (llmReasoningEffort && codexReasoningEffort && llmReasoningEffort !== codexReasoningEffort) {
+    throw badRequest(`Invalid ${field}: llmReasoningEffort and codexReasoningEffort must match when both are provided.`);
+  }
+
+  const effectiveAdapter = llmAdapter ?? ((typeof codexModel !== 'undefined' || typeof codexReasoningEffort !== 'undefined') ? 'codex' : undefined);
+  const effectiveModel = llmModel ?? codexModel;
+  const effectiveReasoningEffort = llmReasoningEffort ?? codexReasoningEffort;
+  const normalizedCodexModel = (effectiveAdapter ?? 'codex') === 'codex'
+    ? readEnumValue(codexModel ?? effectiveModel, `${field}.llmModel`, CODEX_MODELS, false)
+    : codexModel;
+  const normalizedCodexReasoningEffort = (effectiveAdapter ?? 'codex') === 'codex'
+    ? readEnumValue(codexReasoningEffort ?? effectiveReasoningEffort, `${field}.llmReasoningEffort`, CODEX_REASONING_EFFORTS, false)
+    : codexReasoningEffort;
+
+  if ((effectiveAdapter ?? 'codex') === 'codex' && effectiveModel) {
+    readEnumValue(effectiveModel, `${field}.llmModel`, CODEX_MODELS, true);
+  }
 
   return {
     ...(typeof enabled === 'boolean' ? { enabled } : {}),
@@ -397,6 +428,11 @@ function readAutoReviewConfig(value: unknown, field: string, required = true): N
     ...(typeof postInline === 'boolean' ? { postInline } : {}),
     ...(postingMode ? { postingMode } : {}),
     ...(prompt ? { prompt } : {}),
+    ...(effectiveAdapter ? { llmAdapter: effectiveAdapter } : {}),
+    ...(effectiveModel ? { llmModel: effectiveModel } : {}),
+    ...(effectiveReasoningEffort ? { llmReasoningEffort: effectiveReasoningEffort } : {}),
+    ...(normalizedCodexModel ? { codexModel: normalizedCodexModel } : {}),
+    ...(normalizedCodexReasoningEffort ? { codexReasoningEffort: normalizedCodexReasoningEffort } : {}),
   };
 }
 
@@ -657,7 +693,12 @@ export function parseCreateRepoInput(body: unknown): CreateRepoInput {
       provider: autoReviewProvider,
       postInline: autoReviewConfig?.postInline ?? false,
       postingMode: autoReviewConfig?.postingMode ?? 'platform',
-      ...(autoReviewConfig?.prompt ? { prompt: autoReviewConfig.prompt } : {})
+      ...(autoReviewConfig?.prompt ? { prompt: autoReviewConfig.prompt } : {}),
+      ...(autoReviewConfig?.llmAdapter ? { llmAdapter: autoReviewConfig.llmAdapter } : {}),
+      ...(autoReviewConfig?.llmModel ? { llmModel: autoReviewConfig.llmModel } : {}),
+      ...(autoReviewConfig?.llmReasoningEffort ? { llmReasoningEffort: autoReviewConfig.llmReasoningEffort } : {}),
+      ...(autoReviewConfig?.codexModel ? { codexModel: autoReviewConfig.codexModel } : {}),
+      ...(autoReviewConfig?.codexReasoningEffort ? { codexReasoningEffort: autoReviewConfig.codexReasoningEffort } : {})
     },
     sentinelConfig: hasOwn(body, 'sentinelConfig')
       ? readSentinelConfig(body.sentinelConfig, 'sentinelConfig')

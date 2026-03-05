@@ -696,10 +696,22 @@ async function executeRunReview(
 
   try {
     const run = await repoBoard.getRun(runId);
-    const llmAdapterKind = resolveLlmAdapterKind(task, run.llmAdapter);
+    const llmAdapterKind = autoReview.llmAdapter
+      ?? resolveLlmAdapterKind(task, run.llmAdapter);
     const llmAdapter = getLlmAdapter(llmAdapterKind);
-    const llmModel = resolveRunLlmModel(env as Stage3Env, llmAdapter.kind, task.uiMeta?.llmModel ?? task.uiMeta?.codexModel);
-    const llmReasoningEffort = task.uiMeta?.llmReasoningEffort ?? task.uiMeta?.codexReasoningEffort ?? 'medium';
+    const llmModel = resolveRunLlmModel(
+      env as Stage3Env,
+      llmAdapter.kind,
+      autoReview.llmModel
+        ?? autoReview.codexModel
+        ?? task.uiMeta?.llmModel
+        ?? task.uiMeta?.codexModel
+    );
+    const llmReasoningEffort = autoReview.llmReasoningEffort
+      ?? autoReview.codexReasoningEffort
+      ?? task.uiMeta?.llmReasoningEffort
+      ?? task.uiMeta?.codexReasoningEffort
+      ?? 'medium';
     const scmAdapter = getScmAdapter(repo);
     const scmCredential = await getScmCredential(env, repo, scmAdapter);
     const reviewSandboxId = buildSandboxId(runId, 'review');

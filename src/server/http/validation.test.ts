@@ -458,6 +458,49 @@ describe('repo validation', () => {
     });
   });
 
+  it('parses repo auto-review llm settings with codex compatibility fields', () => {
+    const parsed = parseCreateRepoInput({
+      slug: 'abuiles/minions',
+      baselineUrl: 'https://example.com',
+      autoReview: {
+        enabled: true,
+        provider: 'github',
+        llmAdapter: 'codex',
+        llmModel: 'gpt-5.3-codex-spark',
+        llmReasoningEffort: 'high',
+        codexModel: 'gpt-5.3-codex-spark',
+        codexReasoningEffort: 'high'
+      }
+    });
+
+    expect(parsed.autoReview).toEqual({
+      enabled: true,
+      provider: 'github',
+      postInline: false,
+      postingMode: 'platform',
+      llmAdapter: 'codex',
+      llmModel: 'gpt-5.3-codex-spark',
+      llmReasoningEffort: 'high',
+      codexModel: 'gpt-5.3-codex-spark',
+      codexReasoningEffort: 'high'
+    });
+  });
+
+  it('rejects mismatched repo auto-review llm and codex model values', () => {
+    expect(() =>
+      parseCreateRepoInput({
+        slug: 'abuiles/minions',
+        baselineUrl: 'https://example.com',
+        autoReview: {
+          enabled: true,
+          llmAdapter: 'codex',
+          llmModel: 'gpt-5.1-codex-mini',
+          codexModel: 'gpt-5.3-codex'
+        }
+      })
+    ).toThrow('Invalid autoReview: llmModel and codexModel must match when both are provided.');
+  });
+
   it('defaults enabled auto-review provider to github for github repos', () => {
     const parsed = parseCreateRepoInput({
       scmProvider: 'github',

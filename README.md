@@ -192,6 +192,12 @@ npm run build
 npm run dev
 ```
 
+Optional preflight check:
+
+```bash
+yarn typecheck
+```
+
 Dev tunnel behavior for `npm run dev`:
 
 - Automatic mode selection:

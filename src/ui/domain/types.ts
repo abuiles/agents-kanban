@@ -110,6 +110,11 @@ export type RepoAutoReview = {
   provider: AutoReviewProvider;
   postInline: boolean;
   postingMode?: AutoReviewPostingMode;
+  llmAdapter?: LlmAdapter;
+  llmModel?: string;
+  llmReasoningEffort?: LlmReasoningEffort;
+  codexModel?: CodexModel;
+  codexReasoningEffort?: CodexReasoningEffort;
 };
 export type RepoSentinelConfig = {
   enabled: boolean;
