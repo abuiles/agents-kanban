@@ -73,6 +73,7 @@ type SlackEventPayload = {
   challenge?: string;
   eventId?: string;
   teamId?: string;
+  authedUserIds: string[];
   event?: {
     type?: string;
     subtype?: string;
@@ -254,6 +255,26 @@ export function parseSlackEventBody(rawBody: string): SlackEventPayload {
     type: payload.type,
     challenge: typeof payload.challenge === 'string' ? payload.challenge : undefined,
     eventId: typeof payload.event_id === 'string' && payload.event_id.trim() ? payload.event_id.trim() : undefined,
+    authedUserIds: (() => {
+      const ids = new Set<string>();
+      const fromAuthedUsers = (payload.authed_users as unknown[] | undefined) ?? [];
+      for (const entry of fromAuthedUsers) {
+        if (typeof entry === 'string' && entry.trim()) {
+          ids.add(entry.trim());
+        }
+      }
+      const authorizations = (payload.authorizations as unknown[] | undefined) ?? [];
+      for (const entry of authorizations) {
+        if (!entry || typeof entry !== 'object') {
+          continue;
+        }
+        const userId = (entry as Record<string, unknown>).user_id;
+        if (typeof userId === 'string' && userId.trim()) {
+          ids.add(userId.trim());
+        }
+      }
+      return [...ids];
+    })(),
     teamId: (() => {
       const event = payload as Record<string, unknown>;
       if (typeof event.team_id === 'string' && event.team_id.trim()) {

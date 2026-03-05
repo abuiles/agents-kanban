@@ -209,7 +209,7 @@ describe('slack handlers', () => {
       && String(entry[1].body).includes('I can create this task from *ABC-100*:')
     );
     expect(confirmationThreadPost).toBeTruthy();
-    expect(confirmationThreadPost?.[1].body).toContain('Reply `yes` or 👍 to create it');
+    expect(confirmationThreadPost?.[1].body).toContain('Reply `@kanvy yes` or `@kanvy 👍` to create it');
   });
 
   it('uses LLM intent detection to route "fix jira issue <KEY>" through Jira fast-path', async () => {
@@ -348,7 +348,7 @@ describe('slack handlers', () => {
       && String(entry[1].body).includes('Stabilize banner rendering on overview')
     );
     expect(confirmationThreadPost).toBeTruthy();
-    expect(confirmationThreadPost?.[1].body).toContain('Reply `yes` or 👍 to create it');
+    expect(confirmationThreadPost?.[1].body).toContain('Reply `@kanvy yes` or `@kanvy 👍` to create it');
   });
 
   it('uses channel context repo when Jira project mapping is missing', async () => {
@@ -452,7 +452,7 @@ describe('slack handlers', () => {
     expect(repoBoard.startRun).not.toHaveBeenCalled();
   });
 
-  it('starts a review-only run from `/kanvy review <number>` when one review repo is available', async () => {
+  it('queues review confirmation from `/kanvy review <number>` before starting run', async () => {
     const repoBoard = makeRepoBoard({ taskId: 'task_review', runId: 'run_review' });
     const boardIndex = makeBoardIndex([
       {
@@ -498,33 +498,30 @@ describe('slack handlers', () => {
     expect(response.status).toBe(200);
     await waitUntilTasks[0];
 
-    expect(repoBoard.createTask).toHaveBeenCalledWith(expect.objectContaining({
-      repoId: 'repo_alpha',
-      sourceRef: 'pull/1234/head',
-      autoReviewMode: 'on',
-      llmModel: 'gpt-5.3-codex',
-      llmReasoningEffort: 'high',
-      codexModel: 'gpt-5.3-codex',
-      codexReasoningEffort: 'high'
-    }));
-    expect(runOrchestratorMocks.scheduleRunJob).toHaveBeenCalledWith(
-      expect.anything(),
+    expect(repoBoard.createTask).not.toHaveBeenCalled();
+    expect(repoBoard.startRun).not.toHaveBeenCalled();
+    expect(runOrchestratorMocks.scheduleRunJob).not.toHaveBeenCalled();
+    expect(tenantAuthDbMocks.upsertSlackIntakeSession).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
-        repoId: 'repo_alpha',
-        mode: 'review_only'
+        tenantId: 'team_one',
+        channelId: 'C123',
+        threadTs: '1672531200.1234',
+        status: 'active',
+        data: expect.objectContaining({
+          pendingReviewStart: expect.objectContaining({
+            repoId: 'repo_alpha',
+            reviewNumber: 1234,
+            reviewProvider: 'github',
+            sourceRef: 'pull/1234/head'
+          })
+        })
       })
     );
-    expect(repoBoard.transitionRun).toHaveBeenCalledWith('run_review', expect.objectContaining({
-      status: 'PR_OPEN',
-      reviewNumber: 1234,
-      reviewProvider: 'github',
-      branchName: 'pull/1234/head'
-    }), 'team_one');
     expect(fetchIssue).not.toHaveBeenCalled();
   });
 
-  it('starts a review-only run from GitHub review URL and resolves repo by URL mapping', async () => {
+  it('queues review confirmation from GitHub review URL and resolves repo by URL mapping', async () => {
     const repoBoard = makeRepoBoard({ taskId: 'task_review_url', runId: 'run_review_url' });
     const boardIndex = makeBoardIndex([
       {
@@ -559,19 +556,24 @@ describe('slack handlers', () => {
     expect(response.status).toBe(200);
     await waitUntilTasks[0];
 
-    expect(repoBoard.transitionRun).toHaveBeenCalledWith('run_review_url', expect.objectContaining({
-      reviewProvider: 'github',
-      reviewNumber: 101,
-      reviewUrl: 'https://github.com/abuiles/agents-kanban/pull/101'
-    }), 'team_one');
-    expect(runOrchestratorMocks.scheduleRunJob).toHaveBeenCalledWith(
+    expect(repoBoard.createTask).not.toHaveBeenCalled();
+    expect(runOrchestratorMocks.scheduleRunJob).not.toHaveBeenCalled();
+    expect(tenantAuthDbMocks.upsertSlackIntakeSession).toHaveBeenCalledWith(
       expect.anything(),
-      expect.anything(),
-      expect.objectContaining({ mode: 'review_only' })
+      expect.objectContaining({
+        data: expect.objectContaining({
+          pendingReviewStart: expect.objectContaining({
+            repoId: 'repo_agents',
+            reviewNumber: 101,
+            reviewProvider: 'github',
+            reviewUrl: 'https://github.com/abuiles/agents-kanban/pull/101'
+          })
+        })
+      })
     );
   });
 
-  it('starts a review-only run from GitLab review URL and resolves repo by URL mapping', async () => {
+  it('queues review confirmation from GitLab review URL and resolves repo by URL mapping', async () => {
     const repoBoard = makeRepoBoard({ taskId: 'task_review_gitlab', runId: 'run_review_gitlab' });
     const boardIndex = makeBoardIndex([
       {
@@ -606,16 +608,20 @@ describe('slack handlers', () => {
     expect(response.status).toBe(200);
     await waitUntilTasks[0];
 
-    expect(repoBoard.transitionRun).toHaveBeenCalledWith('run_review_gitlab', expect.objectContaining({
-      reviewProvider: 'gitlab',
-      reviewNumber: 88,
-      reviewUrl: 'https://gitlab.example.com/group/subgroup/minions/-/merge_requests/88',
-      branchName: 'refs/merge-requests/88/head'
-    }), 'team_one');
-    expect(runOrchestratorMocks.scheduleRunJob).toHaveBeenCalledWith(
+    expect(repoBoard.createTask).not.toHaveBeenCalled();
+    expect(runOrchestratorMocks.scheduleRunJob).not.toHaveBeenCalled();
+    expect(tenantAuthDbMocks.upsertSlackIntakeSession).toHaveBeenCalledWith(
       expect.anything(),
-      expect.anything(),
-      expect.objectContaining({ mode: 'review_only' })
+      expect.objectContaining({
+        data: expect.objectContaining({
+          pendingReviewStart: expect.objectContaining({
+            repoId: 'repo_gitlab',
+            reviewNumber: 88,
+            reviewProvider: 'gitlab',
+            sourceRef: 'refs/merge-requests/88/head'
+          })
+        })
+      })
     );
   });
 
@@ -1058,7 +1064,7 @@ describe('slack handlers', () => {
     });
   });
 
-  it('starts a review-only run from review_repo_disambiguation interaction', async () => {
+  it('queues confirmation from review_repo_disambiguation interaction', async () => {
     const repoBoard = makeRepoBoard({ taskId: 'task_review_action', runId: 'run_review_action' });
     const payload = {
       type: 'block_actions',
@@ -1110,27 +1116,16 @@ describe('slack handlers', () => {
       makeEnv('secret', repoBoard, boardIndex),
       {} as unknown as ExecutionContext<unknown>
     );
-    const body = await response.json() as { ok: true; action: string; taskId: string; runId: string; repoId: string };
+    const body = await response.json() as { ok: true; action: string; status: string; repoId: string };
 
     expect(body).toMatchObject({
       ok: true,
       action: 'review_repo_disambiguation',
-      taskId: 'task_review_action',
-      runId: 'run_review_action',
+      status: 'pending_confirmation',
       repoId: 'repo_alpha'
     });
-    expect(repoBoard.createTask).toHaveBeenCalledWith(expect.objectContaining({
-      sourceRef: 'pull/77/head',
-      autoReviewMode: 'on'
-    }));
-    expect(runOrchestratorMocks.scheduleRunJob).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.anything(),
-      expect.objectContaining({
-        repoId: 'repo_alpha',
-        mode: 'review_only'
-      })
-    );
+    expect(repoBoard.createTask).not.toHaveBeenCalled();
+    expect(runOrchestratorMocks.scheduleRunJob).not.toHaveBeenCalled();
   });
 
   it('dedupes repeated repo_disambiguation interaction payloads', async () => {
@@ -1399,7 +1394,7 @@ describe('slack handlers', () => {
     expect(await response.json()).toEqual({ challenge: 'challenge-123' });
   });
 
-  it('starts a review-only run from @kanvy mention in a thread', async () => {
+  it('queues review confirmation from @kanvy mention in a thread', async () => {
     const repoBoard = makeRepoBoard({ taskId: 'task_review_mention', runId: 'run_review_mention' });
     const boardIndex = makeBoardIndex([
       {
@@ -1425,6 +1420,7 @@ describe('slack handlers', () => {
       type: 'event_callback',
       event_id: 'EvMentionReview1',
       team_id: 'team_one',
+      authed_users: ['U_KANVY'],
       event: {
         type: 'app_mention',
         channel: 'C123',
@@ -1444,19 +1440,26 @@ describe('slack handlers', () => {
     const response = await handleSlackEvents(request, env);
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ ok: true, status: 'accepted' });
-    expect(repoBoard.createTask).toHaveBeenCalledWith(expect.objectContaining({
-      repoId: 'repo_alpha',
-      sourceRef: 'pull/12041/head',
-      autoReviewMode: 'on'
-    }));
-    expect(runOrchestratorMocks.scheduleRunJob).toHaveBeenCalledWith(
+    expect(repoBoard.createTask).not.toHaveBeenCalled();
+    expect(runOrchestratorMocks.scheduleRunJob).not.toHaveBeenCalled();
+    expect(tenantAuthDbMocks.upsertSlackIntakeSession).toHaveBeenCalledWith(
       expect.anything(),
-      expect.anything(),
-      expect.objectContaining({ mode: 'review_only', repoId: 'repo_alpha' })
+      expect.objectContaining({
+        tenantId: 'team_one',
+        channelId: 'C123',
+        threadTs: '1672531200.1234',
+        status: 'active',
+        data: expect.objectContaining({
+          pendingReviewStart: expect.objectContaining({
+            repoId: 'repo_alpha',
+            reviewNumber: 12041
+          })
+        })
+      })
     );
   });
 
-  it('starts a review-only run when @kanvy mention appears mid-message', async () => {
+  it('queues review confirmation when @kanvy mention appears mid-message', async () => {
     const repoBoard = makeRepoBoard({ taskId: 'task_review_inline_mention', runId: 'run_review_inline_mention' });
     const boardIndex = makeBoardIndex([
       {
@@ -1482,6 +1485,7 @@ describe('slack handlers', () => {
       type: 'event_callback',
       event_id: 'EvInlineMentionReview1',
       team_id: 'team_one',
+      authed_users: ['U_KANVY'],
       event: {
         type: 'message',
         channel: 'C123',
@@ -1502,19 +1506,26 @@ describe('slack handlers', () => {
     const response = await handleSlackEvents(request, env);
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ ok: true, status: 'accepted' });
-    expect(repoBoard.createTask).toHaveBeenCalledWith(expect.objectContaining({
-      repoId: 'repo_alpha',
-      sourceRef: 'pull/12041/head',
-      autoReviewMode: 'on'
-    }));
-    expect(runOrchestratorMocks.scheduleRunJob).toHaveBeenCalledWith(
+    expect(repoBoard.createTask).not.toHaveBeenCalled();
+    expect(runOrchestratorMocks.scheduleRunJob).not.toHaveBeenCalled();
+    expect(tenantAuthDbMocks.upsertSlackIntakeSession).toHaveBeenCalledWith(
       expect.anything(),
-      expect.anything(),
-      expect.objectContaining({ mode: 'review_only', repoId: 'repo_alpha' })
+      expect.objectContaining({
+        tenantId: 'team_one',
+        channelId: 'C123',
+        threadTs: '1672531200.1234',
+        status: 'active',
+        data: expect.objectContaining({
+          pendingReviewStart: expect.objectContaining({
+            repoId: 'repo_alpha',
+            reviewNumber: 12041
+          })
+        })
+      })
     );
   });
 
-  it('starts a review-only run from @kanvy mention using thread context for review intent', async () => {
+  it('queues review confirmation from @kanvy mention using thread context for review intent', async () => {
     const repoBoard = makeRepoBoard({ taskId: 'task_review_context', runId: 'run_review_context' });
     const boardIndex = makeBoardIndex([
       {
@@ -1596,19 +1607,26 @@ describe('slack handlers', () => {
       && String(entry[1].body).includes('thread_context')
     );
     expect(reviewIntentRequest).toBeFalsy();
-    expect(repoBoard.createTask).toHaveBeenCalledWith(expect.objectContaining({
-      repoId: 'repo_alpha',
-      sourceRef: 'pull/12041/head',
-      autoReviewMode: 'on'
-    }));
-    expect(runOrchestratorMocks.scheduleRunJob).toHaveBeenCalledWith(
+    expect(repoBoard.createTask).not.toHaveBeenCalled();
+    expect(runOrchestratorMocks.scheduleRunJob).not.toHaveBeenCalled();
+    expect(tenantAuthDbMocks.upsertSlackIntakeSession).toHaveBeenCalledWith(
       expect.anything(),
-      expect.anything(),
-      expect.objectContaining({ mode: 'review_only', repoId: 'repo_alpha' })
+      expect.objectContaining({
+        tenantId: 'team_one',
+        channelId: 'C0AH77Y53NC',
+        threadTs: '1772660529.450679',
+        status: 'active',
+        data: expect.objectContaining({
+          pendingReviewStart: expect.objectContaining({
+            repoId: 'repo_alpha',
+            reviewNumber: 12041
+          })
+        })
+      })
     );
   });
 
-  it('starts a review-only run from @kanvy review this MR using nearby channel MR announcement', async () => {
+  it('queues review confirmation from @kanvy review this MR using nearby channel MR announcement', async () => {
     const repoBoard = makeRepoBoard({ taskId: 'task_review_channel_context', runId: 'run_review_channel_context' });
     const boardIndex = makeBoardIndex([
       {
@@ -1656,6 +1674,7 @@ describe('slack handlers', () => {
       type: 'event_callback',
       event_id: 'EvMentionReviewChannelContext',
       team_id: 'team_one',
+      authed_users: ['U0AJQ0GPJQL'],
       event: {
         type: 'message',
         channel: 'C0AH77Y53NC',
@@ -1675,19 +1694,26 @@ describe('slack handlers', () => {
     const response = await handleSlackEvents(request, env);
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ ok: true, status: 'accepted' });
-    expect(repoBoard.createTask).toHaveBeenCalledWith(expect.objectContaining({
-      repoId: 'repo_alpha',
-      sourceRef: 'pull/17/head',
-      autoReviewMode: 'on'
-    }));
-    expect(runOrchestratorMocks.scheduleRunJob).toHaveBeenCalledWith(
+    expect(repoBoard.createTask).not.toHaveBeenCalled();
+    expect(runOrchestratorMocks.scheduleRunJob).not.toHaveBeenCalled();
+    expect(tenantAuthDbMocks.upsertSlackIntakeSession).toHaveBeenCalledWith(
       expect.anything(),
-      expect.anything(),
-      expect.objectContaining({ mode: 'review_only', repoId: 'repo_alpha' })
+      expect.objectContaining({
+        tenantId: 'team_one',
+        channelId: 'C0AH77Y53NC',
+        threadTs: '1772677754.188369',
+        status: 'active',
+        data: expect.objectContaining({
+          pendingReviewStart: expect.objectContaining({
+            repoId: 'repo_alpha',
+            reviewNumber: 17
+          })
+        })
+      })
     );
   });
 
-  it('starts a review-only run when @kanvy mention includes a Slack-formatted GitLab MR URL', async () => {
+  it('queues review confirmation when @kanvy mention includes a Slack-formatted GitLab MR URL', async () => {
     const repoBoard = makeRepoBoard({ taskId: 'task_review_slack_link', runId: 'run_review_slack_link' });
     const boardIndex = makeBoardIndex([
       {
@@ -1713,6 +1739,7 @@ describe('slack handlers', () => {
       type: 'event_callback',
       event_id: 'EvMentionReviewSlackLink',
       team_id: 'team_one',
+      authed_users: ['U0AJQ0GPJQL'],
       event: {
         type: 'message',
         channel: 'C0AH77Y53NC',
@@ -1733,19 +1760,26 @@ describe('slack handlers', () => {
     const response = await handleSlackEvents(request, env);
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ ok: true, status: 'accepted' });
-    expect(repoBoard.createTask).toHaveBeenCalledWith(expect.objectContaining({
-      repoId: 'repo_checkout',
-      sourceRef: 'refs/merge-requests/31446/head',
-      autoReviewMode: 'on'
-    }));
-    expect(runOrchestratorMocks.scheduleRunJob).toHaveBeenCalledWith(
+    expect(repoBoard.createTask).not.toHaveBeenCalled();
+    expect(runOrchestratorMocks.scheduleRunJob).not.toHaveBeenCalled();
+    expect(tenantAuthDbMocks.upsertSlackIntakeSession).toHaveBeenCalledWith(
       expect.anything(),
-      expect.anything(),
-      expect.objectContaining({ mode: 'review_only', repoId: 'repo_checkout' })
+      expect.objectContaining({
+        tenantId: 'team_one',
+        channelId: 'C0AH77Y53NC',
+        threadTs: '1772660529.450679',
+        status: 'active',
+        data: expect.objectContaining({
+          pendingReviewStart: expect.objectContaining({
+            repoId: 'repo_checkout',
+            reviewNumber: 31446
+          })
+        })
+      })
     );
   });
 
-  it('starts review-only run when replying with a repo number after review disambiguation', async () => {
+  it('queues review confirmation when replying with a repo number after review disambiguation', async () => {
     const repoBoard = makeRepoBoard({ taskId: 'task_review_reply', runId: 'run_review_reply' });
     const boardIndex = makeBoardIndex([
       {
@@ -1788,13 +1822,14 @@ describe('slack handlers', () => {
       type: 'event_callback',
       event_id: 'EvReviewDisambiguationReply',
       team_id: 'team_one',
+      authed_users: ['U_KANVY'],
       event: {
         type: 'message',
         channel: 'C123',
         thread_ts: '1672531200.1234',
         ts: '1672531200.1238',
         user: 'U1',
-        text: '2',
+        text: '<@U_KANVY> 2',
         channel_type: 'channel'
       }
     });
@@ -1808,15 +1843,22 @@ describe('slack handlers', () => {
     const response = await handleSlackEvents(request, env);
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ ok: true, status: 'accepted' });
-    expect(repoBoard.createTask).toHaveBeenCalledWith(expect.objectContaining({
-      repoId: 'repo_beta',
-      sourceRef: 'pull/77/head',
-      autoReviewMode: 'on'
-    }));
-    expect(runOrchestratorMocks.scheduleRunJob).toHaveBeenCalledWith(
+    expect(repoBoard.createTask).not.toHaveBeenCalled();
+    expect(runOrchestratorMocks.scheduleRunJob).not.toHaveBeenCalled();
+    expect(tenantAuthDbMocks.upsertSlackIntakeSession).toHaveBeenCalledWith(
       expect.anything(),
-      expect.anything(),
-      expect.objectContaining({ mode: 'review_only', repoId: 'repo_beta' })
+      expect.objectContaining({
+        tenantId: 'team_one',
+        channelId: 'C123',
+        threadTs: '1672531200.1234',
+        status: 'active',
+        data: expect.objectContaining({
+          pendingReviewStart: expect.objectContaining({
+            repoId: 'repo_beta',
+            reviewNumber: 77
+          })
+        })
+      })
     );
   });
 
@@ -1953,7 +1995,7 @@ describe('slack handlers', () => {
     expect(eyesReactions).toHaveLength(1);
   });
 
-  it('accepts 👍 as affirmative confirmation for pending task creation', async () => {
+  it('accepts @kanvy 👍 as affirmative confirmation for pending task creation', async () => {
     const repoBoard = makeRepoBoard({ taskId: 'task_emoji_confirm', runId: 'run_emoji_confirm' });
     const env = makeEnv('secret', repoBoard);
     await env.SECRETS_KV.put('slack/bot-token', 'xoxb-test');
@@ -1989,13 +2031,14 @@ describe('slack handlers', () => {
       type: 'event_callback',
       event_id: 'EvEmojiConfirm1',
       team_id: 'team_one',
+      authed_users: ['U_KANVY'],
       event: {
-        type: 'message',
+        type: 'app_mention',
         channel: 'C123',
         thread_ts: '1672531200.1234',
         ts: '1672531200.1240',
         user: 'U1',
-        text: '👍'
+        text: '<@U_KANVY> 👍'
       }
     });
     const signature = await buildSlackSignature('secret', nowTs, rawBody);
@@ -2011,7 +2054,7 @@ describe('slack handlers', () => {
     expect(repoBoard.startRun).toHaveBeenCalledTimes(1);
   });
 
-  it('accepts :+1: as affirmative confirmation for pending task creation', async () => {
+  it('accepts @kanvy :+1: as affirmative confirmation for pending task creation', async () => {
     const repoBoard = makeRepoBoard({ taskId: 'task_alias_confirm', runId: 'run_alias_confirm' });
     const env = makeEnv('secret', repoBoard);
     await env.SECRETS_KV.put('slack/bot-token', 'xoxb-test');
@@ -2040,13 +2083,14 @@ describe('slack handlers', () => {
       type: 'event_callback',
       event_id: 'EvEmojiAliasConfirm1',
       team_id: 'team_one',
+      authed_users: ['U_KANVY'],
       event: {
-        type: 'message',
+        type: 'app_mention',
         channel: 'C123',
         thread_ts: '1672531200.1234',
         ts: '1672531200.1241',
         user: 'U1',
-        text: ':+1:'
+        text: '<@U_KANVY> :+1:'
       }
     });
     const signature = await buildSlackSignature('secret', nowTs, rawBody);
