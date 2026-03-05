@@ -1908,11 +1908,24 @@ async function restoreLlmAuthForRepoMode(input: {
   }
   if (mode === 'api') {
     const env = input.llmContext.env as Stage3Env;
-    if (!env.OPENAI_API_KEY?.trim()) {
+    const apiKey = env.OPENAI_API_KEY?.trim();
+    if (!apiKey) {
       throw new NonRetryableError('Repo is configured with llmAuthMode=api but OPENAI_API_KEY is missing.');
     }
+    await input.llmContext.sandbox.writeFile(
+      '/workspace/codex-auth-api.json',
+      JSON.stringify({ OPENAI_API_KEY: apiKey }, null, 2)
+    );
+    await input.llmContext.sandbox.exec(
+      `bash -lc ${shellQuote(`set -euo pipefail
+export HOME="\${HOME:-/root}"
+mkdir -p "$HOME/.codex"
+cp /workspace/codex-auth-api.json "$HOME/.codex/auth.json"
+rm -f "$HOME/.codex/._auth.json"
+`)}`
+    );
     await input.llmContext.repoBoard.appendRunLogs(input.llmContext.runId, [
-      buildRunLog(input.llmContext.runId, 'Skipping Codex auth bundle restore (api mode).', input.phase)
+      buildRunLog(input.llmContext.runId, 'Skipping Codex auth bundle restore (api mode) and forcing API-key auth.', input.phase)
     ]);
     return;
   }

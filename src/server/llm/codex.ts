@@ -656,6 +656,9 @@ child.stdin.write(JSON.stringify({
   const result = await sandbox.exec(
     `bash -lc ${shellQuote(`set -euo pipefail
 export HOME="\${HOME:-/root}"
+if [ -f /workspace/agent-env.sh ]; then
+  . /workspace/agent-env.sh
+fi
 node /workspace/codex-rate-limits.mjs
 `)}`
   );
