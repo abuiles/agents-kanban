@@ -1589,16 +1589,101 @@ describe('slack handlers', () => {
     const response = await handleSlackEvents(request, env);
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ ok: true, status: 'accepted' });
-    expect(openAiCalled).toBe(1);
+    expect(openAiCalled).toBe(0);
     const calls = vi.mocked(global.fetch).mock.calls as Array<[RequestInfo | URL, RequestInit]>;
     const reviewIntentRequest = calls.find((entry) =>
       String(entry[0]).includes('https://api.openai.com/v1/chat/completions')
       && String(entry[1].body).includes('thread_context')
     );
-    expect(reviewIntentRequest).toBeTruthy();
+    expect(reviewIntentRequest).toBeFalsy();
     expect(repoBoard.createTask).toHaveBeenCalledWith(expect.objectContaining({
       repoId: 'repo_alpha',
       sourceRef: 'pull/12041/head',
+      autoReviewMode: 'on'
+    }));
+    expect(runOrchestratorMocks.scheduleRunJob).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({ mode: 'review_only', repoId: 'repo_alpha' })
+    );
+  });
+
+  it('starts a review-only run from @kanvy mention when context has MR marker', async () => {
+    const repoBoard = makeRepoBoard({ taskId: 'task_review_marker', runId: 'run_review_marker' });
+    const boardIndex = makeBoardIndex([
+      {
+        repoId: 'repo_alpha',
+        slug: 'acme/repo-alpha',
+        scmProvider: 'github',
+        scmBaseUrl: 'https://github.com',
+        projectPath: 'acme/repo-alpha',
+        autoReview: {
+          enabled: true,
+          provider: 'github',
+          postInline: false
+        }
+      } as unknown as { repoId: string; slug: string }
+    ]);
+    const env = makeEnv('secret', repoBoard, boardIndex);
+    await env.SECRETS_KV.put('slack/bot-token', 'xoxb-test');
+    let openAiCalled = 0;
+    fetchSpy.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('https://slack.com/api/conversations.replies')) {
+        return new Response(JSON.stringify({
+          ok: true,
+          messages: [
+            { ts: '1772660529.450500', user: 'U1', text: 'MR !17 opened for this repo' },
+            { ts: '1772660529.450600', user: 'U2', text: 'I see this needs review' }
+          ]
+        }), { status: 200 });
+      }
+      if (url.includes('https://api.openai.com/v1/chat/completions')) {
+        openAiCalled += 1;
+        return new Response(JSON.stringify({
+          choices: [{
+            message: {
+              content: JSON.stringify({
+                isReview: false
+              })
+            }
+          }]
+        }), { status: 200 });
+      }
+      if (url.includes('https://slack.com/api/chat.postMessage')) {
+        return new Response(JSON.stringify({ ok: true, ts: '1772660529.450679' }), { status: 200 });
+      }
+      return new Response('{}', { status: 200 });
+    });
+
+    const rawBody = JSON.stringify({
+      type: 'event_callback',
+      event_id: 'EvMentionReviewContextMarker',
+      team_id: 'team_one',
+      event: {
+        type: 'message',
+        channel: 'C0AH77Y53NC',
+        thread_ts: '1772660529.450679',
+        ts: '1772677754.188400',
+        user: 'U02MV9VJUGN',
+        text: '<@U0AJQ0GPJQL> review this MR',
+        channel_type: 'channel'
+      }
+    });
+    const signature = await buildSlackSignature('secret', nowTs, rawBody);
+    const request = new Request('https://example.test/api/integrations/slack/events', {
+      method: 'POST',
+      headers: slackHeaders(nowTs, signature),
+      body: rawBody
+    });
+
+    const response = await handleSlackEvents(request, env);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ ok: true, status: 'accepted' });
+    expect(openAiCalled).toBe(0);
+    expect(repoBoard.createTask).toHaveBeenCalledWith(expect.objectContaining({
+      repoId: 'repo_alpha',
+      sourceRef: 'pull/17/head',
       autoReviewMode: 'on'
     }));
     expect(runOrchestratorMocks.scheduleRunJob).toHaveBeenCalledWith(
@@ -1791,7 +1876,6 @@ describe('slack handlers', () => {
       expect.stringContaining('https://slack.com/api/conversations.replies'),
       expect.any(Object)
     );
-    expect(tenantAuthDbMocks.upsertSlackIntakeSession).toHaveBeenCalled();
   });
 
   it('posts :eyes: once when intent parsing starts, even if parser retries', async () => {
