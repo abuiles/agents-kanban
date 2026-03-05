@@ -10,7 +10,306 @@ import type { LlmAdapter } from './adapter';
 import { redactSensitiveText } from '../security/redaction';
 
 const CODEX_STREAM_INACTIVITY_TIMEOUT_MS = 120_000;
+const CODEX_APPSERVER_UNAVAILABLE_MARKER = 'CODEX_APP_SERVER_UNAVAILABLE';
+const CODEX_APPSERVER_LAST_MESSAGE_MARKER = '===CODEX_LAST_MESSAGE===';
+const CODEX_APPSERVER_RUNNER_PATH = '/workspace/codex-app-server.mjs';
 let parseSSEStreamFn: (<T>(stream: unknown) => AsyncIterable<T>) | undefined;
+
+const CODEX_APPSERVER_RUNNER = codexAppServerRunnerSource();
+
+function codexAppServerRunnerSource() {
+  const lines = [
+    'import fs from "node:fs";',
+    'import { spawn } from "node:child_process";',
+    '',
+    'const CODEX_APPSERVER_UNAVAILABLE_MARKER = "CODEX_APP_SERVER_UNAVAILABLE";',
+    'const CODEX_APPSERVER_LAST_MESSAGE_MARKER = "===CODEX_LAST_MESSAGE===";',
+    '',
+    'function fail(message) {',
+    '  process.stderr.write(String(message) + "\\n");',
+    '  process.exit(1);',
+    '}',
+    '',
+    'const configText = process.argv[2];',
+    'if (!configText) {',
+    '  fail(CODEX_APPSERVER_UNAVAILABLE_MARKER + ": Missing codex app-server config.");',
+    '}',
+    '',
+    'let config;',
+    'try {',
+    '  config = JSON.parse(configText);',
+    '} catch (error) {',
+    '  fail(',
+    '    CODEX_APPSERVER_UNAVAILABLE_MARKER',
+    '    + ": Could not parse codex app-server config. "',
+    '    + (error instanceof Error ? error.message : String(error))',
+    '  );',
+    '}',
+    '',
+    'const mode = config.mode;',
+    'const cwd = config.cwd;',
+    'const model = config.model;',
+    'const reasoningEffort = config.reasoningEffort || "medium";',
+    'const promptPath = config.promptPath;',
+    'const outputSchemaPath = config.outputSchemaPath;',
+    'const outputLastMessagePath = config.outputLastMessagePath;',
+    'const timeoutMs = Number.isFinite(Number(config.timeoutMs)) ? Number(config.timeoutMs) : undefined;',
+    '',
+    'if (!mode || !cwd || !model || !promptPath) {',
+    '  fail(CODEX_APPSERVER_UNAVAILABLE_MARKER + ": Missing required app-server parameters.");',
+    '}',
+    '',
+    'const promptText = (() => {',
+    '  if (!fs.existsSync(promptPath)) {',
+    '    fail(CODEX_APPSERVER_UNAVAILABLE_MARKER + ": Prompt file is missing at " + promptPath + ".");',
+    '  }',
+    '  return fs.readFileSync(promptPath, "utf8");',
+    '})();',
+    '',
+    'function outputLastMessage(value) {',
+    '  if (!outputLastMessagePath) {',
+    '    return;',
+    '  }',
+    '  const normalized = typeof value === "string" ? value : JSON.stringify(value, null, 2);',
+    '  fs.writeFileSync(outputLastMessagePath, normalized || "", "utf8");',
+    '  process.stdout.write("\\n" + CODEX_APPSERVER_LAST_MESSAGE_MARKER + "\\n" + (normalized || "") + "\\n");',
+    '}',
+    '',
+    'function extractText(value) {',
+    '  if (typeof value === "string") {',
+    '    return value;',
+    '  }',
+    '  if (value && typeof value === "object") {',
+    '    if (typeof value.output === "string") return value.output;',
+    '    if (typeof value.message === "string") return value.message;',
+    '    if (typeof value.content === "string") return value.content;',
+    '    if (typeof value.text === "string") return value.text;',
+    '    if (typeof value.result === "string") return value.result;',
+    '    if (typeof value.value === "string") return value.value;',
+    '    if (Array.isArray(value.items) && value.items.every((item) => typeof item === "string")) {',
+    '      return value.items.join("\\n");',
+    '    }',
+    '  }',
+    '  return undefined;',
+    '}',
+    '',
+    'function normalizeResumeCommand(value) {',
+    '  if (!value || typeof value !== "string") {',
+    '    return undefined;',
+    '  }',
+    '  return value.startsWith("codex resume ") ? value : ("codex resume " + value);',
+    '}',
+    '',
+    'function extractField(value, keys) {',
+    '  if (!value || typeof value !== "object") {',
+    '    return undefined;',
+    '  }',
+    '  for (const key of keys) {',
+    '    if (typeof value[key] === "string") {',
+    '      return value[key];',
+    '    }',
+    '    if (value[key] && typeof value[key] === "object" && typeof value[key]?.id === "string") {',
+    '      return value[key].id;',
+    '    }',
+    '  }',
+    '  return undefined;',
+    '}',
+    '',
+    'function createMessageParser() {',
+    '  let buffered = "";',
+    '  const pending = new Map();',
+    '  let nextId = 1;',
+    '  let isReady = false;',
+    '  let resolveInitialize;',
+    '',
+    '  const requestTimeoutMs = Math.max(5000, Math.min(timeoutMs ?? 45000, 120000));',
+    '  const child = spawn("codex", ["app-server"], {',
+    '    stdio: ["pipe", "pipe", "pipe"]',
+    '  });',
+    '',
+    '  function finish(error) {',
+    '    if (error) {',
+    '      fail(CODEX_APPSERVER_UNAVAILABLE_MARKER + ": " + String(error));',
+    '    }',
+    '  }',
+    '',
+    '  child.on("error", (error) => {',
+    '    finish(error?.message ? String(error.message) : "failed to spawn codex app-server");',
+    '  });',
+    '',
+    '  child.stderr.on("data", (chunk) => process.stderr.write(chunk));',
+    '',
+    '  const next = () => {',
+    '    const id = nextId += 1;',
+    '    return id;',
+    '  };',
+    '',
+    '  const send = (method, params) => {',
+    '    const id = next();',
+    '    const request = {',
+    '      jsonrpc: "2.0",',
+    '      id,',
+    '      method,',
+    '      params',
+    '    };',
+    '    child.stdin.write(JSON.stringify(request) + "\\n");',
+    '',
+    '    return new Promise((resolve, reject) => {',
+    '      const timer = setTimeout(() => {',
+    '        pending.delete(id);',
+    '        reject(new Error(method + " timed out after " + requestTimeoutMs + "ms"));',
+    '      }, requestTimeoutMs);',
+    '      pending.set(id, { resolve, reject, timer, method });',
+    '    });',
+    '  };',
+    '',
+    '  const handleResponse = (value) => {',
+    '    if (value && typeof value === "object" && typeof value.id === "number" && pending.has(value.id)) {',
+    '      const waiter = pending.get(value.id);',
+    '      pending.delete(value.id);',
+    '      clearTimeout(waiter.timer);',
+    '      if (value.error) {',
+    '        waiter.reject(new Error(value.error.message ?? JSON.stringify(value.error)));',
+    '        return;',
+    '      }',
+    '      waiter.resolve(value.result ?? value);',
+    '      return;',
+    '    }',
+    '',
+    '    if (value?.method === "stdout") {',
+    '      const text = typeof value.params === "string" ? value.params : typeof value.message === "string" ? value.message : "";',
+    '      if (text) {',
+    '        process.stdout.write(String(text) + "\\n");',
+    '      }',
+    '      return;',
+    '    }',
+    '',
+    '    if (value?.method === "stderr") {',
+    '      const text = typeof value.params === "string" ? value.params : typeof value.message === "string" ? value.message : "";',
+    '      if (text) {',
+    '        process.stderr.write(String(text) + "\\n");',
+    '      }',
+    '    }',
+    '  };',
+    '',
+    '  child.stdout.on("data", (chunk) => {',
+    '    buffered += chunk.toString();',
+    '    while (true) {',
+    '      const newlineIndex = buffered.indexOf("\\n");',
+    '      if (newlineIndex < 0) {',
+    '        break;',
+    '      }',
+    '      const line = buffered.slice(0, newlineIndex).trim();',
+    '      buffered = buffered.slice(newlineIndex + 1);',
+    '      if (!line) {',
+    '        continue;',
+    '      }',
+    '      let message;',
+    '      try {',
+    '        message = JSON.parse(line);',
+    '      } catch {',
+    '        process.stdout.write(line + "\\n");',
+    '        continue;',
+    '      }',
+    '      handleResponse(message);',
+    '      if (isReady === false && message && typeof message.id === "number" && message.result) {',
+    '        resolveInitialize?.();',
+    '        isReady = true;',
+    '      }',
+    '    }',
+    '  });',
+    '',
+    '  return {',
+    '    send,',
+    '    waitForReady: () =>',
+    '      new Promise((resolve, reject) => {',
+    '        const timeout = setTimeout(() => {',
+    '          reject(new Error("codex app-server did not initialize in time."));',
+    '        }, requestTimeoutMs);',
+    '        resolveInitialize = () => {',
+    '          clearTimeout(timeout);',
+    '          resolve();',
+    '        };',
+    '      }),',
+    '    child,',
+    '    handleExit: async () => {',
+    '      const exitCode = await new Promise((resolve) => {',
+    '        child.once("exit", (code) => resolve(code));',
+    '      });',
+    '      if (exitCode !== 0) {',
+    '        fail(CODEX_APPSERVER_UNAVAILABLE_MARKER + ": codex app-server exited with code " + String(exitCode) + ".");',
+    '      }',
+    '    }',
+    '  };',
+    '}',
+    '',
+    'async function runViaAppServer() {',
+    '  const protocol = createMessageParser();',
+    '',
+    '  protocol.child.stdin.write(',
+    '    JSON.stringify({',
+    '      jsonrpc: "2.0",',
+    '      id: 1,',
+    '      method: "initialize",',
+    '      params: { apiVersion: 2, clientInfo: { name: "agentskanban-codex-runner", version: "1.0.0" } }',
+    '    }) + "\\n"',
+    '  );',
+    '  await protocol.waitForReady();',
+    '',
+    '  const threadResult = await protocol.send("thread/start", {',
+    '    projectPath: cwd,',
+    '    model,',
+    '    reasoningEffort,',
+    '    skipGitRepoCheck: true',
+    '  });',
+    '  const threadId = extractField(threadResult, ["thread_id", "threadId", "id", "thread"]) || extractField(threadResult?.thread, ["id"]) || undefined;',
+    '  const threadResume = normalizeResumeCommand(extractField(threadResult, ["resume_command", "resumeCommand", "resume"]));',
+    '',
+    '  if (threadId) {',
+    '    process.stdout.write("{\"thread_id\":\"" + threadId + "\"}\\n");',
+    '  }',
+    '  if (threadResume) {',
+    '    process.stdout.write("Use this to continue later: " + threadResume + "\\n");',
+    '  }',
+    '',
+    '  const outputSchema = outputSchemaPath && fs.existsSync(outputSchemaPath)',
+    '    ? JSON.parse(fs.readFileSync(outputSchemaPath, "utf8"))',
+    '    : undefined;',
+    '',
+    '  const turnParams = {',
+    '    thread_id: threadId,',
+    '    prompt: promptText,',
+    '    model,',
+    '    reasoningEffort,',
+    '    isEphemeral: mode === "prompt",',
+    '    skipGitRepoCheck: true,',
+    '    ...(outputSchema ? { outputSchema } : {})',
+    '  };',
+    '',
+    '  const turnResult = await protocol.send("turn/start", turnParams);',
+    '  const responseText = extractText(turnResult);',
+    '  const turnResume = normalizeResumeCommand(extractField(turnResult, ["resume_command", "resumeCommand", "resume"]));',
+    '  const resumeText = turnResume || threadResume;',
+    '',
+    '  if (resumeText && !responseText?.includes("codex resume")) {',
+    '    process.stdout.write("Use this to continue later: " + resumeText + "\\n");',
+    '  }',
+    '',
+    '  outputLastMessage(responseText || JSON.stringify(turnResult, null, 2));',
+    '  if (responseText) {',
+    '    process.stdout.write(String(responseText) + "\\n");',
+    '  }',
+    '  protocol.child.stdin.end();',
+    '  await protocol.handleExit();',
+    '}',
+    '',
+    'runViaAppServer().catch((error) => {',
+    '  fail(CODEX_APPSERVER_UNAVAILABLE_MARKER + ": " + (error instanceof Error ? error.message : String(error)));',
+    '});',
+    ''
+  ];
+  return lines.join("\n");
+}
 
 export const codexLlmAdapter: LlmAdapter = {
   kind: 'codex',
@@ -152,15 +451,26 @@ printf 'Codex reasoning effort: ${request.reasoningEffort ?? 'medium'}\\n'
 
   async run(context, request) {
     await context.sandbox.writeFile('/workspace/task.txt', request.prompt);
-    const command = `bash -lc ${shellQuote(`set -euo pipefail
-export HOME="\${HOME:-/root}"
-if [ -f /workspace/agent-env.sh ]; then
-  . /workspace/agent-env.sh
-fi
-cd ${request.cwd}
-cat /workspace/task.txt | codex exec -m ${request.model} -c model_reasoning_effort="${request.reasoningEffort ?? 'medium'}" --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check -C ${request.cwd} --json -
-`)}`;
-    return runCodexProcessWithLogs(context, command);
+    const appServerResult = await runCodexAppServer(context, {
+      mode: 'run',
+      cwd: request.cwd,
+      model: request.model,
+      reasoningEffort: request.reasoningEffort,
+      promptPath: '/workspace/task.txt'
+    });
+
+    if (shouldFallbackToLegacyCodexCli(appServerResult)) {
+      await context.repoBoard.appendRunLogs(context.runId, [
+        buildRunLog(
+          context.runId,
+          'CODEX_APP_SERVER_UNAVAILABLE: Falling back to direct codex exec for run() because app-server execution was unavailable.',
+          'codex'
+        )
+      ]);
+      return runCodexLegacy(context, request);
+    }
+
+    return appServerResult;
   },
 
   async runPrompt(context, request) {
@@ -173,68 +483,49 @@ cat /workspace/task.txt | codex exec -m ${request.model} -c model_reasoning_effo
       await context.sandbox.writeFile('/workspace/prompt-output-schema.json', JSON.stringify(request.outputSchema, null, 2));
     }
 
-    const schemaArg = request.outputSchema ? '--output-schema /workspace/prompt-output-schema.json' : '';
-    const command = `bash -lc ${shellQuote(`set -euo pipefail
-export HOME="\${HOME:-/root}"
-if [ -f /workspace/agent-env.sh ]; then
-  . /workspace/agent-env.sh
-fi
-mkdir -p ${request.cwd}
-cd ${request.cwd}
-rm -f /workspace/prompt-last-message.txt
-run_with_timeout() {
-  if command -v timeout >/dev/null 2>&1; then
-    timeout ${timeoutSeconds}s "$@"
-  else
-    "$@"
-  fi
-}
-cat /workspace/prompt.txt | run_with_timeout codex exec -m ${request.model} -c model_reasoning_effort="${request.reasoningEffort ?? 'medium'}" --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check --ephemeral -C ${request.cwd} ${schemaArg} --output-last-message /workspace/prompt-last-message.txt -
-if [ -f /workspace/prompt-last-message.txt ]; then
-  printf '\\n===CODEX_LAST_MESSAGE===\\n'
-  cat /workspace/prompt-last-message.txt
-fi
-`)}`;
-    const result = await emitCommandLifecycle(
-      context.repoBoard,
-      context.runId,
+    const appServerResult = await runCodexPromptViaAppServer(context, {
       phase,
-      redactSensitiveText(command),
-      () => context.sandbox.exec(command)
-    );
-
-    const elapsedMs = Date.now() - startedAt;
-    const marker = '===CODEX_LAST_MESSAGE===';
-    const rawOutput = result.stdout?.includes(marker)
-      ? result.stdout.split(marker).slice(1).join(marker).trim()
-      : undefined;
-
-    if (result.exitCode === 124) {
-      return {
-        status: 'timed_out',
-        elapsedMs,
-        timeoutMs,
-        rawOutput,
-        stderr: result.stderr
-      };
+      cwd: request.cwd,
+      model: request.model,
+      reasoningEffort: request.reasoningEffort,
+      timeoutMs,
+      timeoutSeconds,
+      outputSchemaPath: request.outputSchema ? '/workspace/prompt-output-schema.json' : undefined
+    });
+    if (appServerResult.handledByFallback) {
+      await context.repoBoard.appendRunLogs(context.runId, [
+        buildRunLog(
+          context.runId,
+          'CODEX_APP_SERVER_UNAVAILABLE: Falling back to direct codex exec for prompt() because app-server execution was unavailable.',
+          'codex'
+        )
+      ]);
+      const command = buildCodexLegacyPromptCommand({
+        cwd: request.cwd,
+        model: request.model,
+        reasoningEffort: request.reasoningEffort,
+        timeoutSeconds,
+        outputSchema: request.outputSchema
+      });
+      const fallbackResult = await emitCommandLifecycle(
+        context.repoBoard,
+        context.runId,
+        phase,
+        redactSensitiveText(command),
+        () => context.sandbox.exec(command)
+      );
+      return buildPromptResultFromExecResult({
+        result: fallbackResult,
+        startedAt,
+        timeoutMs
+      });
     }
 
-    if (!result.success) {
-      return {
-        status: 'failed',
-        elapsedMs,
-        message: result.stderr?.trim() || 'Codex prompt execution failed.',
-        rawOutput,
-        stderr: result.stderr
-      };
-    }
-
-    return {
-      status: 'success',
-      elapsedMs,
-      rawOutput: rawOutput ?? '',
-      stderr: result.stderr
-    };
+    return buildPromptResultFromExecResult({
+      result: appServerResult.result,
+      startedAt,
+      timeoutMs
+    });
   },
 
   extractSessionState(chunk: string, fallbackSessionId?: string) {
@@ -254,8 +545,290 @@ type ManagedExecResult = {
   success: boolean;
   stdout?: string;
   stderr?: string;
+  exitCode: number;
   stoppedForTakeover?: boolean;
 };
+
+type CodexPromptExecution = {
+  result: ManagedExecResult;
+  handledByFallback: boolean;
+};
+
+type CodexAppServerMode = 'run' | 'prompt';
+
+type CodexAppServerCommandConfig = {
+  mode: CodexAppServerMode;
+  cwd: string;
+  model: string;
+  reasoningEffort: string;
+  promptPath: string;
+  outputLastMessagePath?: string;
+  outputSchemaPath?: string;
+  timeoutMs?: number;
+};
+
+function buildCodexLegacyRunCommand(request: Parameters<LlmAdapter['run']>[1]) {
+  return `bash -lc ${shellQuote(`set -euo pipefail
+export HOME="\${HOME:-/root}"
+if [ -f /workspace/agent-env.sh ]; then
+  . /workspace/agent-env.sh
+fi
+cd ${request.cwd}
+cat /workspace/task.txt | codex exec -m ${request.model} -c model_reasoning_effort="${request.reasoningEffort ?? 'medium'}" --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check -C ${request.cwd} --json -
+`)}`;
+}
+
+function buildCodexLegacyPromptCommand(options: {
+  cwd: string;
+  model: string;
+  reasoningEffort?: string;
+  timeoutSeconds: number;
+  outputSchema?: Record<string, unknown>;
+}) {
+  const schemaArg = options.outputSchema ? '--output-schema /workspace/prompt-output-schema.json' : '';
+  return `bash -lc ${shellQuote(`set -euo pipefail
+export HOME="\${HOME:-/root}"
+if [ -f /workspace/agent-env.sh ]; then
+  . /workspace/agent-env.sh
+fi
+mkdir -p ${options.cwd}
+cd ${options.cwd}
+rm -f /workspace/prompt-last-message.txt
+run_with_timeout() {
+  if command -v timeout >/dev/null 2>&1; then
+    timeout ${options.timeoutSeconds}s "$@"
+  else
+    "$@"
+  fi
+}
+cat /workspace/prompt.txt | run_with_timeout codex exec -m ${options.model} -c model_reasoning_effort="${options.reasoningEffort ?? 'medium'}" --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check --ephemeral -C ${options.cwd} ${schemaArg} --output-last-message /workspace/prompt-last-message.txt -
+if [ -f /workspace/prompt-last-message.txt ]; then
+  printf '\n===CODEX_LAST_MESSAGE===\n'
+  cat /workspace/prompt-last-message.txt
+fi
+`)}`;
+}
+
+async function runCodexLegacy(context: Parameters<LlmAdapter['run']>[0], request: Parameters<LlmAdapter['run']>[1]) {
+  const command = buildCodexLegacyRunCommand(request);
+  return runCodexProcessWithLogs(context, command);
+}
+
+async function runCodexPromptViaAppServer(
+  context: Parameters<LlmAdapter['runPrompt']>[0],
+  options: {
+    phase: NonNullable<Parameters<LlmAdapter['runPrompt']>[1]['phase']>;
+    cwd: string;
+    model: string;
+    reasoningEffort?: string;
+    timeoutMs: number;
+    timeoutSeconds: number;
+    outputSchemaPath?: string;
+  }
+): Promise<CodexPromptExecution> {
+  await ensureCodexAppServerRuntime(context.sandbox);
+  const command = buildCodexPromptAppServerCommand({
+    phase: options.phase,
+    cwd: options.cwd,
+    model: options.model,
+    reasoningEffort: options.reasoningEffort,
+    timeoutMs: options.timeoutMs,
+    timeoutSeconds: options.timeoutSeconds,
+    promptPath: '/workspace/prompt.txt',
+    outputLastMessagePath: '/workspace/prompt-last-message.txt',
+    outputSchemaPath: options.outputSchemaPath
+  });
+
+  const result = await emitCommandLifecycle(
+    context.repoBoard,
+    context.runId,
+    options.phase,
+    redactSensitiveText(command),
+    () => context.sandbox.exec(command)
+  );
+
+  return {
+    result,
+    handledByFallback: shouldFallbackToLegacyCodexCli(result)
+  };
+}
+
+async function emitCommandLifecycle(
+  repoBoard: Parameters<LlmAdapter['run']>[0]['repoBoard'],
+  runId: string,
+  phase: Exclude<RunCommandPhase, 'operator'>,
+  command: string,
+  execute: () => Promise<{ success: boolean; exitCode: number; stdout?: string; stderr?: string }>
+) {
+  const run = await repoBoard.getRun(runId);
+  const commandId = buildRunCommandId(runId, phase);
+  const startedAt = new Date().toISOString();
+  const startedCommand: RunCommand = {
+    id: commandId,
+    runId,
+    phase,
+    startedAt,
+    status: 'running',
+    command: redactSensitiveText(command),
+    source: 'system'
+  };
+  await repoBoard.upsertRunCommands(runId, [startedCommand]);
+  await repoBoard.appendRunEvents(runId, [
+    buildRunEvent(run, 'workflow', 'command.started', `Started ${phase} command.`, { commandId, phase })
+  ]);
+
+  const result = await execute();
+
+  const completedRun = await repoBoard.getRun(runId);
+  const completedCommand: RunCommand = {
+    ...startedCommand,
+    completedAt: new Date().toISOString(),
+    exitCode: result.exitCode,
+    status: result.success ? 'completed' : 'failed',
+    stdoutPreview: summarizeOutput(result.stdout ? redactSensitiveText(result.stdout) : result.stdout),
+    stderrPreview: summarizeOutput(result.stderr ? redactSensitiveText(result.stderr) : result.stderr)
+  };
+  await repoBoard.upsertRunCommands(runId, [completedCommand]);
+  await repoBoard.appendRunEvents(runId, [
+    buildRunEvent(
+      completedRun,
+      result.success ? 'workflow' : 'system',
+      'command.completed',
+      `Completed ${phase} command with exit code ${result.exitCode}.`,
+      { commandId, phase, exitCode: result.exitCode, success: result.success }
+    )
+  ]);
+  await appendCommandLogs(repoBoard, runId, phase, result.stdout, result.stderr);
+  return result;
+}
+
+function buildCodexPromptAppServerCommand(options: {
+  phase: NonNullable<Parameters<LlmAdapter['runPrompt']>[1]['phase']>;
+  cwd: string;
+  model: string;
+  reasoningEffort?: string;
+  timeoutMs: number;
+  timeoutSeconds: number;
+  promptPath: string;
+  outputLastMessagePath: string;
+  outputSchemaPath?: string;
+}) {
+  const commandConfig: CodexAppServerCommandConfig = {
+    mode: 'prompt',
+    cwd: options.cwd,
+    model: options.model,
+    reasoningEffort: options.reasoningEffort ?? 'medium',
+    promptPath: options.promptPath,
+    outputLastMessagePath: options.outputLastMessagePath,
+    outputSchemaPath: options.outputSchemaPath,
+    timeoutMs: options.timeoutMs
+  };
+
+  return `bash -lc ${shellQuote(`set -euo pipefail
+export HOME="\${HOME:-/root}"
+mkdir -p ${options.cwd}
+cd ${options.cwd}
+rm -f ${options.outputLastMessagePath}
+run_with_timeout() {
+  if command -v timeout >/dev/null 2>&1; then
+    timeout ${options.timeoutSeconds}s "$@"
+  else
+    "$@"
+  fi
+}
+run_with_timeout node ${CODEX_APPSERVER_RUNNER_PATH} ${shellQuote(JSON.stringify(commandConfig))}
+if [ -f ${options.outputLastMessagePath} ]; then
+  printf '\n===CODEX_LAST_MESSAGE===\n'
+  cat ${options.outputLastMessagePath}
+fi
+`)}`;
+}
+
+async function runCodexAppServer(
+  context: Parameters<LlmAdapter['run']>[0],
+  options: {
+    mode: CodexAppServerMode;
+    cwd: string;
+    model: string;
+    reasoningEffort?: string;
+    promptPath: string;
+    outputSchemaPath?: string;
+  }
+): Promise<ManagedExecResult> {
+  await ensureCodexAppServerRuntime(context.sandbox);
+  const command = buildCodexAppServerRunCommand({
+    mode: options.mode,
+    cwd: options.cwd,
+    model: options.model,
+    reasoningEffort: options.reasoningEffort ?? 'medium',
+    promptPath: options.promptPath,
+    outputSchemaPath: options.outputSchemaPath
+  });
+
+  return runCodexProcessWithLogs(context, command);
+}
+
+function buildCodexAppServerRunCommand(options: {
+  mode: CodexAppServerMode;
+  cwd: string;
+  model: string;
+  reasoningEffort: string;
+  promptPath: string;
+  outputSchemaPath?: string;
+}) {
+  return `bash -lc ${shellQuote(`set -euo pipefail
+export HOME="\${HOME:-/root}"
+cd ${options.cwd}
+node ${CODEX_APPSERVER_RUNNER_PATH} ${shellQuote(JSON.stringify(options))}
+`)}`;
+}
+
+async function ensureCodexAppServerRuntime(sandbox: Parameters<LlmAdapter['run']>[0]['sandbox']) {
+  await sandbox.writeFile(CODEX_APPSERVER_RUNNER_PATH, CODEX_APPSERVER_RUNNER);
+}
+
+function shouldFallbackToLegacyCodexCli(result: ManagedExecResult) {
+  const output = `${result.stdout ?? ''} ${result.stderr ?? ''}`;
+  return !result.success && output.includes(CODEX_APPSERVER_UNAVAILABLE_MARKER);
+}
+
+function buildPromptResultFromExecResult(params: {
+  result: { success: boolean; exitCode: number; stdout?: string; stderr?: string };
+  startedAt: number;
+  timeoutMs: number;
+}) {
+  const elapsedMs = Date.now() - params.startedAt;
+  const rawOutput = params.result.stdout?.includes(CODEX_APPSERVER_LAST_MESSAGE_MARKER)
+    ? params.result.stdout.split(CODEX_APPSERVER_LAST_MESSAGE_MARKER).slice(1).join(CODEX_APPSERVER_LAST_MESSAGE_MARKER).trim()
+    : undefined;
+
+  if (params.result.exitCode === 124) {
+    return {
+      status: 'timed_out',
+      elapsedMs,
+      timeoutMs: params.timeoutMs,
+      rawOutput,
+      stderr: params.result.stderr
+    } as const;
+  }
+
+  if (!params.result.success) {
+    return {
+      status: 'failed',
+      elapsedMs,
+      message: params.result.stderr?.trim() || 'Codex prompt execution failed.',
+      rawOutput,
+      stderr: params.result.stderr
+    } as const;
+  }
+
+  return {
+    status: 'success',
+    elapsedMs,
+    rawOutput: rawOutput ?? '',
+    stderr: params.result.stderr
+  } as const;
+}
 
 async function runCodexProcessWithLogs(context: Parameters<LlmAdapter['run']>[0], command: string): Promise<ManagedExecResult> {
   const { sandbox, repoBoard, runId } = context;
@@ -442,56 +1015,9 @@ async function runCodexProcessWithLogs(context: Parameters<LlmAdapter['run']>[0]
     success,
     stdout,
     stderr,
+    exitCode,
     stoppedForTakeover
   };
-}
-
-async function emitCommandLifecycle(
-  repoBoard: Parameters<LlmAdapter['run']>[0]['repoBoard'],
-  runId: string,
-  phase: RunCommandPhase,
-  command: string,
-  execute: () => Promise<{ success: boolean; exitCode: number; stdout?: string; stderr?: string }>
-) {
-  const run = await repoBoard.getRun(runId);
-  const commandId = buildRunCommandId(runId, phase);
-  const startedAt = new Date().toISOString();
-  const startedCommand: RunCommand = {
-    id: commandId,
-    runId,
-    phase,
-    startedAt,
-    status: 'running',
-    command: redactSensitiveText(command),
-    source: 'system'
-  };
-  await repoBoard.upsertRunCommands(runId, [startedCommand]);
-  await repoBoard.appendRunEvents(runId, [
-    buildRunEvent(run, 'workflow', 'command.started', `Started ${phase} command.`, { commandId, phase })
-  ]);
-
-  const result = await execute();
-  const completedRun = await repoBoard.getRun(runId);
-  const completedCommand: RunCommand = {
-    ...startedCommand,
-    completedAt: new Date().toISOString(),
-    exitCode: result.exitCode,
-    status: result.success ? 'completed' : 'failed',
-    stdoutPreview: summarizeOutput(result.stdout ? redactSensitiveText(result.stdout) : result.stdout),
-    stderrPreview: summarizeOutput(result.stderr ? redactSensitiveText(result.stderr) : result.stderr)
-  };
-  await repoBoard.upsertRunCommands(runId, [completedCommand]);
-  await repoBoard.appendRunEvents(runId, [
-    buildRunEvent(
-      completedRun,
-      result.success ? 'workflow' : 'system',
-      'command.completed',
-      `Completed ${phase} command with exit code ${result.exitCode}.`,
-      { commandId, phase, exitCode: result.exitCode, success: result.success }
-    )
-  ]);
-
-  return result;
 }
 
 async function logCodexAuthDiagnostics(
