@@ -18,7 +18,7 @@ import {
 } from './payload';
 import { resolveThreadTenant, verifySlackRequest } from './verification';
 import { mirrorRunLifecycleMilestone } from './timeline';
-import { postSlackChannelMessage, postSlackThreadMessage } from './client';
+import { fetchSlackThreadMessages, postSlackChannelMessage, postSlackThreadMessage } from './client';
 import { resolveIntegrationConfig } from '../config-resolution';
 import { getRepoHost, getRepoProjectPath } from '../../../shared/scm';
 import {
@@ -253,6 +253,52 @@ function truncateForText(value: string, maxChars: number) {
   return `${value.slice(0, Math.max(0, maxChars - 3)).trimEnd()}...`;
 }
 
+function stripLeadingSlackMention(text: string): string {
+  return text.replace(/^(?:\s*<@[^>]+>\s*)+/, '').trim();
+}
+
+function normalizeKanvyInvocationText(rawText: string, input: { eventType?: string; channelType?: string }): string | undefined {
+  const trimmed = rawText.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  const mentionStripped = stripLeadingSlackMention(trimmed);
+  if (mentionStripped !== trimmed) {
+    return mentionStripped;
+  }
+  if (trimmed.toLowerCase().startsWith('/kanvy')) {
+    return trimmed.slice('/kanvy'.length).trim();
+  }
+  if (input.channelType === 'im' || input.eventType === 'app_mention') {
+    return trimmed;
+  }
+  return undefined;
+}
+
+function buildIntentTextWithThreadContext(
+  baseText: string,
+  messages: Array<{ text: string; botId?: string; ts?: string }>
+): string {
+  const command = baseText.trim();
+  if (!command || messages.length === 0) {
+    return command;
+  }
+  const contextLines = messages
+    .filter((message) => !message.botId)
+    .map((message) => truncateForText(toSingleLine(message.text), 220))
+    .filter(Boolean)
+    .slice(-8);
+  if (contextLines.length === 0) {
+    return command;
+  }
+  return [
+    'thread_context:',
+    ...contextLines.map((line) => `- ${line}`),
+    'latest_user_message:',
+    command
+  ].join('\n');
+}
+
 function formatTaskPromptMarkdown(input: {
   goal: string;
   details?: string;
@@ -305,7 +351,7 @@ function buildSlackTaskSummary(input: {
     `>${prompt}`,
     '*Acceptance:*',
     acceptance,
-    'Reply `yes` to create it, or send edits in this thread.'
+    'Reply `yes` or 👍 to create it, or send edits in this thread.'
   ].join('\n');
 }
 
@@ -1035,6 +1081,13 @@ function deriveTaskTitleFromPrompt(prompt: string): string {
 
 function isAffirmativeConfirmation(text: string): boolean {
   const normalized = text.trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+  const emojiAliases = new Set([':+1:', ':thumbsup:', '👍', '👍🏻', '👍🏼', '👍🏽', '👍🏾', '👍🏿', '+1']);
+  if (emojiAliases.has(normalized)) {
+    return true;
+  }
   return normalized === 'yes'
     || normalized === 'y'
     || normalized === 'confirm'
@@ -1996,7 +2049,18 @@ async function runIntentIntake(
     text: buildIntentParseInputText(input.text, previousIntent),
     settings,
     priorTurns: currentTurn,
-    availableRepos
+    availableRepos,
+    onRequestStart: async ({ attempt }) => {
+      if (attempt !== 1) {
+        return;
+      }
+      await postThreadPrompt(env, {
+        tenantId: input.tenantId,
+        channelId: input.channelId,
+        threadTs: input.threadTs,
+        text: ':eyes:'
+      });
+    }
   }), previousIntent, input.text);
   if (!parsed.taskPrompt?.trim() && !isLikelyRepoOnlyText(input.text)) {
     parsed.taskPrompt = input.text.trim();
@@ -2392,6 +2456,89 @@ async function runSlackCommandAsync(
   }
 }
 
+async function runSlackMentionAsync(
+  env: Env,
+  payload: {
+    teamId?: string;
+    channelId: string;
+    threadTs: string;
+    eventTs?: string;
+    userId?: string;
+    text: string;
+    eventType?: string;
+    channelType?: string;
+  },
+  ctx?: ExecutionContext<unknown>
+) {
+  const tenantId = await resolveThreadTenantId(env, payload.teamId);
+  const normalizedText = normalizeKanvyInvocationText(payload.text, {
+    eventType: payload.eventType,
+    channelType: payload.channelType
+  });
+  if (!normalizedText) {
+    return;
+  }
+
+  const reviewInput = parseReviewFastPathInput(normalizedText);
+  const eventDedupeKey = buildIdempotencyKey({
+    provider: 'slack',
+    tenantId,
+    eventType: reviewInput ? 'event.mention.review' : 'event.mention.intent',
+    providerEventId: payload.eventTs ?? `${payload.channelId}:${payload.threadTs}:${normalizedText}`,
+    subjectId: `${payload.channelId}:${payload.threadTs}`,
+    metadata: {
+      userId: payload.userId ?? null
+    }
+  });
+  if (!(await markIngressDeliveryIfNew(env, eventDedupeKey))) {
+    return;
+  }
+
+  if (normalizedText.toLowerCase() === 'help') {
+    await postThreadPrompt(env, {
+      tenantId,
+      channelId: payload.channelId,
+      threadTs: payload.threadTs,
+      text: KANVY_HELP_TEXT
+    });
+    return;
+  }
+
+  if (normalizedText.toLowerCase().startsWith('review') && !reviewInput) {
+    await postThreadPrompt(env, {
+      tenantId,
+      channelId: payload.channelId,
+      threadTs: payload.threadTs,
+      text: 'Invalid review command. Usage: `@kanvy review <MR_NUMBER|MR_URL>`.'
+    });
+    return;
+  }
+
+  if (reviewInput) {
+    await processReviewCommandFlow(env, ctx, {
+      tenantId,
+      channelId: payload.channelId,
+      threadTs: payload.threadTs,
+      review: reviewInput
+    });
+    return;
+  }
+
+  const threadMessages = await fetchSlackThreadMessages(env, {
+    tenantId,
+    channelId: payload.channelId,
+    threadTs: payload.threadTs,
+    limit: 12
+  });
+  const intakeText = buildIntentTextWithThreadContext(normalizedText, threadMessages);
+  await runIntentIntake(env, ctx, {
+    tenantId,
+    channelId: payload.channelId,
+    threadTs: payload.threadTs,
+    text: intakeText
+  });
+}
+
 async function handleRepoDisambiguationAction(
   env: Env,
   ctx: ExecutionContext<unknown> | undefined,
@@ -2517,29 +2664,60 @@ export async function handleSlackEvents(request: Request, env: Env): Promise<Res
     if (payload.type === 'url_verification' && payload.challenge) {
       return json({ challenge: payload.challenge });
     }
-    if (payload.event?.type === 'message' && payload.event.threadTs && payload.event.channelId && payload.event.text && !payload.event.botId) {
-      const tenantId = await resolveThreadTenantId(env, payload.teamId);
-      const eventDedupeKey = buildIdempotencyKey({
-        provider: 'slack',
-        tenantId,
-        eventType: 'event.thread_message',
-        providerEventId: payload.eventId ?? `${payload.event.channelId}:${payload.event.ts ?? payload.event.threadTs}`,
-        subjectId: `${payload.event.channelId}:${payload.event.threadTs}`,
-        metadata: {
-          userId: payload.event.userId ?? null
-        }
-      });
-      if (!(await markIngressDeliveryIfNew(env, eventDedupeKey))) {
-        return json({ ok: true, status: 'duplicate_event_ignored' });
+    if (
+      payload.event
+      && (payload.event.type === 'message' || payload.event.type === 'app_mention')
+      && payload.event.channelId
+      && payload.event.text
+      && !payload.event.botId
+    ) {
+      const threadTs = payload.event.threadTs ?? payload.event.ts;
+      if (!threadTs) {
+        return json({ ok: true, status: 'accepted' });
       }
-      const session = await tenantAuthDb.getSlackIntakeSession(env, tenantId, payload.event.channelId, payload.event.threadTs);
-      if (session?.status === 'active') {
-        await runIntentIntake(env, undefined, {
-          tenantId,
+
+      const invocationText = normalizeKanvyInvocationText(payload.event.text, {
+        eventType: payload.event.type,
+        channelType: payload.event.channelType
+      });
+      if (invocationText) {
+        await runSlackMentionAsync(env, {
+          teamId: payload.teamId,
           channelId: payload.event.channelId,
-          threadTs: payload.event.threadTs,
-          text: payload.event.text
+          threadTs,
+          eventTs: payload.event.ts,
+          userId: payload.event.userId,
+          text: payload.event.text,
+          eventType: payload.event.type,
+          channelType: payload.event.channelType
         });
+        return json({ ok: true, status: 'accepted' });
+      }
+
+      if (payload.event.type === 'message' && payload.event.threadTs) {
+        const tenantId = await resolveThreadTenantId(env, payload.teamId);
+        const eventDedupeKey = buildIdempotencyKey({
+          provider: 'slack',
+          tenantId,
+          eventType: 'event.thread_message',
+          providerEventId: payload.eventId ?? `${payload.event.channelId}:${payload.event.ts ?? payload.event.threadTs}`,
+          subjectId: `${payload.event.channelId}:${payload.event.threadTs}`,
+          metadata: {
+            userId: payload.event.userId ?? null
+          }
+        });
+        if (!(await markIngressDeliveryIfNew(env, eventDedupeKey))) {
+          return json({ ok: true, status: 'duplicate_event_ignored' });
+        }
+        const session = await tenantAuthDb.getSlackIntakeSession(env, tenantId, payload.event.channelId, payload.event.threadTs);
+        if (session?.status === 'active') {
+          await runIntentIntake(env, undefined, {
+            tenantId,
+            channelId: payload.event.channelId,
+            threadTs: payload.event.threadTs,
+            text: payload.event.text
+          });
+        }
       }
     }
     return json({ ok: true, status: 'accepted' });

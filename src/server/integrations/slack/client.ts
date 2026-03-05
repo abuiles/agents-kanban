@@ -147,3 +147,52 @@ export async function postSlackChannelMessage(
     ts: typeof payload.ts === 'string' && payload.ts.trim() ? payload.ts.trim() : undefined
   };
 }
+
+export async function fetchSlackThreadMessages(
+  env: Env,
+  target: {
+    tenantId: string;
+    repoId?: string;
+    channelId: string;
+    threadTs: string;
+    limit?: number;
+  }
+): Promise<Array<{ text: string; userId?: string; botId?: string; ts?: string }>> {
+  const config = await resolveSlackConfig(env, target);
+  const token = await resolveSlackBotToken(env, config, target.tenantId);
+  if (!token) {
+    return [];
+  }
+
+  const params = new URLSearchParams({
+    channel: target.channelId,
+    ts: target.threadTs,
+    limit: String(target.limit ?? 20)
+  });
+  const response = await fetch(`https://slack.com/api/conversations.replies?${params.toString()}`, {
+    method: 'GET',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json; charset=utf-8'
+    }
+  });
+  if (!response.ok) {
+    return [];
+  }
+  const payload = await response.json().catch(() => undefined) as {
+    ok?: boolean;
+    messages?: Array<{ text?: unknown; user?: unknown; bot_id?: unknown; ts?: unknown }>;
+  } | undefined;
+  if (payload?.ok !== true || !Array.isArray(payload.messages)) {
+    return [];
+  }
+
+  return payload.messages
+    .map((message) => ({
+      text: typeof message.text === 'string' ? message.text : '',
+      userId: typeof message.user === 'string' && message.user.trim() ? message.user.trim() : undefined,
+      botId: typeof message.bot_id === 'string' && message.bot_id.trim() ? message.bot_id.trim() : undefined,
+      ts: typeof message.ts === 'string' && message.ts.trim() ? message.ts.trim() : undefined
+    }))
+    .filter((message) => message.text.trim().length > 0);
+}
