@@ -1779,6 +1779,203 @@ describe('slack handlers', () => {
     );
   });
 
+  it('starts review-only run when @kanvy yes is sent after pending review confirmation', async () => {
+    const repoBoard = makeRepoBoard({ taskId: 'task_review_confirm', runId: 'run_review_confirm' });
+    const boardIndex = makeBoardIndex([
+      {
+        repoId: 'repo_checkout',
+        slug: 'engineering/frontend/frontend',
+        scmProvider: 'gitlab',
+        scmBaseUrl: 'https://gitlab.rechargeapps.net',
+        projectPath: 'engineering/frontend/frontend'
+      } as unknown as { repoId: string; slug: string }
+    ]);
+    const env = makeEnv('secret', repoBoard, boardIndex);
+    await env.SECRETS_KV.put('slack/bot-token', 'xoxb-test');
+    tenantAuthDbMocks.getSlackIntakeSession
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce({
+        id: 'intake_review_confirm',
+        tenantId: 'team_one',
+        channelId: 'C0AH77Y53NC',
+        threadTs: '1772728642.223789',
+        status: 'active',
+        turnCount: 0,
+        data: {
+          pendingReviewStart: {
+            repoId: 'repo_checkout',
+            reviewNumber: 12080,
+            reviewProvider: 'gitlab',
+            sourceRef: 'refs/merge-requests/12080/head',
+            reviewUrl: 'https://gitlab.rechargeapps.net/engineering/frontend/frontend/-/merge_requests/12080'
+          }
+        },
+        lastActivityAt: new Date().toISOString(),
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z'
+      });
+    fetchSpy.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('https://slack.com/api/chat.postMessage')) {
+        const payload = JSON.parse(String(init?.body ?? '{}')) as { thread_ts?: string };
+        return new Response(JSON.stringify({ ok: true, ts: payload.thread_ts ?? '1772728642.223789' }), { status: 200 });
+      }
+      return new Response('{}', { status: 200 });
+    });
+
+    const reviewRawBody = JSON.stringify({
+      type: 'event_callback',
+      event_id: 'EvReviewConfirmSetup',
+      team_id: 'team_one',
+      authed_users: ['U0AJQ0GPJQL'],
+      event: {
+        type: 'message',
+        channel: 'C0AH77Y53NC',
+        thread_ts: '1772728642.223789',
+        ts: '1772728642.223789',
+        user: 'U02MYQW90MT',
+        text: '<@U0AJQ0GPJQL> review <https://gitlab.rechargeapps.net/engineering/frontend/frontend/-/merge_requests/12080|12080>',
+        channel_type: 'channel'
+      }
+    });
+    const reviewSignature = await buildSlackSignature('secret', nowTs, reviewRawBody);
+    const reviewRequest = new Request('https://example.test/api/integrations/slack/events', {
+      method: 'POST',
+      headers: slackHeaders(nowTs, reviewSignature),
+      body: reviewRawBody
+    });
+
+    const reviewResponse = await handleSlackEvents(reviewRequest, env);
+    expect(reviewResponse.status).toBe(200);
+
+    const yesRawBody = JSON.stringify({
+      type: 'event_callback',
+      event_id: 'EvReviewConfirmYes',
+      team_id: 'team_one',
+      authed_users: ['U0AJQ0GPJQL'],
+      event: {
+        type: 'message',
+        channel: 'C0AH77Y53NC',
+        thread_ts: '1772728642.223789',
+        ts: '1772728674.907969',
+        user: 'U02MYQW90MT',
+        text: '<@U0AJQ0GPJQL> yes',
+        channel_type: 'channel'
+      }
+    });
+    const yesSignature = await buildSlackSignature('secret', nowTs, yesRawBody);
+    const yesRequest = new Request('https://example.test/api/integrations/slack/events', {
+      method: 'POST',
+      headers: slackHeaders(nowTs, yesSignature),
+      body: yesRawBody
+    });
+
+    const yesResponse = await handleSlackEvents(yesRequest, env);
+    expect(yesResponse.status).toBe(200);
+    expect(await yesResponse.json()).toMatchObject({ ok: true, status: 'accepted' });
+    expect(repoBoard.createTask).toHaveBeenCalledTimes(1);
+    expect(repoBoard.startRun).toHaveBeenCalledTimes(1);
+    expect(runOrchestratorMocks.scheduleRunJob).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({ mode: 'review_only', runId: 'run_review_confirm' })
+    );
+
+    const calls = vi.mocked(global.fetch).mock.calls as Array<[RequestInfo | URL, RequestInit]>;
+    const startedMessage = calls.find((entry) =>
+      String(entry[0]).includes('https://slack.com/api/chat.postMessage')
+      && String(entry[1].body).includes('Started review-only run run_review_confirm for gitlab #12080 in repo_checkout.')
+    );
+    expect(startedMessage).toBeTruthy();
+  });
+
+  it('starts review-only rerun when @kanvy yes is sent after pending review rerun confirmation', async () => {
+    const repoBoard = makeRepoBoard({ taskId: 'task_review_rerun_confirm', runId: 'run_review_rerun_confirm' });
+    const boardIndex = makeBoardIndex([
+      {
+        repoId: 'repo_checkout',
+        slug: 'engineering/frontend/frontend',
+        scmProvider: 'gitlab',
+        scmBaseUrl: 'https://gitlab.rechargeapps.net',
+        projectPath: 'engineering/frontend/frontend'
+      } as unknown as { repoId: string; slug: string }
+    ], new Map([['run_existing_review', 'repo_checkout']]));
+    const env = makeEnv('secret', repoBoard, boardIndex);
+    await env.SECRETS_KV.put('slack/bot-token', 'xoxb-test');
+    tenantAuthDbMocks.getSlackIntakeSession.mockResolvedValue({
+      id: 'intake_review_rerun_confirm',
+      tenantId: 'team_one',
+      channelId: 'C0AH77Y53NC',
+      threadTs: '1772728642.223789',
+      status: 'active',
+      turnCount: 0,
+      data: {
+        pendingReviewRerun: {
+          repoId: 'repo_checkout',
+          taskId: 'task_existing_review',
+          runId: 'run_existing_review',
+          reviewNumber: 12080,
+          reviewProvider: 'gitlab',
+          reviewUrl: 'https://gitlab.rechargeapps.net/engineering/frontend/frontend/-/merge_requests/12080'
+        }
+      },
+      lastActivityAt: new Date().toISOString(),
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z'
+    });
+    fetchSpy.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('https://slack.com/api/chat.postMessage')) {
+        const payload = JSON.parse(String(init?.body ?? '{}')) as { thread_ts?: string };
+        return new Response(JSON.stringify({ ok: true, ts: payload.thread_ts ?? '1772728642.223789' }), { status: 200 });
+      }
+      return new Response('{}', { status: 200 });
+    });
+
+    const yesRawBody = JSON.stringify({
+      type: 'event_callback',
+      event_id: 'EvReviewRerunConfirmYes',
+      team_id: 'team_one',
+      authed_users: ['U0AJQ0GPJQL'],
+      event: {
+        type: 'message',
+        channel: 'C0AH77Y53NC',
+        thread_ts: '1772728642.223789',
+        ts: '1772728736.734809',
+        user: 'U02MYQW90MT',
+        text: '<@U0AJQ0GPJQL> yes',
+        channel_type: 'channel'
+      }
+    });
+    const yesSignature = await buildSlackSignature('secret', nowTs, yesRawBody);
+    const yesRequest = new Request('https://example.test/api/integrations/slack/events', {
+      method: 'POST',
+      headers: slackHeaders(nowTs, yesSignature),
+      body: yesRawBody
+    });
+
+    const yesResponse = await handleSlackEvents(yesRequest, env);
+    expect(yesResponse.status).toBe(200);
+    expect(await yesResponse.json()).toMatchObject({ ok: true, status: 'accepted' });
+    expect(repoBoard.requestRunChanges).toHaveBeenCalledWith(
+      'run_existing_review',
+      { prompt: 'Rerun review for gitlab #12080 using latest MR/PR discussion context.' },
+      'team_one'
+    );
+    expect(runOrchestratorMocks.scheduleRunJob).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({ mode: 'review_only', runId: 'run_review_rerun_confirm_rerun' })
+    );
+
+    const calls = vi.mocked(global.fetch).mock.calls as Array<[RequestInfo | URL, RequestInit]>;
+    const startedMessage = calls.find((entry) =>
+      String(entry[0]).includes('https://slack.com/api/chat.postMessage')
+      && String(entry[1].body).includes('Started review rerun run_review_rerun_confirm_rerun for gitlab #12080 in repo_checkout.')
+    );
+    expect(startedMessage).toBeTruthy();
+  });
+
   it('queues review confirmation when replying with a repo number after review disambiguation', async () => {
     const repoBoard = makeRepoBoard({ taskId: 'task_review_reply', runId: 'run_review_reply' });
     const boardIndex = makeBoardIndex([
