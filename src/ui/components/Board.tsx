@@ -114,7 +114,7 @@ function TaskCard({
       type="button"
       onClick={onSelect}
       className={[
-        'group rounded-xl border px-3 py-2.5 text-left transition duration-150',
+        'group w-full min-w-0 rounded-xl border px-3 py-2.5 text-left transition duration-150',
         'bg-slate-900/90 shadow-[0_8px_18px_rgba(2,6,23,0.24)] hover:border-slate-500 hover:bg-slate-900',
         isSelected ? 'border-cyan-400 ring-2 ring-cyan-400/30' : 'border-slate-800'
       ].join(' ')}
@@ -129,7 +129,7 @@ function TaskCard({
             </span>
             <span className={`text-[11px] font-semibold uppercase tracking-[0.14em] ${signal.tone}`}>{signal.label}</span>
           </div>
-          <div className="text-sm font-semibold leading-5 text-slate-50 break-words" style={clampTwoLines}>
+          <div className="text-sm font-semibold leading-5 text-slate-50 break-words [overflow-wrap:anywhere]" style={clampTwoLines}>
             {task.title}
           </div>
         </div>
@@ -138,7 +138,7 @@ function TaskCard({
 
       {task.description
         ? (
-          <p className="mt-1.5 text-xs leading-5 text-slate-400 break-words" style={clampTwoLines}>
+          <p className="mt-1.5 text-xs leading-5 text-slate-400 break-words [overflow-wrap:anywhere]" style={clampTwoLines}>
             {task.description}
           </p>
         )
@@ -175,7 +175,7 @@ function BoardColumn({
       ref={setNodeRef}
       data-testid={`column-${status}`}
       className={[
-        'relative flex min-h-[28rem] min-w-64 flex-col rounded-2xl border bg-slate-950/65',
+        'relative flex min-h-[28rem] w-80 min-w-0 shrink-0 flex-col rounded-2xl border bg-slate-950/65',
         'bg-gradient-to-b px-3 pb-3 pt-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.02)]',
         style.tint,
         isOver ? 'border-cyan-300 bg-cyan-500/10 ring-2 ring-cyan-400/25' : ''
