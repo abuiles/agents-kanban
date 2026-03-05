@@ -1966,8 +1966,7 @@ async function runIntentIntake(
       status: 'completed',
       turnCount: currentTurn,
       data: {
-        lastUserText: input.text,
-        completedFromConfirmation: true
+        lastUserText: input.text
       }
     });
     await postThreadPrompt(env, {
@@ -2456,7 +2455,6 @@ async function handleReviewRepoDisambiguationAction(
   }
   const review = resolveReviewCommandForRepo(repo, {
     reviewNumber,
-    reviewProvider,
     reviewUrl: interaction.reviewUrl,
     providerHint: reviewProvider
   });
