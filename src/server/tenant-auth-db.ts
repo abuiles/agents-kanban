@@ -506,6 +506,7 @@ function parseSlackIntakeSessionData(value: unknown): SlackIntakeSessionData {
         ? reviewProviderCandidate
         : undefined;
       const reviewUrl = readString(record.reviewUrl);
+      const draftContext = readString(record.draftContext);
       if (!repoId || !taskId || !runId || !reviewNumber || reviewNumber < 1 || !reviewProvider) {
         return undefined;
       }
@@ -515,7 +516,36 @@ function parseSlackIntakeSessionData(value: unknown): SlackIntakeSessionData {
         runId,
         reviewNumber,
         reviewProvider,
-        ...(reviewUrl ? { reviewUrl } : {})
+        ...(reviewUrl ? { reviewUrl } : {}),
+        ...(draftContext ? { draftContext } : {})
+      };
+    };
+    const readPendingReviewStart = (raw: unknown): SlackIntakeSessionData['pendingReviewStart'] => {
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+        return undefined;
+      }
+      const record = raw as Record<string, unknown>;
+      const repoId = readString(record.repoId);
+      const sourceRef = readString(record.sourceRef);
+      const reviewNumber = typeof record.reviewNumber === 'number' && Number.isFinite(record.reviewNumber)
+        ? Math.trunc(record.reviewNumber)
+        : undefined;
+      const reviewProviderCandidate = readString(record.reviewProvider);
+      const reviewProvider = reviewProviderCandidate === 'github' || reviewProviderCandidate === 'gitlab'
+        ? reviewProviderCandidate
+        : undefined;
+      const reviewUrl = readString(record.reviewUrl);
+      const draftContext = readString(record.draftContext);
+      if (!repoId || !sourceRef || !reviewNumber || reviewNumber < 1 || !reviewProvider) {
+        return undefined;
+      }
+      return {
+        repoId,
+        sourceRef,
+        reviewNumber,
+        reviewProvider,
+        ...(reviewUrl ? { reviewUrl } : {}),
+        ...(draftContext ? { draftContext } : {})
       };
     };
     return {
@@ -533,7 +563,8 @@ function parseSlackIntakeSessionData(value: unknown): SlackIntakeSessionData {
       repoChoices: readStringArray(data.repoChoices),
       pendingConfirmation: readPendingConfirmation(data.pendingConfirmation),
       pendingReviewSelection: readPendingReviewSelection(data.pendingReviewSelection),
-      pendingReviewRerun: readPendingReviewRerun(data.pendingReviewRerun)
+      pendingReviewRerun: readPendingReviewRerun(data.pendingReviewRerun),
+      pendingReviewStart: readPendingReviewStart(data.pendingReviewStart)
     };
   } catch {
     return {};

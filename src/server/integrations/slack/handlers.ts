@@ -601,27 +601,49 @@ function truncateForText(value: string, maxChars: number) {
 }
 
 function stripLeadingSlackMention(text: string): string {
-  return text.replace(/^(?:\s*<@[^>]+>\s*)+/, '').trim();
+  return text.replace(/^(?:\s*<@([^>]+)>\s*)+/, '').trim();
+}
+
+function stripLeadingKanvyMentions(text: string, kanvyUserIds: string[]): string {
+  let remaining = text.trim();
+  if (!remaining || kanvyUserIds.length === 0) {
+    return remaining;
+  }
+  const allowedIds = new Set(kanvyUserIds.map((id) => id.trim()).filter(Boolean));
+  if (!allowedIds.size) {
+    return remaining;
+  }
+
+  for (;;) {
+    const match = remaining.match(/^<@([^>]+)>\s*/);
+    if (!match?.[1] || !allowedIds.has(match[1])) {
+      break;
+    }
+    remaining = remaining.slice(match[0].length).trimStart();
+  }
+  return remaining.trim();
 }
 
 function sanitizeTextForReviewIntent(value: string): string {
   return stripSlackReviewLinkMarkup(value).replace(/\s+/g, ' ').trim();
 }
 
-function normalizeKanvyInvocationText(rawText: string, input: { eventType?: string; channelType?: string }): string | undefined {
+function normalizeKanvyInvocationText(rawText: string, input: { eventType?: string; channelType?: string; authedUserIds?: string[] }): string | undefined {
   const trimmed = rawText.trim();
   if (!trimmed) {
     return undefined;
   }
-  const mentionStripped = stripLeadingSlackMention(trimmed);
+  const mentionStripped = stripLeadingKanvyMentions(trimmed, input.authedUserIds ?? []);
   if (mentionStripped !== trimmed) {
     return mentionStripped;
   }
-  const inlineMention = /<@[^>]+>/.exec(trimmed);
-  if (inlineMention) {
-    const afterMention = trimmed.slice(inlineMention.index + inlineMention[0].length).trim();
-    if (afterMention) {
-      return afterMention;
+  if ((input.authedUserIds ?? []).length > 0) {
+    const inlineMention = /<@([^>]+)>/.exec(trimmed);
+    if (inlineMention?.[0] && inlineMention[1] && (input.authedUserIds ?? []).includes(inlineMention[1])) {
+      const afterMention = trimmed.slice(inlineMention.index + inlineMention[0].length).trim();
+      if (afterMention) {
+        return afterMention;
+      }
     }
   }
   if (trimmed.toLowerCase().startsWith('/kanvy')) {
@@ -719,7 +741,7 @@ function buildSlackTaskSummary(input: {
     `>${prompt}`,
     '*Acceptance:*',
     acceptance,
-    'Reply `yes` or 👍 to create it, or send edits in this thread.'
+    'Reply `@kanvy yes` or `@kanvy 👍` to create it, or send edits with `@kanvy` in this thread.'
   ].join('\n');
 }
 
@@ -1055,6 +1077,7 @@ function buildReviewTaskPayload(input: {
         : [],
       notes: `Created from Slack /kanvy review for ${reviewLabel}.`
     },
+    tags: ['review_only'],
     autoReviewMode: 'on',
     llmAdapter: reviewLlmAdapter,
     llmModel: reviewLlmModel,
@@ -1566,6 +1589,7 @@ function normalizePendingReviewRerun(data: unknown): {
   reviewNumber: number;
   reviewProvider: 'github' | 'gitlab';
   reviewUrl?: string;
+  draftContext?: string;
 } | undefined {
   if (!data || typeof data !== 'object') {
     return undefined;
@@ -1588,10 +1612,50 @@ function normalizePendingReviewRerun(data: unknown): {
   const reviewUrl = typeof record.reviewUrl === 'string' && record.reviewUrl.trim()
     ? record.reviewUrl.trim()
     : undefined;
+  const draftContext = typeof record.draftContext === 'string' && record.draftContext.trim()
+    ? record.draftContext.trim()
+    : undefined;
   if (!repoId || !taskId || !runId || !reviewNumber || reviewNumber < 1 || !reviewProvider) {
     return undefined;
   }
-  return { repoId, taskId, runId, reviewNumber, reviewProvider, reviewUrl };
+  return { repoId, taskId, runId, reviewNumber, reviewProvider, reviewUrl, draftContext };
+}
+
+function normalizePendingReviewStart(data: unknown): {
+  repoId: string;
+  reviewNumber: number;
+  reviewProvider: 'github' | 'gitlab';
+  sourceRef: string;
+  reviewUrl?: string;
+  draftContext?: string;
+} | undefined {
+  if (!data || typeof data !== 'object') {
+    return undefined;
+  }
+  const root = data as Record<string, unknown>;
+  const pending = root.pendingReviewStart;
+  if (!pending || typeof pending !== 'object') {
+    return undefined;
+  }
+  const record = pending as Record<string, unknown>;
+  const repoId = typeof record.repoId === 'string' && record.repoId.trim() ? record.repoId.trim() : undefined;
+  const reviewNumber = typeof record.reviewNumber === 'number' && Number.isFinite(record.reviewNumber)
+    ? Math.trunc(record.reviewNumber)
+    : undefined;
+  const reviewProvider = record.reviewProvider === 'github' || record.reviewProvider === 'gitlab'
+    ? record.reviewProvider
+    : undefined;
+  const sourceRef = typeof record.sourceRef === 'string' && record.sourceRef.trim() ? record.sourceRef.trim() : undefined;
+  const reviewUrl = typeof record.reviewUrl === 'string' && record.reviewUrl.trim()
+    ? record.reviewUrl.trim()
+    : undefined;
+  const draftContext = typeof record.draftContext === 'string' && record.draftContext.trim()
+    ? record.draftContext.trim()
+    : undefined;
+  if (!repoId || !reviewNumber || reviewNumber < 1 || !reviewProvider || !sourceRef) {
+    return undefined;
+  }
+  return { repoId, reviewNumber, reviewProvider, sourceRef, reviewUrl, draftContext };
 }
 
 function resolveRepoFromReply(text: string, choices: string[]): string | undefined {
@@ -2169,13 +2233,16 @@ async function startSlackApprovedRerun(
     },
     tenantId
   );
+  const getTask = (repoBoard as unknown as { getTask?: (taskId: string, tenantId?: string) => Promise<{ task: Task }> }).getTask;
+  const taskDetail = getTask ? await getTask(run.taskId, tenantId) : undefined;
+  const isReviewOnlyTask = (taskDetail?.task.tags ?? []).includes('review_only');
 
   const workflow = await scheduleRunJob(env, executionContextOrNoop(ctx), {
     tenantId,
     repoId,
     taskId: run.taskId,
     runId: run.runId,
-    mode: 'full_run'
+    mode: isReviewOnlyTask ? 'review_only' : 'full_run'
   });
 
   await repoBoard.transitionRun(run.runId, {
@@ -2337,6 +2404,40 @@ function resolveReviewCommandForRepo(repo: Repo, review: SlackReviewFastPathInpu
   };
 }
 
+async function queuePendingReviewStart(
+  env: Env,
+  input: {
+    tenantId: string;
+    channelId: string;
+    threadTs: string;
+    repoId: string;
+    review: ResolvedReviewCommand;
+    draftContext?: string;
+  }
+) {
+  const existingSession = await tenantAuthDb.getSlackIntakeSession(env, input.tenantId, input.channelId, input.threadTs);
+  const nextTurn = existingSession?.status === 'active' ? existingSession.turnCount : 0;
+  await tenantAuthDb.upsertSlackIntakeSession(env, {
+    tenantId: input.tenantId,
+    channelId: input.channelId,
+    threadTs: input.threadTs,
+    status: 'active',
+    turnCount: nextTurn,
+    lastConfidence: existingSession?.lastConfidence,
+    data: {
+      ...(existingSession?.data ?? {}),
+      pendingReviewStart: {
+        repoId: input.repoId,
+        reviewNumber: input.review.reviewNumber,
+        reviewProvider: input.review.reviewProvider,
+        sourceRef: input.review.sourceRef,
+        ...(input.review.reviewUrl ? { reviewUrl: input.review.reviewUrl } : {}),
+        ...(input.draftContext?.trim() ? { draftContext: input.draftContext.trim() } : {})
+      }
+    }
+  });
+}
+
 async function processReviewCommandFlow(
   env: Env,
   ctx: ExecutionContext<unknown> | undefined,
@@ -2428,7 +2529,7 @@ async function processReviewCommandFlow(
         threadTs: input.threadTs,
         text: [
           `Multiple repositories match ${reviewLabel}.`,
-          'Reply with one repo id, then rerun with a full review URL:',
+          'Reply with `@kanvy <repo id or number>` to choose one, then rerun with a full review URL:',
           '`@kanvy review <MR_URL>`',
           'Candidates:',
           ...repoResolution.choices.map((choice, index) => `${index + 1}. ${choice.repoId}`)
@@ -2481,8 +2582,9 @@ async function processReviewCommandFlow(
 
     const prompt = [
       `An existing review task already covers ${review.reviewProvider} #${review.reviewNumber} in ${repo.repoId}.`,
-      'Reply with extra context to include on rerun, or reply `yes` / `:+1:` to rerun with default context.',
-      'Reply `no` to cancel.'
+      'Reply `@kanvy yes` (or `@kanvy :+1:`) to rerun with default context.',
+      'Reply `@kanvy <extra context>` to save rerun context, then confirm with `@kanvy yes`.',
+      'Reply `@kanvy no` to cancel.'
     ].join('\n');
 
     if (input.responseUrl) {
@@ -2513,50 +2615,33 @@ async function processReviewCommandFlow(
     });
     return undefined;
   }
-  const started = await startReviewRunForTask(
-    env,
-    ctx,
-    input.tenantId,
-    repo,
-    review
-  );
-  await tenantAuthDb.upsertSlackThreadBinding(env, {
-    tenantId: input.tenantId,
-    taskId: started.taskId,
-    channelId: input.channelId,
-    threadTs: input.threadTs,
-    currentRunId: started.runId,
-    latestReviewRound: DEFAULT_REVIEW_ROUND
-  });
-  await tenantAuthDb.upsertSlackIntakeSession(env, {
+  await queuePendingReviewStart(env, {
     tenantId: input.tenantId,
     channelId: input.channelId,
     threadTs: input.threadTs,
-    status: 'completed',
-    turnCount: 0,
-    data: {
-      lastUserText: `review ${review.reviewNumber}`
-    }
-  });
-  await postThreadPrompt(env, {
-    tenantId: input.tenantId,
-    channelId: input.channelId,
-    threadTs: input.threadTs,
-    text: `Started review-only run ${started.runId} for ${review.reviewProvider} #${review.reviewNumber} in ${repo.repoId}.`
-  });
-  logSlackMentionIngestion({
-    checkpoint: 'review_started',
-    tenantId: input.tenantId,
-    channelId: input.channelId,
-    threadTs: input.threadTs,
-    reviewNumber: review.reviewNumber,
-    reviewUrl: review.reviewUrl,
-    reviewProviderHint: review.reviewProvider,
     repoId: repo.repoId,
-    taskId: started.taskId,
-    runId: started.runId
+    review
   });
-  return started;
+  const confirmationText = [
+    `Ready to run a review-only task for ${review.reviewProvider} #${review.reviewNumber} in ${repo.repoId}.`,
+    'Reply `@kanvy yes` (or `@kanvy :+1:`) to start.',
+    'Reply `@kanvy <extra context>` to include additional guidance before starting.',
+    'Reply `@kanvy no` to cancel.'
+  ].join('\n');
+  if (input.responseUrl) {
+    await postSlackResponse(input.responseUrl, {
+      response_type: 'ephemeral',
+      text: confirmationText
+    });
+  } else {
+    await postThreadPrompt(env, {
+      tenantId: input.tenantId,
+      channelId: input.channelId,
+      threadTs: input.threadTs,
+      text: confirmationText
+    });
+  }
+  return undefined;
 }
 
 async function processJiraIssueFlow(
@@ -2867,6 +2952,117 @@ async function runIntentIntake(
   }
 
   const currentTurn = existing?.status === 'active' && !expired ? existing.turnCount : 0;
+  const pendingReviewStart = existing?.status === 'active' && !expired
+    ? normalizePendingReviewStart(existing.data)
+    : undefined;
+  if (pendingReviewStart) {
+    if (isNegativeConfirmation(input.text)) {
+      await tenantAuthDb.upsertSlackIntakeSession(env, {
+        tenantId: input.tenantId,
+        channelId: input.channelId,
+        threadTs: input.threadTs,
+        status: 'completed',
+        turnCount: currentTurn,
+        data: {
+          lastUserText: input.text
+        }
+      });
+      await postThreadPrompt(env, {
+        tenantId: input.tenantId,
+        channelId: input.channelId,
+        threadTs: input.threadTs,
+        text: 'Understood. I will not start that review.'
+      });
+      return undefined;
+    }
+
+    if (!isAffirmativeConfirmation(input.text)) {
+      const draftContext = input.text.trim();
+      await tenantAuthDb.upsertSlackIntakeSession(env, {
+        tenantId: input.tenantId,
+        channelId: input.channelId,
+        threadTs: input.threadTs,
+        status: 'active',
+        turnCount: currentTurn,
+        data: {
+          ...(existing?.data ?? {}),
+          pendingReviewStart: {
+            ...pendingReviewStart,
+            ...(draftContext ? { draftContext } : {})
+          },
+          lastUserText: input.text
+        }
+      });
+      await postThreadPrompt(env, {
+        tenantId: input.tenantId,
+        channelId: input.channelId,
+        threadTs: input.threadTs,
+        text: 'Saved your review context. Reply `@kanvy yes` (or `@kanvy :+1:`) to start, or `@kanvy no` to cancel.'
+      });
+      return undefined;
+    }
+
+    const repos = await listTenantRepos(env, input.tenantId);
+    const repo = repos.find((candidate) => candidate.repoId === pendingReviewStart.repoId);
+    if (!repo) {
+      await postThreadPrompt(env, {
+        tenantId: input.tenantId,
+        channelId: input.channelId,
+        threadTs: input.threadTs,
+        text: `Repo ${pendingReviewStart.repoId} is no longer available for this tenant.`
+      });
+      return undefined;
+    }
+    const review = resolveReviewCommandForRepo(repo, {
+      reviewNumber: pendingReviewStart.reviewNumber,
+      reviewUrl: pendingReviewStart.reviewUrl,
+      providerHint: pendingReviewStart.reviewProvider
+    });
+    const started = await startReviewRunForTask(
+      env,
+      ctx,
+      input.tenantId,
+      repo,
+      review
+    );
+    await tenantAuthDb.upsertSlackThreadBinding(env, {
+      tenantId: input.tenantId,
+      taskId: started.taskId,
+      channelId: input.channelId,
+      threadTs: input.threadTs,
+      currentRunId: started.runId,
+      latestReviewRound: DEFAULT_REVIEW_ROUND
+    });
+    await tenantAuthDb.upsertSlackIntakeSession(env, {
+      tenantId: input.tenantId,
+      channelId: input.channelId,
+      threadTs: input.threadTs,
+      status: 'completed',
+      turnCount: currentTurn,
+      data: {
+        lastUserText: input.text
+      }
+    });
+    await postThreadPrompt(env, {
+      tenantId: input.tenantId,
+      channelId: input.channelId,
+      threadTs: input.threadTs,
+      text: `Started review-only run ${started.runId} for ${review.reviewProvider} #${review.reviewNumber} in ${repo.repoId}.`
+    });
+    logSlackMentionIngestion({
+      checkpoint: 'review_started',
+      tenantId: input.tenantId,
+      channelId: input.channelId,
+      threadTs: input.threadTs,
+      repoId: repo.repoId,
+      taskId: started.taskId,
+      runId: started.runId,
+      reviewNumber: review.reviewNumber,
+      reviewUrl: review.reviewUrl,
+      reviewProviderHint: review.reviewProvider
+    });
+    return started;
+  }
   const pendingReviewRerun = existing?.status === 'active' && !expired
     ? normalizePendingReviewRerun(existing.data)
     : undefined;
@@ -2891,15 +3087,28 @@ async function runIntentIntake(
       return undefined;
     }
 
-    const rerunContext = isAffirmativeConfirmation(input.text)
-      ? ''
-      : input.text.trim();
-    if (!rerunContext && !isAffirmativeConfirmation(input.text)) {
+    if (!isAffirmativeConfirmation(input.text)) {
+      const rerunContext = input.text.trim();
+      await tenantAuthDb.upsertSlackIntakeSession(env, {
+        tenantId: input.tenantId,
+        channelId: input.channelId,
+        threadTs: input.threadTs,
+        status: 'active',
+        turnCount: currentTurn,
+        data: {
+          ...(existing?.data ?? {}),
+          pendingReviewRerun: {
+            ...pendingReviewRerun,
+            ...(rerunContext ? { draftContext: rerunContext } : {})
+          },
+          lastUserText: input.text
+        }
+      });
       await postThreadPrompt(env, {
         tenantId: input.tenantId,
         channelId: input.channelId,
         threadTs: input.threadTs,
-        text: 'Reply with `yes` (or :+1:) to rerun, `no` to cancel, or provide extra rerun context.'
+        text: 'Saved your rerun context. Reply `@kanvy yes` (or `@kanvy :+1:`) to rerun, or `@kanvy no` to cancel.'
       });
       return undefined;
     }
@@ -2911,8 +3120,8 @@ async function runIntentIntake(
       {
         repoId: pendingReviewRerun.repoId,
         baseRunId: pendingReviewRerun.runId,
-        prompt: rerunContext
-          ? `Rerun review with additional operator context:\n${rerunContext}`
+        prompt: pendingReviewRerun.draftContext?.trim()
+          ? `Rerun review with additional operator context:\n${pendingReviewRerun.draftContext.trim()}`
           : `Rerun review for ${pendingReviewRerun.reviewProvider} #${pendingReviewRerun.reviewNumber} using latest MR/PR discussion context.`
       }
     );
@@ -2980,36 +3189,22 @@ async function runIntentIntake(
           reviewUrl: pendingReviewSelection.reviewUrl,
           providerHint: pendingReviewSelection.reviewProviderHint
         });
-        const started = await startReviewRunForTask(
-          env,
-          ctx,
-          input.tenantId,
-          repo,
-          review,
-        );
-        await tenantAuthDb.upsertSlackThreadBinding(env, {
-          tenantId: input.tenantId,
-          taskId: started.taskId,
-          channelId: input.channelId,
-          threadTs: input.threadTs,
-          currentRunId: started.runId,
-          latestReviewRound: DEFAULT_REVIEW_ROUND
-        });
-        await tenantAuthDb.upsertSlackIntakeSession(env, {
+        await queuePendingReviewStart(env, {
           tenantId: input.tenantId,
           channelId: input.channelId,
           threadTs: input.threadTs,
-          status: 'completed',
-          turnCount: currentTurn,
-          data: {
-            lastUserText: input.text
-          }
+          repoId: repo.repoId,
+          review
         });
         await postThreadPrompt(env, {
           tenantId: input.tenantId,
           channelId: input.channelId,
           threadTs: input.threadTs,
-          text: `Started review-only run ${started.runId} for ${review.reviewProvider} #${review.reviewNumber} in ${repo.repoId}.`
+          text: [
+            `Repo selected: ${repo.repoId} for ${review.reviewProvider} #${review.reviewNumber}.`,
+            'Reply `@kanvy yes` (or `@kanvy :+1:`) to start review-only mode.',
+            'Reply `@kanvy no` to cancel.'
+          ].join('\n')
         });
         logSlackMentionIngestion({
           checkpoint: 'review_reply_resolved',
@@ -3017,13 +3212,11 @@ async function runIntentIntake(
           channelId: input.channelId,
           threadTs: input.threadTs,
           repoId: repo.repoId,
-          taskId: started.taskId,
-          runId: started.runId,
           reviewNumber: review.reviewNumber,
           reviewUrl: review.reviewUrl,
           reviewProviderHint: review.reviewProvider
         });
-        return started;
+        return undefined;
       }
     } else if (input.text.trim()) {
       logSlackMentionIngestion({
@@ -3041,7 +3234,7 @@ async function runIntentIntake(
         channelId: input.channelId,
         threadTs: input.threadTs,
         text: [
-          `Please reply with a number from 1-${pendingReviewSelection.choices.length} or an exact repo id.`,
+          `Please reply with @kanvy and a number from 1-${pendingReviewSelection.choices.length} or an exact repo id.`,
           ...pendingReviewSelection.choices.map((choice, index) => `${index + 1}. ${choice}`)
         ].join('\n')
       });
@@ -3222,7 +3415,7 @@ async function runIntentIntake(
     ? [
       'I found multiple possible repos. Did you mean:',
       ...disambiguationChoices.map((repoId, index) => `${index + 1}: ${repoId}`),
-      'Reply with the number.'
+      'Reply with `@kanvy <number>`.'
     ].join('\n')
     : parsed.clarifyingQuestion
       ?? 'Please clarify repo, exact goal, and acceptance criteria.';
@@ -3574,6 +3767,7 @@ async function runSlackMentionAsync(
     text: string;
     eventType?: string;
     channelType?: string;
+    authedUserIds?: string[];
   },
   ctx?: ExecutionContext<unknown>
 ) {
@@ -3590,7 +3784,8 @@ async function runSlackMentionAsync(
   const tenantId = await resolveThreadTenantId(env, payload.teamId);
   const normalizedText = normalizeKanvyInvocationText(payload.text, {
     eventType: payload.eventType,
-    channelType: payload.channelType
+    channelType: payload.channelType,
+    authedUserIds: payload.authedUserIds
   });
   logSlackMentionIngestion({
     checkpoint: 'normalized',
@@ -3851,7 +4046,7 @@ async function handleRepoDisambiguationAction(
 
 async function handleReviewRepoDisambiguationAction(
   env: Env,
-  ctx: ExecutionContext<unknown> | undefined,
+  _ctx: ExecutionContext<unknown> | undefined,
   tenantId: string,
   interaction: ParsedSlackInteraction
 ): Promise<Response> {
@@ -3871,28 +4066,29 @@ async function handleReviewRepoDisambiguationAction(
     reviewUrl: interaction.reviewUrl,
     providerHint: reviewProvider
   });
-  const started = await startReviewRunForTask(
-    env,
-    ctx,
-    tenantId,
-    repo,
-    review
-  );
   if (interaction.threadTs) {
-    await tenantAuthDb.upsertSlackThreadBinding(env, {
+    await queuePendingReviewStart(env, {
       tenantId,
-      taskId: started.taskId,
       channelId: interaction.channelId,
       threadTs: interaction.threadTs,
-      currentRunId: started.runId,
-      latestReviewRound: DEFAULT_REVIEW_ROUND
+      repoId,
+      review
+    });
+    await postThreadPrompt(env, {
+      tenantId,
+      channelId: interaction.channelId,
+      threadTs: interaction.threadTs,
+      text: [
+        `Repo selected: ${repoId} for ${review.reviewProvider} #${review.reviewNumber}.`,
+        'Reply `@kanvy yes` (or `@kanvy :+1:`) to start review-only mode.',
+        'Reply `@kanvy no` to cancel.'
+      ].join('\n')
     });
   }
   return json({
     ok: true,
     action: interaction.actionId,
-    taskId: started.taskId,
-    runId: started.runId,
+    status: 'pending_confirmation',
     repoId
   });
 }
@@ -3943,7 +4139,8 @@ export async function handleSlackEvents(request: Request, env: Env): Promise<Res
 
       const invocationText = normalizeKanvyInvocationText(payload.event.text, {
         eventType: payload.event.type,
-        channelType: payload.event.channelType
+        channelType: payload.event.channelType,
+        authedUserIds: payload.authedUserIds
       });
       if (invocationText) {
         logSlackMentionIngestion({
@@ -3965,7 +4162,8 @@ export async function handleSlackEvents(request: Request, env: Env): Promise<Res
           userId: payload.event.userId,
           text: payload.event.text,
           eventType: payload.event.type,
-          channelType: payload.event.channelType
+          channelType: payload.event.channelType,
+          authedUserIds: payload.authedUserIds
         });
         return json({ ok: true, status: 'accepted' });
       }
@@ -3980,33 +4178,6 @@ export async function handleSlackEvents(request: Request, env: Env): Promise<Res
         rawText: payload.event.text,
         message: 'Event message did not resolve to a @kanvy invocation'
       });
-
-      if (payload.event.type === 'message' && payload.event.threadTs) {
-        const tenantId = await resolveThreadTenantId(env, payload.teamId);
-        const eventDedupeKey = buildIdempotencyKey({
-          provider: 'slack',
-          tenantId,
-          eventType: 'event.thread_message',
-          providerEventId: payload.eventId ?? `${payload.event.channelId}:${payload.event.ts ?? payload.event.threadTs}`,
-          subjectId: `${payload.event.channelId}:${payload.event.threadTs}`,
-          metadata: {
-            userId: payload.event.userId ?? null
-          }
-        });
-        if (!(await markIngressDeliveryIfNew(env, eventDedupeKey))) {
-          return json({ ok: true, status: 'duplicate_event_ignored' });
-        }
-        const session = await tenantAuthDb.getSlackIntakeSession(env, tenantId, payload.event.channelId, payload.event.threadTs);
-        if (session?.status === 'active') {
-          await runIntentIntake(env, undefined, {
-            tenantId,
-            channelId: payload.event.channelId,
-            threadTs: payload.event.threadTs,
-            sourceMessageTs: payload.event.ts,
-            text: payload.event.text
-          });
-        }
-      }
     }
     return json({ ok: true, status: 'accepted' });
   } catch (error) {

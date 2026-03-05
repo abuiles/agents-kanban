@@ -94,6 +94,15 @@ export type SlackIntakeSessionData = {
     reviewNumber: number;
     reviewProvider: 'github' | 'gitlab';
     reviewUrl?: string;
+    draftContext?: string;
+  };
+  pendingReviewStart?: {
+    repoId: string;
+    reviewNumber: number;
+    reviewProvider: 'github' | 'gitlab';
+    sourceRef: string;
+    reviewUrl?: string;
+    draftContext?: string;
   };
 };
 export type SlackIntakeSession = {
