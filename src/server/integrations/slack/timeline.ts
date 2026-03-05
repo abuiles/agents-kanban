@@ -1,4 +1,4 @@
-import type { AgentRun, RunStatus } from '../../../ui/domain/types';
+import type { AgentRun, RunStatus, Task } from '../../../ui/domain/types';
 import { buildIdempotencyKey } from '../idempotency';
 import { listSlackThreadBindingsForTask, postSlackThreadMessage } from './client';
 
@@ -125,6 +125,84 @@ export function truncateFeedbackText(note: string) {
     return compact;
   }
   return `${compact.slice(0, 217)}...`;
+}
+
+function pluralize(count: number, singular: string, plural: string) {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
+function isSlackReviewOnlyTask(task: Pick<Task, 'title' | 'context'> | undefined) {
+  if (!task) return false;
+  const title = task.title?.trim() ?? '';
+  const notes = task.context?.notes?.trim() ?? '';
+  return title.startsWith('[Review]') || notes.includes('Created from Slack /kanvy review');
+}
+
+function buildSlackReviewCompletionMessage(run: AgentRun) {
+  const summary = run.reviewFindingsSummary;
+  const postedCount = summary?.posted ?? run.reviewPostState?.postedCount ?? 0;
+  const findingsCount = summary?.total ?? run.reviewPostState?.findingsCount ?? 0;
+  const openCount = summary?.open ?? 0;
+  const reviewLabel = run.reviewProvider === 'gitlab'
+    ? `MR !${run.reviewNumber ?? run.prNumber ?? 'unknown'}`
+    : `PR #${run.reviewNumber ?? run.prNumber ?? 'unknown'}`;
+  const reviewUrl = run.reviewUrl ?? run.prUrl;
+  const urlSuffix = reviewUrl ? ` ${reviewUrl}` : '';
+
+  if (postedCount > 0) {
+    return `Review completed for ${reviewLabel}${urlSuffix}. We left ${pluralize(postedCount, 'comment', 'comments')} (${pluralize(openCount, 'open finding', 'open findings')}).`;
+  }
+
+  return `Review completed for ${reviewLabel}${urlSuffix}. ${pluralize(findingsCount, 'finding', 'findings')} generated; no review comments were posted.`;
+}
+
+export async function mirrorSlackReviewCompletion(
+  env: Env,
+  run: AgentRun,
+  task: Pick<Task, 'title' | 'context'> | undefined,
+  eventId: string
+) {
+  if (!run.tenantId || !isSlackReviewOnlyTask(task) || run.reviewExecution?.status !== 'completed') {
+    return;
+  }
+
+  const bindings = await listSlackThreadBindingsForTask(env, run.tenantId, run.taskId);
+  if (!bindings.length) {
+    return;
+  }
+
+  const relevantBindings = bindings.filter((binding) => !binding.currentRunId || binding.currentRunId === run.runId);
+  if (!relevantBindings.length) {
+    return;
+  }
+
+  const text = buildSlackReviewCompletionMessage(run);
+  await Promise.all(relevantBindings.map(async (binding) => {
+    const dedupeKey = buildIdempotencyKey({
+      provider: 'slack',
+      tenantId: run.tenantId!,
+      eventType: 'review.completed',
+      providerEventId: eventId,
+      subjectId: `${binding.channelId}:${binding.threadTs}`,
+      metadata: {
+        runId: run.runId,
+        taskId: run.taskId,
+        round: run.reviewExecution?.round ?? 0
+      }
+    });
+    const shouldDeliver = await markDeliveryIfNew(env, dedupeKey);
+    if (!shouldDeliver) return;
+
+    await postSlackThreadMessage(env, {
+      tenantId: run.tenantId!,
+      repoId: run.repoId,
+      channelId: binding.channelId,
+      threadTs: binding.threadTs,
+      text
+    }).catch(() => {
+      // Slack review completion mirroring is best effort.
+    });
+  }));
 }
 
 export function buildGitlabFeedbackSlackMessage(input: {

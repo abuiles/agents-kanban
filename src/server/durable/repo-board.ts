@@ -29,7 +29,7 @@ import { resolveRunSource } from '../shared/run-source-resolution';
 import { normalizeOperatorSession, normalizeRunLlmState, normalizeTaskUiMeta } from '../../shared/llm';
 import { hasRunReview, normalizeDependencyReviewMetadata, normalizeRunReviewMetadata, normalizeTaskBranchSourceReviewMetadata } from '../../shared/scm';
 import { DEFAULT_TENANT_ID, normalizeTenantId } from '../../shared/tenant';
-import { mapRunStatusToLifecycleMilestone, mirrorRunLifecycleMilestone } from '../integrations/slack/timeline';
+import { mapRunStatusToLifecycleMilestone, mirrorRunLifecycleMilestone, mirrorSlackReviewCompletion } from '../integrations/slack/timeline';
 import { resolveRetryRecoveryDecision } from '../shared/retry-recovery';
 
 const STORAGE_KEY = 'repo-board-state';
@@ -626,6 +626,23 @@ export class RepoBoardDO extends DurableObject<Env> {
     if (nextMilestone && nextMilestone !== previousMilestone) {
       await mirrorRunLifecycleMilestone(this.env, updated, nextMilestone, `${updated.runId}:${nextMilestone}:${nowIso}`).catch(() => {
         // Slack timeline mirroring is best effort.
+      });
+    }
+    const previousReviewStatus = run.reviewExecution?.status;
+    const nextReviewStatus = updated.reviewExecution?.status;
+    const previousReviewRound = run.reviewExecution?.round ?? 0;
+    const nextReviewRound = updated.reviewExecution?.round ?? 0;
+    if (
+      nextReviewStatus === 'completed'
+      && (previousReviewStatus !== 'completed' || nextReviewRound > previousReviewRound)
+    ) {
+      await mirrorSlackReviewCompletion(
+        this.env,
+        updated,
+        finalTask,
+        `${updated.runId}:review_completed:${nextReviewRound}:${nowIso}`
+      ).catch(() => {
+        // Slack review completion mirroring is best effort.
       });
     }
     return updated;
