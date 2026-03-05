@@ -847,18 +847,25 @@ export class LocalAgentBoardApi implements AgentBoardApi {
     return this.store.getSnapshot().commands.filter((command) => command.runId === runId);
   }
 
-  async getTerminalBootstrap(runId: string, _sandboxRole?: SandboxRole): Promise<TerminalBootstrap> {
+  async getTerminalBootstrap(runId: string, sandboxRole: SandboxRole = 'main'): Promise<TerminalBootstrap> {
     const run = await this.getRun(runId);
-    if (!run.sandboxId || ['DONE', 'FAILED'].includes(run.status)) {
+    const selectedSandboxId = sandboxRole === 'review' ? run.reviewSandboxId : run.sandboxId;
+    const reviewCompleted = sandboxRole === 'review'
+      && run.reviewExecution?.status === 'completed'
+      && ['DONE', 'FAILED'].includes(run.status);
+    if (!selectedSandboxId || (['DONE', 'FAILED'].includes(run.status) && !reviewCompleted)) {
       return {
         runId,
         repoId: run.repoId,
         taskId: run.taskId,
-        sandboxId: run.sandboxId ?? '',
-        sessionName: 'operator',
+        sandboxId: selectedSandboxId ?? '',
+        sandboxRole,
+        sessionName: sandboxRole === 'review' ? `operator-${runId}-review` : 'operator',
         status: run.status,
         attachable: false,
-        reason: !run.sandboxId ? 'sandbox_missing' : 'run_not_active',
+        requestedSandboxId: sandboxRole === 'review' ? run.reviewSandboxId : run.sandboxId,
+        resolvedSandboxId: selectedSandboxId,
+        reason: !selectedSandboxId ? 'sandbox_missing' : 'run_not_active',
         cols: 120,
         rows: 32,
         session: run.operatorSession,
@@ -872,11 +879,16 @@ export class LocalAgentBoardApi implements AgentBoardApi {
       runId,
       repoId: run.repoId,
       taskId: run.taskId,
-      sandboxId: run.sandboxId,
-      sessionName: 'operator',
+      sandboxId: selectedSandboxId,
+      requestedSandboxId: sandboxRole === 'review' ? run.reviewSandboxId : run.sandboxId,
+      resolvedSandboxId: selectedSandboxId,
+      sandboxRole,
+      sessionName: sandboxRole === 'review' ? `operator-${runId}-review` : 'operator',
       status: run.status,
       attachable: true,
-      wsPath: `/api/runs/${encodeURIComponent(runId)}/ws`,
+      wsPath: sandboxRole === 'review'
+        ? `/api/runs/${encodeURIComponent(runId)}/ws?sandboxRole=review`
+        : `/api/runs/${encodeURIComponent(runId)}/ws`,
       cols: 120,
       rows: 32,
       session: run.operatorSession,

@@ -1,8 +1,12 @@
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
 import { getLocalAgentBoardApi, resetLocalAgentBoardApi } from './mock/local-agent-board-api';
+
+vi.mock('./components/RunTerminal', () => ({
+  RunTerminal: () => <div>Run terminal mocked</div>
+}));
 
 beforeEach(() => {
   localStorage.clear();
@@ -242,5 +246,38 @@ describe('App', () => {
     expect(screen.getByText('Live executor stream')).toBeInTheDocument();
     expect(screen.getAllByRole('button', { name: 'Take over' }).length).toBeGreaterThan(1);
     expect(screen.getByRole('button', { name: 'Disconnect' })).toBeInTheDocument();
+  });
+
+  it('uses review terminal role for completed review on terminal runs', async () => {
+    const user = userEvent.setup();
+    const api = getLocalAgentBoardApi();
+    const snapshot = api.getSnapshot();
+    snapshot.runs = snapshot.runs.map((run) => (run.runId === 'run_kpi_1'
+      ? {
+          ...run,
+          reviewSandboxId: 'run_kpi_1:review',
+          reviewExecution: {
+            enabled: true,
+            trigger: 'manual_rerun',
+            promptSource: 'native',
+            status: 'completed',
+            round: (run.reviewExecution?.round ?? 0) + 1,
+            startedAt: run.endedAt,
+            endedAt: run.endedAt,
+            durationMs: 1_000
+          }
+        }
+      : run));
+    const terminalSpy = vi.spyOn(api, 'getTerminalBootstrap');
+
+    render(<App api={api} />);
+
+    await user.click(await screen.findByRole('button', { name: /add funnel kpi definitions/i }));
+    await user.click(screen.getByRole('button', { name: 'Open terminal' }));
+
+    await waitFor(() => {
+      expect(terminalSpy).toHaveBeenCalledWith('run_kpi_1', 'review');
+      expect(screen.getByRole('heading', { name: /Live terminal/i })).toBeInTheDocument();
+    });
   });
 });

@@ -251,14 +251,35 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
   }
 
   async function openTerminal(runId: string) {
-    try {
-      const bootstrap = await api.getTerminalBootstrap(runId);
-      setTerminalBootstrap(bootstrap);
-      setTerminalModalRunId(runId);
-      setTerminalResumeCopied(false);
-      setNotice(bootstrap.attachable ? 'Terminal connected to the live sandbox session.' : `Terminal unavailable: ${bootstrap.reason ?? 'unknown error'}.`);
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : 'Failed to open terminal.');
+    const targetRun = snapshot.runs.find((run) => run.runId === runId);
+    const shouldPreferReviewSandbox = targetRun?.reviewExecution?.status === 'completed'
+      && ['DONE', 'FAILED'].includes(targetRun.status)
+      && Boolean(targetRun.reviewSandboxId);
+    const candidates: Array<'main' | 'review'> = shouldPreferReviewSandbox ? ['review', 'main'] : ['main', 'review'];
+
+    for (const sandboxRole of candidates) {
+      try {
+        const bootstrap = await api.getTerminalBootstrap(runId, sandboxRole);
+        if (bootstrap.attachable) {
+          setTerminalBootstrap(bootstrap);
+          setTerminalModalRunId(runId);
+          setTerminalResumeCopied(false);
+          setNotice('Terminal connected to the live sandbox session.');
+          return;
+        }
+        if (sandboxRole === 'main') {
+          setTerminalBootstrap(bootstrap);
+          setTerminalModalRunId(runId);
+          setTerminalResumeCopied(false);
+          setNotice(`Terminal unavailable: ${bootstrap.reason ?? 'unknown error'}.`);
+          return;
+        }
+      } catch (error) {
+        if (sandboxRole === 'main') {
+          setNotice(error instanceof Error ? error.message : 'Failed to open terminal.');
+          return;
+        }
+      }
     }
   }
 

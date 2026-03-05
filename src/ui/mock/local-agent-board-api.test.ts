@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { getLocalAgentBoardApi, resetLocalAgentBoardApi } from './local-agent-board-api';
+import type { RunReviewExecution } from '../domain/types';
 
 describe('LocalAgentBoardApi auth management', () => {
   beforeEach(() => {
@@ -72,5 +73,39 @@ describe('LocalAgentBoardApi auth management', () => {
     const filtered = await api.listTasks({ repoId: repo.repoId, tags: ['p1'] });
     expect(filtered).toHaveLength(1);
     expect(filtered[0]?.title).toBe('Tagged task');
+  });
+
+  it('connects terminal to review sandbox when review has completed on terminal-complete runs', async () => {
+    const api = getLocalAgentBoardApi();
+    await api.rerunReview('run_kpi_1');
+    const snapshot = api.getSnapshot();
+    const existingReviewExecution = snapshot.runs.find((run) => run.runId === 'run_kpi_1')?.reviewExecution;
+    const reviewExecution: RunReviewExecution = {
+      enabled: existingReviewExecution?.enabled ?? true,
+      trigger: existingReviewExecution?.trigger ?? 'manual_rerun',
+      promptSource: existingReviewExecution?.promptSource ?? 'native',
+      status: 'completed',
+      round: (existingReviewExecution?.round ?? 0) + 1,
+      startedAt: existingReviewExecution?.startedAt,
+      endedAt: existingReviewExecution?.endedAt,
+      durationMs: existingReviewExecution?.durationMs
+    };
+
+    snapshot.runs = snapshot.runs.map((run) =>
+      run.runId === 'run_kpi_1'
+            ? {
+                ...run,
+                reviewSandboxId: `${run.runId}:review`,
+                reviewExecution
+            }
+        : run
+    );
+
+    const bootstrap = await api.getTerminalBootstrap('run_kpi_1', 'review');
+    expect(bootstrap.attachable).toBe(true);
+    expect(bootstrap.sandboxRole).toBe('review');
+    expect(bootstrap.sandboxId).toBe('run_kpi_1:review');
+    expect(bootstrap.wsPath).toBe('/api/runs/run_kpi_1/ws?sandboxRole=review');
+    expect(bootstrap.sessionName).toBe('operator-run_kpi_1-review');
   });
 });

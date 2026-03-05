@@ -804,7 +804,11 @@ export class RepoBoardDO extends DurableObject<Env> {
       };
     }
 
-    if (isTerminalRunStatus(run.status)) {
+    const allowReviewTerminalReattach = sandboxRole === 'review'
+      && run.reviewExecution?.status === 'completed'
+      && isTerminalRunStatus(run.status)
+      && Boolean(resolved.sandboxId);
+    if (isTerminalRunStatus(run.status) && !allowReviewTerminalReattach) {
       return {
         tenantId: run.tenantId,
         runId,
