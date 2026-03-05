@@ -196,3 +196,41 @@ export async function fetchSlackThreadMessages(
     }))
     .filter((message) => message.text.trim().length > 0);
 }
+
+export async function addSlackReaction(
+  env: Env,
+  target: {
+    tenantId: string;
+    repoId?: string;
+    channelId: string;
+    messageTs: string;
+    name: string;
+  }
+): Promise<{ delivered: boolean; reason?: string }> {
+  const config = await resolveSlackConfig(env, target);
+  const token = await resolveSlackBotToken(env, config, target.tenantId);
+  if (!token) {
+    return { delivered: false, reason: 'missing_slack_bot_token' };
+  }
+
+  const response = await fetch('https://slack.com/api/reactions.add', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json; charset=utf-8'
+    },
+    body: JSON.stringify({
+      channel: target.channelId,
+      timestamp: target.messageTs,
+      name: target.name
+    })
+  });
+  if (!response.ok) {
+    return { delivered: false, reason: `slack_http_${response.status}` };
+  }
+  const payload = await response.json().catch(() => undefined) as { ok?: boolean; error?: string } | undefined;
+  if (payload?.ok !== true) {
+    return { delivered: false, reason: payload?.error || 'slack_api_error' };
+  }
+  return { delivered: true };
+}

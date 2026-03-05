@@ -18,7 +18,7 @@ import {
 } from './payload';
 import { resolveThreadTenant, verifySlackRequest } from './verification';
 import { mirrorRunLifecycleMilestone } from './timeline';
-import { fetchSlackThreadMessages, postSlackChannelMessage, postSlackThreadMessage } from './client';
+import { addSlackReaction, fetchSlackThreadMessages, postSlackChannelMessage, postSlackThreadMessage } from './client';
 import { resolveIntegrationConfig } from '../config-resolution';
 import { getRepoHost, getRepoProjectPath } from '../../../shared/scm';
 import {
@@ -1963,6 +1963,46 @@ async function postThreadPrompt(
   }
 }
 
+async function postMessageReaction(
+  env: Env,
+  input: {
+    tenantId: string;
+    channelId: string;
+    messageTs: string;
+    name: string;
+  }
+) {
+  try {
+    const result = await addSlackReaction(env, {
+      tenantId: input.tenantId,
+      channelId: input.channelId,
+      messageTs: input.messageTs,
+      name: input.name
+    });
+    if (!result.delivered) {
+      console.warn(JSON.stringify({
+        event: 'slack_reaction_add_failed',
+        tenantId: input.tenantId,
+        channelId: input.channelId,
+        messageTs: input.messageTs,
+        reaction: input.name,
+        reason: result.reason ?? 'unknown'
+      }));
+    }
+    return result.delivered;
+  } catch (error) {
+    console.warn(JSON.stringify({
+      event: 'slack_reaction_add_failed',
+      tenantId: input.tenantId,
+      channelId: input.channelId,
+      messageTs: input.messageTs,
+      reaction: input.name,
+      reason: error instanceof Error ? error.message : 'unknown_error'
+    }));
+    return false;
+  }
+}
+
 async function runIntentIntake(
   env: Env,
   ctx: ExecutionContext<unknown> | undefined,
@@ -1970,6 +2010,7 @@ async function runIntentIntake(
     tenantId: string;
     channelId: string;
     threadTs: string;
+    sourceMessageTs?: string;
     text: string;
     responseUrl?: string;
   }
@@ -2053,6 +2094,17 @@ async function runIntentIntake(
     onRequestStart: async ({ attempt }) => {
       if (attempt !== 1) {
         return;
+      }
+      if (input.sourceMessageTs?.trim()) {
+        const reacted = await postMessageReaction(env, {
+          tenantId: input.tenantId,
+          channelId: input.channelId,
+          messageTs: input.sourceMessageTs.trim(),
+          name: 'eyes'
+        });
+        if (reacted) {
+          return;
+        }
       }
       await postThreadPrompt(env, {
         tenantId: input.tenantId,
@@ -2535,6 +2587,7 @@ async function runSlackMentionAsync(
     tenantId,
     channelId: payload.channelId,
     threadTs: payload.threadTs,
+    sourceMessageTs: payload.eventTs,
     text: intakeText
   });
 }
@@ -2715,6 +2768,7 @@ export async function handleSlackEvents(request: Request, env: Env): Promise<Res
             tenantId,
             channelId: payload.event.channelId,
             threadTs: payload.event.threadTs,
+            sourceMessageTs: payload.event.ts,
             text: payload.event.text
           });
         }
