@@ -1525,6 +1525,9 @@ describe('slack handlers', () => {
           }]
         }), { status: 200 });
       }
+      if (url.includes('https://slack.com/api/reactions.add')) {
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }
       if (url.includes('https://slack.com/api/chat.postMessage')) {
         const payload = JSON.parse(String(init?.body ?? '{}')) as { thread_ts?: string };
         return new Response(JSON.stringify({ ok: true, ts: payload.thread_ts ?? '1672531200.1234' }), { status: 200 });
@@ -1556,11 +1559,11 @@ describe('slack handlers', () => {
     expect(response.status).toBe(200);
     expect(llmAttempts).toBe(2);
     const calls = vi.mocked(global.fetch).mock.calls as Array<[RequestInfo | URL, RequestInit]>;
-    const eyesPosts = calls.filter((entry) =>
-      String(entry[0]).includes('https://slack.com/api/chat.postMessage')
-      && String(entry[1].body).includes('":eyes:"')
+    const eyesReactions = calls.filter((entry) =>
+      String(entry[0]).includes('https://slack.com/api/reactions.add')
+      && String(entry[1].body).includes('"name":"eyes"')
     );
-    expect(eyesPosts).toHaveLength(1);
+    expect(eyesReactions).toHaveLength(1);
   });
 
   it('accepts 👍 as affirmative confirmation for pending task creation', async () => {
