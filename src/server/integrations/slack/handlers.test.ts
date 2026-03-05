@@ -460,7 +460,17 @@ describe('slack handlers', () => {
         slug: 'acme/repo-alpha',
         scmProvider: 'github',
         scmBaseUrl: 'https://github.com',
-        projectPath: 'acme/repo-alpha'
+        projectPath: 'acme/repo-alpha',
+        autoReview: {
+          enabled: true,
+          provider: 'github',
+          postInline: false,
+          llmAdapter: 'codex',
+          llmModel: 'gpt-5.3-codex',
+          llmReasoningEffort: 'high',
+          codexModel: 'gpt-5.3-codex',
+          codexReasoningEffort: 'high'
+        }
       } as unknown as { repoId: string; slug: string }
     ]);
     const rawBody = new URLSearchParams({
@@ -491,7 +501,11 @@ describe('slack handlers', () => {
     expect(repoBoard.createTask).toHaveBeenCalledWith(expect.objectContaining({
       repoId: 'repo_alpha',
       sourceRef: 'pull/1234/head',
-      autoReviewMode: 'on'
+      autoReviewMode: 'on',
+      llmModel: 'gpt-5.3-codex',
+      llmReasoningEffort: 'high',
+      codexModel: 'gpt-5.3-codex',
+      codexReasoningEffort: 'high'
     }));
     expect(runOrchestratorMocks.scheduleRunJob).toHaveBeenCalledWith(
       expect.anything(),
@@ -1077,7 +1091,17 @@ describe('slack handlers', () => {
         slug: 'acme/repo-alpha',
         scmProvider: 'github',
         scmBaseUrl: 'https://github.com',
-        projectPath: 'acme/repo-alpha'
+        projectPath: 'acme/repo-alpha',
+        autoReview: {
+          enabled: true,
+          provider: 'github',
+          postInline: false,
+          llmAdapter: 'codex',
+          llmModel: 'gpt-5.3-codex',
+          llmReasoningEffort: 'high',
+          codexModel: 'gpt-5.3-codex',
+          codexReasoningEffort: 'high'
+        }
       } as unknown as { repoId: string; slug: string }
     ]);
 

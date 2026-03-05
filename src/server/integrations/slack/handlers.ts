@@ -896,13 +896,20 @@ function buildReviewCanonicalUrl(
 }
 
 function buildReviewTaskPayload(input: {
+  repo: Repo;
   repoId: string;
   sourceRef: string;
   reviewProvider: 'github' | 'gitlab';
   reviewNumber: number;
   reviewUrl?: string;
-  model: CreateTaskInput['codexModel'];
 }): CreateTaskInput {
+  const reviewLlmAdapter = input.repo.autoReview?.llmAdapter ?? JIRA_LLM_ADAPTER;
+  const reviewLlmModel = input.repo.autoReview?.llmModel
+    ?? input.repo.autoReview?.codexModel
+    ?? DEFAULT_TASK_LLM_MODEL;
+  const reviewLlmReasoningEffort = input.repo.autoReview?.llmReasoningEffort
+    ?? input.repo.autoReview?.codexReasoningEffort
+    ?? JIRA_LLM_REASONING_EFFORT;
   const reviewLabel = input.reviewProvider === 'github'
     ? `PR #${input.reviewNumber}`
     : `MR !${input.reviewNumber}`;
@@ -939,9 +946,15 @@ function buildReviewTaskPayload(input: {
       notes: `Created from Slack /kanvy review for ${reviewLabel}.`
     },
     autoReviewMode: 'on',
-    llmAdapter: JIRA_LLM_ADAPTER,
-    codexModel: input.model,
-    codexReasoningEffort: 'medium'
+    llmAdapter: reviewLlmAdapter,
+    llmModel: reviewLlmModel,
+    llmReasoningEffort: reviewLlmReasoningEffort,
+    codexModel: reviewLlmAdapter === 'codex'
+      ? (reviewLlmModel as CreateTaskInput['codexModel'])
+      : undefined,
+    codexReasoningEffort: reviewLlmAdapter === 'codex'
+      ? (reviewLlmReasoningEffort as CreateTaskInput['codexReasoningEffort'])
+      : undefined
   };
 }
 
@@ -1844,18 +1857,18 @@ async function startReviewRunForTask(
   env: Env,
   ctx: ExecutionContext<unknown> | undefined,
   tenantId: string,
-  repoId: string,
+  repo: Repo,
   review: ResolvedReviewCommand,
-  model: CreateTaskInput['codexModel']
 ): Promise<RunKickoff> {
+  const repoId = repo.repoId;
   const repoBoard = env.REPO_BOARD.getByName(repoId);
   const task = await repoBoard.createTask(buildReviewTaskPayload({
+    repo,
     repoId,
     sourceRef: review.sourceRef,
     reviewProvider: review.reviewProvider,
     reviewNumber: review.reviewNumber,
-    reviewUrl: review.reviewUrl,
-    model
+    reviewUrl: review.reviewUrl
   }));
   const run = await repoBoard.startRun(task.taskId, { tenantId });
   await repoBoard.transitionRun(run.runId, {
@@ -2227,9 +2240,8 @@ async function processReviewCommandFlow(
     env,
     ctx,
     input.tenantId,
-    repo.repoId,
-    review,
-    DEFAULT_TASK_LLM_MODEL
+    repo,
+    review
   );
   await tenantAuthDb.upsertSlackThreadBinding(env, {
     tenantId: input.tenantId,
@@ -3428,9 +3440,8 @@ async function handleReviewRepoDisambiguationAction(
     env,
     ctx,
     tenantId,
-    repoId,
-    review,
-    DEFAULT_TASK_LLM_MODEL
+    repo,
+    review
   );
   if (interaction.threadTs) {
     await tenantAuthDb.upsertSlackThreadBinding(env, {
