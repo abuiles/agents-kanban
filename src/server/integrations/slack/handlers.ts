@@ -2970,14 +2970,6 @@ async function runSlackCommandAsync(
     return;
   }
 
-  if (normalizedText.toLowerCase().startsWith('review') && !reviewInput) {
-    await postSlackResponse(payload.responseUrl, {
-      response_type: 'ephemeral',
-      text: 'Invalid review command. Usage: `/kanvy review <MR_NUMBER|MR_URL>`.'
-    });
-    return;
-  }
-
   if (reviewInput) {
     const reviewThreadTs = payload.threadTs
       ?? await ensureThreadForChannelIntake(env, {
@@ -3260,27 +3252,6 @@ async function runSlackMentionAsync(
       channelId: payload.channelId,
       threadTs: payload.threadTs,
       text: KANVY_HELP_TEXT
-    });
-    return;
-  }
-
-  if (normalizedText.toLowerCase().startsWith('review') && !reviewInput) {
-    logSlackMentionIngestion({
-      checkpoint: 'invalid_review_syntax',
-      tenantId,
-      channelId: payload.channelId,
-      threadTs: payload.threadTs,
-      eventTs: payload.eventTs,
-      userId: payload.userId,
-      eventType: payload.eventType,
-      channelType: payload.channelType,
-      normalizedText
-    });
-    await postThreadPrompt(env, {
-      tenantId,
-      channelId: payload.channelId,
-      threadTs: payload.threadTs,
-      text: 'Invalid review command. Usage: `@kanvy review <MR_NUMBER|MR_URL>`.'
     });
     return;
   }
