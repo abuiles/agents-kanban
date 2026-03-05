@@ -121,6 +121,13 @@ describe('GitLab review posting adapter', () => {
         }), { status: 200 })
       )
       .mockResolvedValueOnce(
+        new Response(JSON.stringify({
+          changes: [
+            { old_path: 'src/db.ts', new_path: 'src/db.ts' }
+          ]
+        }), { status: 200 })
+      )
+      .mockResolvedValueOnce(
         new Response(JSON.stringify([
           {
             id: 'd2',
@@ -156,7 +163,7 @@ describe('GitLab review posting adapter', () => {
       task: buildTask(),
       run: buildRun({ reviewNumber: 123 }),
       findings: [
-        buildFinding({ findingId: 'rf_1', lineStart: 42, lineEnd: 44 }),
+        buildFinding({ findingId: 'rf_1', filePath: '/workspace/repo/src/db.ts', lineStart: 42, lineEnd: 44 }),
         buildFinding({ findingId: 'rf_2', lineStart: 7 })
       ],
       credential: { token: 'glpat_test' },
@@ -167,7 +174,12 @@ describe('GitLab review posting adapter', () => {
     expect(result.findings.every((entry) => entry.posted && entry.inline)).toBe(true);
     expect(result.summary).toBeUndefined();
     expect(result.findings[0].providerThreadId).toBe('200');
-    expect(fetchMock).toHaveBeenCalledTimes(6);
+    const inlinePayload = JSON.parse(String(fetchMock.mock.calls[4]?.[1]?.body ?? '{}')) as {
+      position?: { old_path?: string; new_path?: string };
+    };
+    expect(inlinePayload.position?.old_path).toBe('src/db.ts');
+    expect(inlinePayload.position?.new_path).toBe('src/db.ts');
+    expect(fetchMock).toHaveBeenCalledTimes(7);
   });
 
   it('falls back to a summary note when inline posting is unavailable', async () => {
@@ -184,6 +196,11 @@ describe('GitLab review posting adapter', () => {
       .mockResolvedValueOnce(
         new Response(JSON.stringify({
           diff_refs: { base_sha: 'base', head_sha: 'head', start_sha: 'start' }
+        }), { status: 200 })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({
+          changes: [{ old_path: 'src/main.ts', new_path: 'src/main.ts' }]
         }), { status: 200 })
       )
       .mockResolvedValueOnce(new Response(JSON.stringify([]), { status: 200 }))
@@ -216,6 +233,52 @@ describe('GitLab review posting adapter', () => {
     expect(result.findings[0].providerThreadId).toBe('3000');
     expect(result.summary?.providerThreadId).toBe('3000');
     expect(result.summary?.posted).toBe(true);
+  });
+
+  it('skips inline and posts summary when finding path is outside merge request diff', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify([]), { status: 200 }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({
+          diff_refs: { base_sha: 'base', head_sha: 'head', start_sha: 'start' }
+        }), { status: 200 })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({
+          changes: [{ old_path: 'src/other.ts', new_path: 'src/other.ts' }]
+        }), { status: 200 })
+      )
+      .mockResolvedValueOnce(new Response(JSON.stringify([]), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        id: 1001,
+        notes: [{ id: '3001', body: 'summary fallback', url: 'https://gitlab.example.com/note/3001' }]
+      }), { status: 201 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const adapter = new GitLabReviewPostingAdapter();
+    const result = await adapter.postFindings({
+      repo: buildRepo(),
+      task: buildTask(),
+      run: buildRun({ reviewNumber: 123 }),
+      findings: [buildFinding({ findingId: 'rf_outside', filePath: '/workspace/repo/src/missing.ts', lineStart: 5 })],
+      credential: { token: 'glpat_test' },
+      postInline: true
+    });
+
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0]).toMatchObject({
+      findingId: 'rf_outside',
+      posted: true,
+      inline: false,
+      summary: true,
+      providerThreadId: '3001'
+    });
+    const inlineCalls = fetchMock.mock.calls.filter((entry) => {
+      const url = String(entry[0]);
+      const body = String(entry[1]?.body ?? '');
+      return url.includes('/discussions') && body.includes('"position_type":"text"');
+    });
+    expect(inlineCalls).toHaveLength(0);
   });
 
   it('maps GitLab discussion replies back to finding IDs', async () => {

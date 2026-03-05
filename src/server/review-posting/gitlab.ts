@@ -44,6 +44,13 @@ type GitLabMergeRequestResponse = {
   };
 };
 
+type GitLabMergeRequestChangesResponse = {
+  changes?: Array<{
+    old_path?: string;
+    new_path?: string;
+  }>;
+};
+
 type ExistingFindingThread = {
   noteId: string;
   noteUrl?: string;
@@ -61,6 +68,7 @@ type GitLabPostingInput = {
   repo: Repo;
   reviewNumber: number;
   finding: ReviewFinding;
+  filePath: string;
   marker: string;
   diffRefs: NonNullable<GitLabMergeRequestResponse['diff_refs']>;
   token: string;
@@ -126,6 +134,13 @@ export class GitLabReviewPostingAdapter implements ReviewPostingAdapter {
       errors.push(message);
       return undefined;
     });
+    const changedPaths = shouldInline && diffRefs
+      ? await this.fetchMergeRequestChangedPaths(input.repo, reviewNumber, input.credential.token).catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        errors.push(message);
+        return undefined;
+      })
+      : undefined;
 
     for (const finding of input.findings) {
       const result: ReviewPostingFindingRecord = {
@@ -136,6 +151,7 @@ export class GitLabReviewPostingAdapter implements ReviewPostingAdapter {
       };
       const marker = buildReviewFindingMarker(finding.findingId, input.run.runId);
       const existingThread = findingsByMarker.get(finding.findingId);
+      const normalizedFilePath = this.normalizeInlineFilePath(finding.filePath);
 
       if (existingThread) {
         result.posted = true;
@@ -148,12 +164,19 @@ export class GitLabReviewPostingAdapter implements ReviewPostingAdapter {
         continue;
       }
 
-      if (!shouldInline || !finding.filePath || !finding.lineStart || !diffRefs) {
+      if (!shouldInline || !normalizedFilePath || !finding.lineStart || !diffRefs) {
         needsSummary.push(finding);
         result.summary = true;
-        result.reason = !shouldInline || !finding.filePath || !finding.lineStart
+        result.reason = !shouldInline || !normalizedFilePath || !finding.lineStart
           ? 'Posting inline unavailable or disabled.'
           : 'Missing MR diff metadata required for inline posting.';
+        results.push(result);
+        continue;
+      }
+      if (changedPaths && !changedPaths.has(normalizedFilePath)) {
+        needsSummary.push(finding);
+        result.summary = true;
+        result.reason = `Inline posting skipped: ${normalizedFilePath} is not in this merge request diff.`;
         results.push(result);
         continue;
       }
@@ -174,6 +197,7 @@ export class GitLabReviewPostingAdapter implements ReviewPostingAdapter {
                 repo: input.repo,
                 reviewNumber,
                 finding,
+                filePath: normalizedFilePath,
                 marker,
                 diffRefs,
                 token: input.credential.token
@@ -338,6 +362,37 @@ export class GitLabReviewPostingAdapter implements ReviewPostingAdapter {
     return diffRefs;
   }
 
+  private async fetchMergeRequestChangedPaths(
+    repo: Repo,
+    reviewNumber: number,
+    token: string
+  ): Promise<Set<string>> {
+    const payload = await this.requestJson<GitLabMergeRequestChangesResponse>(
+      repo,
+      `/merge_requests/${reviewNumber}/changes`,
+      token
+    );
+    const paths = new Set<string>();
+    for (const change of payload.changes ?? []) {
+      const oldPath = this.normalizeInlineFilePath(change.old_path);
+      const newPath = this.normalizeInlineFilePath(change.new_path);
+      if (oldPath) paths.add(oldPath);
+      if (newPath) paths.add(newPath);
+    }
+    return paths;
+  }
+
+  private normalizeInlineFilePath(filePath: string | undefined): string | undefined {
+    if (!filePath?.trim()) {
+      return undefined;
+    }
+    const normalized = filePath.trim()
+      .replace(/^\/?workspace\/repo\//, '')
+      .replace(/^\.\//, '')
+      .replace(/^\/+/, '');
+    return normalized || undefined;
+  }
+
   private async postGitLabInlineFinding(input: GitLabPostingInput): Promise<{ noteId: string; noteUrl?: string }> {
     const line = input.finding.lineStart ?? 1;
     const response = await this.requestJson<GitLabDiscussionResponse>(
@@ -354,8 +409,8 @@ export class GitLabReviewPostingAdapter implements ReviewPostingAdapter {
             base_sha: input.diffRefs.base_sha,
             start_sha: input.diffRefs.start_sha,
             head_sha: input.diffRefs.head_sha,
-            old_path: input.finding.filePath,
-            new_path: input.finding.filePath,
+            old_path: input.filePath,
+            new_path: input.filePath,
             new_line: line
           }
         })
