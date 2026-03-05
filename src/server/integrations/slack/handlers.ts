@@ -56,6 +56,7 @@ const MAX_TASK_TITLE_CHARS = 120;
 const MAX_TASK_DESCRIPTION_CHARS = 320;
 const MAX_SLACK_PROMPT_PREVIEW_CHARS = 420;
 const JIRA_KEY_PATTERN = /^[A-Z][A-Z0-9_]*-\d+$/i;
+const REVIEW_INTENT_FALLBACK_MODELS = ['gpt-4.1-mini', 'gpt-4o-mini'] as const;
 
 type SlackLifecycleCheckpoint = 'received' | 'deduped' | 'jira_fetch_started' | 'jira_fetch_failed' | 'task_started';
 
@@ -69,6 +70,26 @@ type ReviewRepoDisambiguationChoice = {
   label: string;
   reviewProvider: 'github' | 'gitlab';
 };
+
+type LlmReviewIntent = {
+  isReview: boolean;
+  reviewNumber?: number;
+  reviewUrl?: string;
+  providerHint?: 'github' | 'gitlab';
+};
+
+function shouldAttemptReviewIntentLlm(text: string): boolean {
+  const normalized = text.trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+  return normalized.includes('review')
+    || normalized.includes('merge request')
+    || normalized.includes('mr ')
+    || normalized.includes('mr#')
+    || normalized.includes(' pr ')
+    || normalized.includes('pr#');
+}
 
 type ResolvedReviewCommand = {
   reviewNumber: number;
@@ -197,6 +218,167 @@ async function detectJiraIssueKeyWithIntent(
   return normalizeJiraKey(parsed.jiraKey);
 }
 
+async function detectReviewCommandWithIntent(
+  env: Env,
+  input: {
+    tenantId: string;
+    channelId: string;
+    text: string;
+  }
+): Promise<SlackReviewFastPathInput | undefined> {
+  const { settings } = await resolveSlackIntentScopeConfig(env, input.tenantId, {
+    channelId: input.channelId
+  });
+  const apiKey = (env as Env & { OPENAI_API_KEY?: string }).OPENAI_API_KEY?.trim();
+  if (!apiKey || !settings.intentEnabled) {
+    return undefined;
+  }
+  const schema = {
+    name: 'slack_review_intent_parser',
+    schema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        isReview: { type: 'boolean' },
+        reviewNumber: { type: 'integer', minimum: 1 },
+        reviewUrl: { type: 'string' },
+        providerHint: { type: 'string', enum: ['github', 'gitlab', 'unknown'] }
+      },
+      required: ['isReview', 'reviewNumber', 'reviewUrl', 'providerHint']
+    },
+    strict: true
+  } as const;
+  const models = Array.from(new Set([settings.intentModel, ...REVIEW_INTENT_FALLBACK_MODELS])).filter(Boolean);
+  const text = input.text.trim();
+  console.info(JSON.stringify({
+    event: 'slack_review_intent',
+    phase: 'start',
+    tenantId: input.tenantId,
+    channelId: input.channelId,
+    modelCount: models.length,
+    textPreview: truncateForText(toSingleLine(text), 180)
+  }));
+  for (let index = 0; index < models.length; index += 1) {
+    const model = models[index]!;
+    try {
+      console.info(JSON.stringify({
+        event: 'slack_review_intent',
+        phase: 'request',
+        tenantId: input.tenantId,
+        channelId: input.channelId,
+        model,
+        attempt: index + 1
+      }));
+      const response = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          model,
+          messages: [
+            {
+              role: 'system',
+              content: [
+                'Classify whether the user requests a code review run.',
+                'If review is requested, extract the MR/PR number and optional URL.',
+                'Return strict JSON only.'
+              ].join(' ')
+            },
+            {
+              role: 'user',
+              content: `text: ${text}`
+            }
+          ],
+          response_format: {
+            type: 'json_schema',
+            json_schema: schema
+          },
+          temperature: 0,
+          reasoning_effort: settings.intentReasoningEffort
+        })
+      });
+      if (!response.ok) {
+        console.warn(JSON.stringify({
+          event: 'slack_review_intent',
+          phase: 'response_not_ok',
+          tenantId: input.tenantId,
+          channelId: input.channelId,
+          model,
+          attempt: index + 1,
+          status: response.status
+        }));
+        continue;
+      }
+      const payload = await response.json() as {
+        choices?: Array<{ message?: { content?: string | null } }>;
+      };
+      const content = payload.choices?.[0]?.message?.content ?? '';
+      if (!content.trim()) {
+        console.warn(JSON.stringify({
+          event: 'slack_review_intent',
+          phase: 'response_empty',
+          tenantId: input.tenantId,
+          channelId: input.channelId,
+          model,
+          attempt: index + 1
+        }));
+        continue;
+      }
+      const parsed = JSON.parse(content) as LlmReviewIntent;
+      if (!parsed.isReview || !Number.isFinite(parsed.reviewNumber) || Number(parsed.reviewNumber) < 1) {
+        console.info(JSON.stringify({
+          event: 'slack_review_intent',
+          phase: 'classified_not_review',
+          tenantId: input.tenantId,
+          channelId: input.channelId,
+          model,
+          attempt: index + 1
+        }));
+        return undefined;
+      }
+      const providerHint = parsed.providerHint === 'github' || parsed.providerHint === 'gitlab'
+        ? parsed.providerHint
+        : undefined;
+      console.info(JSON.stringify({
+        event: 'slack_review_intent',
+        phase: 'classified_review',
+        tenantId: input.tenantId,
+        channelId: input.channelId,
+        model,
+        attempt: index + 1,
+        reviewNumber: Math.trunc(Number(parsed.reviewNumber)),
+        hasReviewUrl: Boolean(typeof parsed.reviewUrl === 'string' && parsed.reviewUrl.trim()),
+        providerHint: providerHint ?? null
+      }));
+      return {
+        reviewNumber: Math.trunc(Number(parsed.reviewNumber)),
+        reviewUrl: typeof parsed.reviewUrl === 'string' && parsed.reviewUrl.trim() ? parsed.reviewUrl.trim() : undefined,
+        providerHint
+      };
+    } catch (error) {
+      console.warn(JSON.stringify({
+        event: 'slack_review_intent',
+        phase: 'request_failed',
+        tenantId: input.tenantId,
+        channelId: input.channelId,
+        model,
+        attempt: index + 1,
+        error: sanitizeErrorMessageForLog(toReadableErrorMessage(error))
+      }));
+      continue;
+    }
+  }
+  console.info(JSON.stringify({
+    event: 'slack_review_intent',
+    phase: 'fallback_none',
+    tenantId: input.tenantId,
+    channelId: input.channelId
+  }));
+  return undefined;
+}
+
 function logSlackCommandLifecycle(input: {
   checkpoint: SlackLifecycleCheckpoint;
   tenantId: string;
@@ -229,6 +411,75 @@ function logSlackCommandLifecycle(input: {
     jira_failure_category: input.jiraFailureCategory ?? null,
     jira_status: input.jiraStatus ?? null,
     message: input.message ? sanitizeErrorMessageForLog(input.message) : null
+  }));
+}
+
+function logSlackMentionIngestion(input: {
+  checkpoint:
+    | 'received'
+    | 'normalized'
+    | 'ignored'
+    | 'deduped'
+    | 'invalid_review_syntax'
+    | 'review_detected'
+    | 'review_flow_started'
+    | 'review_flow_failed'
+    | 'review_repo_error'
+    | 'review_repo_disambiguation'
+    | 'review_repo_missing'
+    | 'review_repo_candidates'
+    | 'review_reply_resolved'
+    | 'review_reply_invalid'
+    | 'review_started'
+    | 'intent_flow_started';
+  tenantId?: string;
+  channelId?: string;
+  threadTs?: string;
+  eventTs?: string;
+  userId?: string;
+  eventType?: string;
+  channelType?: string;
+  rawText?: string;
+  normalizedText?: string;
+  reviewNumber?: number;
+  reviewUrl?: string;
+  reviewProviderHint?: 'github' | 'gitlab';
+  dedupeKey?: string;
+  deduped?: boolean;
+  repoId?: string;
+  runId?: string;
+  taskId?: string;
+  choiceCount?: number;
+  error?: unknown;
+  message?: string;
+}) {
+  const preview = (value?: string) => {
+    const singleLine = toSingleLine(value);
+    return singleLine ? truncateForText(singleLine, MAX_LOG_MESSAGE_CHARS) : null;
+  };
+  console.info(JSON.stringify({
+    event: 'slack_mention_ingestion',
+    checkpoint: input.checkpoint,
+    tenant_id: input.tenantId ?? null,
+    channel_id: input.channelId ?? null,
+    thread_ts: input.threadTs ?? null,
+    event_ts: input.eventTs ?? null,
+    user_id: input.userId ?? null,
+    event_type: input.eventType ?? null,
+    channel_type: input.channelType ?? null,
+    raw_text_preview: preview(input.rawText),
+    normalized_text_preview: preview(input.normalizedText),
+    review_number: input.reviewNumber ?? null,
+    review_url: input.reviewUrl ?? null,
+    review_provider_hint: input.reviewProviderHint ?? null,
+    dedupe_key: input.dedupeKey ?? null,
+    deduped: input.deduped ?? null,
+    repo_id: input.repoId ?? null,
+    task_id: input.taskId ?? null,
+    run_id: input.runId ?? null,
+    choice_count: input.choiceCount ?? null,
+    message: input.message ? sanitizeErrorMessageForLog(input.message) : null,
+    error: input.error ? sanitizeErrorMessageForLog(toReadableErrorMessage(input.error)) : null
   }));
 }
 
@@ -265,6 +516,13 @@ function normalizeKanvyInvocationText(rawText: string, input: { eventType?: stri
   const mentionStripped = stripLeadingSlackMention(trimmed);
   if (mentionStripped !== trimmed) {
     return mentionStripped;
+  }
+  const inlineMention = /<@[^>]+>/.exec(trimmed);
+  if (inlineMention) {
+    const afterMention = trimmed.slice(inlineMention.index + inlineMention[0].length).trim();
+    if (afterMention) {
+      return afterMention;
+    }
   }
   if (trimmed.toLowerCase().startsWith('/kanvy')) {
     return trimmed.slice('/kanvy'.length).trim();
@@ -1127,6 +1385,53 @@ function normalizePendingConfirmation(data: unknown): {
   return { repoId, title, prompt, acceptanceCriteria };
 }
 
+function normalizePendingReviewSelection(data: unknown): {
+  reviewNumber: number;
+  reviewUrl?: string;
+  reviewProviderHint?: 'github' | 'gitlab';
+  choices: string[];
+} | undefined {
+  if (!data || typeof data !== 'object') {
+    return undefined;
+  }
+  const root = data as Record<string, unknown>;
+  const pending = root.pendingReviewSelection;
+  if (!pending || typeof pending !== 'object') {
+    return undefined;
+  }
+  const record = pending as Record<string, unknown>;
+  const reviewNumber = typeof record.reviewNumber === 'number' && Number.isFinite(record.reviewNumber)
+    ? Math.trunc(record.reviewNumber)
+    : undefined;
+  const reviewUrl = typeof record.reviewUrl === 'string' && record.reviewUrl.trim()
+    ? record.reviewUrl.trim()
+    : undefined;
+  const reviewProviderHint = record.reviewProviderHint === 'github' || record.reviewProviderHint === 'gitlab'
+    ? record.reviewProviderHint
+    : undefined;
+  const choices = Array.isArray(record.choices)
+    ? record.choices
+      .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+      .map((value) => value.trim())
+    : [];
+  if (!reviewNumber || choices.length === 0) {
+    return undefined;
+  }
+  return { reviewNumber, reviewUrl, reviewProviderHint, choices };
+}
+
+function resolveRepoFromReply(text: string, choices: string[]): string | undefined {
+  const byNumber = resolveRepoFromNumberReply(text, choices);
+  if (byNumber) {
+    return byNumber;
+  }
+  const normalized = text.trim();
+  if (!normalized) {
+    return undefined;
+  }
+  return choices.find((choice) => choice === normalized);
+}
+
 function normalizeSessionIntentData(data: unknown): Partial<SlackIntentParseResult> {
   if (!data || typeof data !== 'object') {
     return {};
@@ -1386,6 +1691,112 @@ async function resolvePreferredRepoFromChannelContext(
   return undefined;
 }
 
+async function resolvePreferredRepoFromThreadContext(
+  env: Env,
+  tenantId: string,
+  channelId: string,
+  threadTs: string
+): Promise<string | undefined> {
+  const bindings = await tenantAuthDb.listSlackThreadBindings(env, tenantId, { channelId });
+  for (const binding of bindings) {
+    if (binding.threadTs !== threadTs) {
+      continue;
+    }
+    const runId = binding.currentRunId?.trim();
+    if (!runId) {
+      continue;
+    }
+    const repoId = await resolveRepoIdForRun(env, runId);
+    if (repoId?.trim()) {
+      return repoId.trim();
+    }
+  }
+
+  const session = await tenantAuthDb.getSlackIntakeSession(env, tenantId, channelId, threadTs);
+  if (!session) {
+    return undefined;
+  }
+
+  const pending = normalizePendingConfirmation(session.pendingConfirmation);
+  if (pending?.repoId?.trim()) {
+    return pending.repoId.trim();
+  }
+
+  const intentData = normalizeSessionIntentData(session.intentData);
+  if (intentData.repoId?.trim()) {
+    return intentData.repoId.trim();
+  }
+
+  return undefined;
+}
+
+function scoreRepoHintMatch(repo: Repo, text: string): number {
+  const haystack = text.toLowerCase();
+  let score = 0;
+  const repoId = repo.repoId?.trim().toLowerCase();
+  const slug = repo.slug?.trim().toLowerCase();
+  const host = getRepoHost(repo)?.trim().toLowerCase();
+  const projectPath = getRepoProjectPath(repo)?.trim().toLowerCase();
+  if (repoId && haystack.includes(repoId)) {
+    score += 900;
+  }
+  if (slug && haystack.includes(slug)) {
+    score += 700;
+  }
+  if (host && projectPath && haystack.includes(`${host}/${projectPath}`)) {
+    score += 1000;
+  }
+  if (projectPath && haystack.includes(projectPath)) {
+    score += 450;
+  }
+  if (host && haystack.includes(host)) {
+    score += 120;
+  }
+  return score;
+}
+
+async function resolvePreferredRepoFromThreadMessages(
+  env: Env,
+  input: {
+    tenantId: string;
+    channelId: string;
+    threadTs: string;
+    reviewRepos: Repo[];
+    review: SlackReviewFastPathInput;
+  }
+): Promise<string | undefined> {
+  try {
+    const messages = await fetchSlackThreadMessages(env, {
+      tenantId: input.tenantId,
+      channelId: input.channelId,
+      threadTs: input.threadTs,
+      limit: 20
+    });
+    if (!messages.length) {
+      return undefined;
+    }
+    const ranked = input.reviewRepos
+      .map((repo) => {
+        const score = messages.reduce((total, message) => total + scoreRepoHintMatch(repo, message.text ?? ''), 0);
+        return { repoId: repo.repoId, score };
+      })
+      .filter((entry) => entry.score > 0)
+      .sort((a, b) => b.score - a.score);
+
+    if (!ranked.length) {
+      return undefined;
+    }
+    const best = ranked[0]!;
+    const second = ranked[1];
+    if (!second || best.score >= second.score + 200) {
+      return best.repoId;
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 async function startRunForTask(
   env: Env,
   ctx: ExecutionContext<unknown> | undefined,
@@ -1584,6 +1995,7 @@ async function resolveRepoForReviewCommand(
   input: {
     tenantId: string;
     channelId: string;
+    threadTs?: string;
     review: SlackReviewFastPathInput;
   }
 ): Promise<ReviewRepoResolution> {
@@ -1613,11 +2025,35 @@ async function resolveRepoForReviewCommand(
   const { settings, config } = await resolveSlackIntentScopeConfig(env, input.tenantId, {
     channelId: input.channelId
   });
+  const threadContextRepoId = input.threadTs
+    ? await resolvePreferredRepoFromThreadContext(env, input.tenantId, input.channelId, input.threadTs)
+    : undefined;
   const scopedRepoId = config?.scopeType === 'repo' && config.scopeId?.trim()
     ? config.scopeId.trim()
     : undefined;
   const contextRepoId = await resolvePreferredRepoFromChannelContext(env, input.tenantId, input.channelId);
+  const threadMessageRepoId = input.threadTs
+    ? await resolvePreferredRepoFromThreadMessages(env, {
+      tenantId: input.tenantId,
+      channelId: input.channelId,
+      threadTs: input.threadTs,
+      reviewRepos,
+      review: input.review
+    })
+    : undefined;
+  logSlackMentionIngestion({
+    checkpoint: 'review_repo_candidates',
+    tenantId: input.tenantId,
+    channelId: input.channelId,
+    threadTs: input.threadTs,
+    reviewNumber: input.review.reviewNumber,
+    reviewUrl: input.review.reviewUrl,
+    reviewProviderHint: input.review.providerHint,
+    message: `review_repos=${reviewRepos.length}; preferred=[thread:${threadContextRepoId ?? 'none'}, thread_messages:${threadMessageRepoId ?? 'none'}, scope:${scopedRepoId ?? 'none'}, default:${settings.defaultRepoId?.trim() || 'none'}, channel:${contextRepoId ?? 'none'}]`
+  });
   const preferredRepoIds = [
+    threadContextRepoId,
+    threadMessageRepoId,
     scopedRepoId,
     settings.defaultRepoId?.trim(),
     contextRepoId
@@ -1664,12 +2100,32 @@ async function processReviewCommandFlow(
     review: SlackReviewFastPathInput;
   }
 ): Promise<RunKickoff | undefined> {
+  logSlackMentionIngestion({
+    checkpoint: 'review_flow_started',
+    tenantId: input.tenantId,
+    channelId: input.channelId,
+    threadTs: input.threadTs,
+    reviewNumber: input.review.reviewNumber,
+    reviewUrl: input.review.reviewUrl,
+    reviewProviderHint: input.review.providerHint
+  });
   const repoResolution = await resolveRepoForReviewCommand(env, {
     tenantId: input.tenantId,
     channelId: input.channelId,
+    threadTs: input.threadTs,
     review: input.review
   });
   if (repoResolution.errorMessage) {
+    logSlackMentionIngestion({
+      checkpoint: 'review_repo_error',
+      tenantId: input.tenantId,
+      channelId: input.channelId,
+      threadTs: input.threadTs,
+      reviewNumber: input.review.reviewNumber,
+      reviewUrl: input.review.reviewUrl,
+      reviewProviderHint: input.review.providerHint,
+      message: repoResolution.errorMessage
+    });
     await postSlackResponse(input.responseUrl, {
       response_type: 'ephemeral',
       text: `${repoResolution.errorMessage} Usage: \`/kanvy review <MR_NUMBER|MR_URL>\`.`
@@ -1677,18 +2133,73 @@ async function processReviewCommandFlow(
     return undefined;
   }
   if (repoResolution.choices && repoResolution.choices.length > 0) {
-    await postSlackResponse(input.responseUrl, buildReviewRepoDisambiguationResponse({
+    logSlackMentionIngestion({
+      checkpoint: 'review_repo_disambiguation',
       tenantId: input.tenantId,
       channelId: input.channelId,
       threadTs: input.threadTs,
       reviewNumber: input.review.reviewNumber,
       reviewUrl: input.review.reviewUrl,
-      choices: repoResolution.choices
-    }));
+      reviewProviderHint: input.review.providerHint,
+      choiceCount: repoResolution.choices.length
+    });
+    if (input.responseUrl) {
+      await postSlackResponse(input.responseUrl, buildReviewRepoDisambiguationResponse({
+        tenantId: input.tenantId,
+        channelId: input.channelId,
+        threadTs: input.threadTs,
+        reviewNumber: input.review.reviewNumber,
+        reviewUrl: input.review.reviewUrl,
+        choices: repoResolution.choices
+      }));
+    } else {
+      const existingSession = await tenantAuthDb.getSlackIntakeSession(env, input.tenantId, input.channelId, input.threadTs);
+      await tenantAuthDb.upsertSlackIntakeSession(env, {
+        tenantId: input.tenantId,
+        channelId: input.channelId,
+        threadTs: input.threadTs,
+        status: 'active',
+        turnCount: existingSession?.turnCount ?? 0,
+        lastConfidence: existingSession?.lastConfidence,
+        data: {
+          ...(existingSession?.data ?? {}),
+          pendingReviewSelection: {
+            reviewNumber: input.review.reviewNumber,
+            reviewUrl: input.review.reviewUrl,
+            reviewProviderHint: input.review.providerHint,
+            choices: repoResolution.choices.map((choice) => choice.repoId)
+          }
+        }
+      });
+      const reviewLabel = input.review.reviewUrl?.trim()
+        ? input.review.reviewUrl.trim()
+        : `review #${input.review.reviewNumber}`;
+      await postThreadPrompt(env, {
+        tenantId: input.tenantId,
+        channelId: input.channelId,
+        threadTs: input.threadTs,
+        text: [
+          `Multiple repositories match ${reviewLabel}.`,
+          'Reply with one repo id, then rerun with a full review URL:',
+          '`@kanvy review <MR_URL>`',
+          'Candidates:',
+          ...repoResolution.choices.map((choice, index) => `${index + 1}. ${choice.repoId}`)
+        ].join('\n')
+      });
+    }
     return undefined;
   }
   const repo = repoResolution.repo;
   if (!repo) {
+    logSlackMentionIngestion({
+      checkpoint: 'review_repo_missing',
+      tenantId: input.tenantId,
+      channelId: input.channelId,
+      threadTs: input.threadTs,
+      reviewNumber: input.review.reviewNumber,
+      reviewUrl: input.review.reviewUrl,
+      reviewProviderHint: input.review.providerHint
+    });
     await postSlackResponse(input.responseUrl, {
       response_type: 'ephemeral',
       text: 'Unable to resolve a repository for review command.'
@@ -1717,6 +2228,18 @@ async function processReviewCommandFlow(
     channelId: input.channelId,
     threadTs: input.threadTs,
     text: `Started review-only run ${started.runId} for ${review.reviewProvider} #${review.reviewNumber} in ${repo.repoId}.`
+  });
+  logSlackMentionIngestion({
+    checkpoint: 'review_started',
+    tenantId: input.tenantId,
+    channelId: input.channelId,
+    threadTs: input.threadTs,
+    reviewNumber: review.reviewNumber,
+    reviewUrl: review.reviewUrl,
+    reviewProviderHint: review.reviewProvider,
+    repoId: repo.repoId,
+    taskId: started.taskId,
+    runId: started.runId
   });
   return started;
 }
@@ -2029,6 +2552,101 @@ async function runIntentIntake(
   }
 
   const currentTurn = existing?.status === 'active' && !expired ? existing.turnCount : 0;
+  const pendingReviewSelection = existing?.status === 'active' && !expired
+    ? normalizePendingReviewSelection(existing.data)
+    : undefined;
+  if (pendingReviewSelection) {
+    const selectedRepoId = resolveRepoFromReply(input.text, pendingReviewSelection.choices);
+    if (selectedRepoId) {
+      const repos = await listTenantRepos(env, input.tenantId);
+      const repo = repos.find((candidate) => candidate.repoId === selectedRepoId);
+      if (!repo) {
+        logSlackMentionIngestion({
+          checkpoint: 'review_reply_invalid',
+          tenantId: input.tenantId,
+          channelId: input.channelId,
+          threadTs: input.threadTs,
+          repoId: selectedRepoId,
+          reviewNumber: pendingReviewSelection.reviewNumber,
+          reviewUrl: pendingReviewSelection.reviewUrl,
+          reviewProviderHint: pendingReviewSelection.reviewProviderHint,
+          message: 'selected repo is no longer available'
+        });
+      } else {
+        const review = resolveReviewCommandForRepo(repo, {
+          reviewNumber: pendingReviewSelection.reviewNumber,
+          reviewUrl: pendingReviewSelection.reviewUrl,
+          providerHint: pendingReviewSelection.reviewProviderHint
+        });
+        const started = await startReviewRunForTask(
+          env,
+          ctx,
+          input.tenantId,
+          repo.repoId,
+          review,
+          DEFAULT_TASK_LLM_MODEL
+        );
+        await tenantAuthDb.upsertSlackThreadBinding(env, {
+          tenantId: input.tenantId,
+          taskId: started.taskId,
+          channelId: input.channelId,
+          threadTs: input.threadTs,
+          currentRunId: started.runId,
+          latestReviewRound: DEFAULT_REVIEW_ROUND
+        });
+        await tenantAuthDb.upsertSlackIntakeSession(env, {
+          tenantId: input.tenantId,
+          channelId: input.channelId,
+          threadTs: input.threadTs,
+          status: 'completed',
+          turnCount: currentTurn,
+          data: {
+            lastUserText: input.text
+          }
+        });
+        await postThreadPrompt(env, {
+          tenantId: input.tenantId,
+          channelId: input.channelId,
+          threadTs: input.threadTs,
+          text: `Started review-only run ${started.runId} for ${review.reviewProvider} #${review.reviewNumber} in ${repo.repoId}.`
+        });
+        logSlackMentionIngestion({
+          checkpoint: 'review_reply_resolved',
+          tenantId: input.tenantId,
+          channelId: input.channelId,
+          threadTs: input.threadTs,
+          repoId: repo.repoId,
+          taskId: started.taskId,
+          runId: started.runId,
+          reviewNumber: review.reviewNumber,
+          reviewUrl: review.reviewUrl,
+          reviewProviderHint: review.reviewProvider
+        });
+        return started;
+      }
+    } else if (input.text.trim()) {
+      logSlackMentionIngestion({
+        checkpoint: 'review_reply_invalid',
+        tenantId: input.tenantId,
+        channelId: input.channelId,
+        threadTs: input.threadTs,
+        reviewNumber: pendingReviewSelection.reviewNumber,
+        reviewUrl: pendingReviewSelection.reviewUrl,
+        reviewProviderHint: pendingReviewSelection.reviewProviderHint,
+        message: `reply did not match choices: ${pendingReviewSelection.choices.join(', ')}`
+      });
+      await postThreadPrompt(env, {
+        tenantId: input.tenantId,
+        channelId: input.channelId,
+        threadTs: input.threadTs,
+        text: [
+          `Please reply with a number from 1-${pendingReviewSelection.choices.length} or an exact repo id.`,
+          ...pendingReviewSelection.choices.map((choice, index) => `${index + 1}. ${choice}`)
+        ].join('\n')
+      });
+      return undefined;
+    }
+  }
   const pendingConfirmation = existing?.status === 'active' && !expired
     ? normalizePendingConfirmation(existing.data)
     : undefined;
@@ -2270,7 +2888,14 @@ async function runSlackCommandAsync(
 ) {
   const tenantId = await resolveThreadTenantId(env, payload.teamId);
   const normalizedText = payload.text.trim();
-  const reviewInput = parseReviewFastPathInput(normalizedText);
+  const reviewInput = parseReviewFastPathInput(normalizedText)
+    ?? (normalizedText && normalizedText.toLowerCase() !== 'help' && shouldAttemptReviewIntentLlm(normalizedText)
+      ? await detectReviewCommandWithIntent(env, {
+        tenantId,
+        channelId: payload.channelId,
+        text: normalizedText
+      })
+      : undefined);
   let issueKey = reviewInput ? undefined : parseJiraFastPathIssueKey(payload.text);
   if (!reviewInput && !issueKey && normalizedText && normalizedText.toLowerCase() !== 'help') {
     issueKey = await detectJiraIssueKeyWithIntent(env, {
@@ -2522,16 +3147,73 @@ async function runSlackMentionAsync(
   },
   ctx?: ExecutionContext<unknown>
 ) {
+  logSlackMentionIngestion({
+    checkpoint: 'received',
+    channelId: payload.channelId,
+    threadTs: payload.threadTs,
+    eventTs: payload.eventTs,
+    userId: payload.userId,
+    eventType: payload.eventType,
+    channelType: payload.channelType,
+    rawText: payload.text
+  });
   const tenantId = await resolveThreadTenantId(env, payload.teamId);
   const normalizedText = normalizeKanvyInvocationText(payload.text, {
     eventType: payload.eventType,
     channelType: payload.channelType
   });
+  logSlackMentionIngestion({
+    checkpoint: 'normalized',
+    tenantId,
+    channelId: payload.channelId,
+    threadTs: payload.threadTs,
+    eventTs: payload.eventTs,
+    userId: payload.userId,
+    eventType: payload.eventType,
+    channelType: payload.channelType,
+    rawText: payload.text,
+    normalizedText
+  });
   if (!normalizedText) {
+    logSlackMentionIngestion({
+      checkpoint: 'ignored',
+      tenantId,
+      channelId: payload.channelId,
+      threadTs: payload.threadTs,
+      eventTs: payload.eventTs,
+      userId: payload.userId,
+      eventType: payload.eventType,
+      channelType: payload.channelType,
+      rawText: payload.text,
+      message: 'normalizeKanvyInvocationText returned empty'
+    });
     return;
   }
 
-  const reviewInput = parseReviewFastPathInput(normalizedText);
+  const reviewInput = parseReviewFastPathInput(normalizedText)
+    ?? (shouldAttemptReviewIntentLlm(normalizedText)
+      ? await detectReviewCommandWithIntent(env, {
+        tenantId,
+        channelId: payload.channelId,
+        text: normalizedText
+      })
+      : undefined);
+  if (reviewInput) {
+    logSlackMentionIngestion({
+      checkpoint: 'review_detected',
+      tenantId,
+      channelId: payload.channelId,
+      threadTs: payload.threadTs,
+      eventTs: payload.eventTs,
+      userId: payload.userId,
+      eventType: payload.eventType,
+      channelType: payload.channelType,
+      normalizedText,
+      reviewNumber: reviewInput.reviewNumber,
+      reviewUrl: reviewInput.reviewUrl,
+      reviewProviderHint: reviewInput.providerHint
+    });
+  }
   const eventDedupeKey = buildIdempotencyKey({
     provider: 'slack',
     tenantId,
@@ -2543,8 +3225,34 @@ async function runSlackMentionAsync(
     }
   });
   if (!(await markIngressDeliveryIfNew(env, eventDedupeKey))) {
+    logSlackMentionIngestion({
+      checkpoint: 'deduped',
+      tenantId,
+      channelId: payload.channelId,
+      threadTs: payload.threadTs,
+      eventTs: payload.eventTs,
+      userId: payload.userId,
+      eventType: payload.eventType,
+      channelType: payload.channelType,
+      normalizedText,
+      dedupeKey: eventDedupeKey,
+      deduped: true
+    });
     return;
   }
+  logSlackMentionIngestion({
+    checkpoint: 'deduped',
+    tenantId,
+    channelId: payload.channelId,
+    threadTs: payload.threadTs,
+    eventTs: payload.eventTs,
+    userId: payload.userId,
+    eventType: payload.eventType,
+    channelType: payload.channelType,
+    normalizedText,
+    dedupeKey: eventDedupeKey,
+    deduped: false
+  });
 
   if (normalizedText.toLowerCase() === 'help') {
     await postThreadPrompt(env, {
@@ -2557,6 +3265,17 @@ async function runSlackMentionAsync(
   }
 
   if (normalizedText.toLowerCase().startsWith('review') && !reviewInput) {
+    logSlackMentionIngestion({
+      checkpoint: 'invalid_review_syntax',
+      tenantId,
+      channelId: payload.channelId,
+      threadTs: payload.threadTs,
+      eventTs: payload.eventTs,
+      userId: payload.userId,
+      eventType: payload.eventType,
+      channelType: payload.channelType,
+      normalizedText
+    });
     await postThreadPrompt(env, {
       tenantId,
       channelId: payload.channelId,
@@ -2567,12 +3286,31 @@ async function runSlackMentionAsync(
   }
 
   if (reviewInput) {
-    await processReviewCommandFlow(env, ctx, {
-      tenantId,
-      channelId: payload.channelId,
-      threadTs: payload.threadTs,
-      review: reviewInput
-    });
+    try {
+      await processReviewCommandFlow(env, ctx, {
+        tenantId,
+        channelId: payload.channelId,
+        threadTs: payload.threadTs,
+        review: reviewInput
+      });
+    } catch (error) {
+      logSlackMentionIngestion({
+        checkpoint: 'review_flow_failed',
+        tenantId,
+        channelId: payload.channelId,
+        threadTs: payload.threadTs,
+        eventTs: payload.eventTs,
+        userId: payload.userId,
+        eventType: payload.eventType,
+        channelType: payload.channelType,
+        normalizedText,
+        reviewNumber: reviewInput.reviewNumber,
+        reviewUrl: reviewInput.reviewUrl,
+        reviewProviderHint: reviewInput.providerHint,
+        error
+      });
+      throw error;
+    }
     return;
   }
 
@@ -2583,6 +3321,18 @@ async function runSlackMentionAsync(
     limit: 12
   });
   const intakeText = buildIntentTextWithThreadContext(normalizedText, threadMessages);
+  logSlackMentionIngestion({
+    checkpoint: 'intent_flow_started',
+    tenantId,
+    channelId: payload.channelId,
+    threadTs: payload.threadTs,
+    eventTs: payload.eventTs,
+    userId: payload.userId,
+    eventType: payload.eventType,
+    channelType: payload.channelType,
+    normalizedText,
+    message: `thread_context_messages=${threadMessages.length}`
+  });
   await runIntentIntake(env, ctx, {
     tenantId,
     channelId: payload.channelId,
@@ -2734,6 +3484,17 @@ export async function handleSlackEvents(request: Request, env: Env): Promise<Res
         channelType: payload.event.channelType
       });
       if (invocationText) {
+        logSlackMentionIngestion({
+          checkpoint: 'received',
+          channelId: payload.event.channelId,
+          threadTs,
+          eventTs: payload.event.ts,
+          userId: payload.event.userId,
+          eventType: payload.event.type,
+          channelType: payload.event.channelType,
+          rawText: payload.event.text,
+          normalizedText: invocationText
+        });
         await runSlackMentionAsync(env, {
           teamId: payload.teamId,
           channelId: payload.event.channelId,
@@ -2746,6 +3507,17 @@ export async function handleSlackEvents(request: Request, env: Env): Promise<Res
         });
         return json({ ok: true, status: 'accepted' });
       }
+      logSlackMentionIngestion({
+        checkpoint: 'ignored',
+        channelId: payload.event.channelId,
+        threadTs,
+        eventTs: payload.event.ts,
+        userId: payload.event.userId,
+        eventType: payload.event.type,
+        channelType: payload.event.channelType,
+        rawText: payload.event.text,
+        message: 'Event message did not resolve to a @kanvy invocation'
+      });
 
       if (payload.event.type === 'message' && payload.event.threadTs) {
         const tenantId = await resolveThreadTenantId(env, payload.teamId);
