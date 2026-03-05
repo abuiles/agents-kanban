@@ -777,6 +777,63 @@ describe('executeRunJob LLM adapter coverage', () => {
     expect(harness.getRun().timeline.some((entry) => entry.note?.includes('Review completed (round 2;'))).toBe(true);
   });
 
+  it('prefers repo auto-review model and reasoning over task defaults in review mode', async () => {
+    const task = buildTask({
+      uiMeta: {
+        llmAdapter: 'codex',
+        llmModel: 'gpt-5.1-codex-mini',
+        llmReasoningEffort: 'medium'
+      }
+    });
+    const repo = buildRepo({
+      autoReview: {
+        enabled: true,
+        provider: 'jira',
+        postInline: false,
+        llmAdapter: 'codex',
+        llmModel: 'gpt-5.3-codex',
+        llmReasoningEffort: 'high'
+      }
+    });
+    const harness = createHarness(task, repo);
+    const sandbox = buildSandbox([
+      { type: 'stdout', data: 'Applied fix.\n' },
+      { type: 'exit', exitCode: 0 }
+    ]);
+    const baseExec = sandbox.exec.bind(sandbox);
+    sandbox.exec = async (command) => {
+      if (command.includes('/workspace/prompt-last-message.txt')) {
+        return {
+          success: true,
+          exitCode: 0,
+          stdout: '\n===CODEX_LAST_MESSAGE===\n{"findings":[]}\n'
+        };
+      }
+      return baseExec(command);
+    };
+    sandboxState.current = sandbox;
+
+    await executeRunJob(
+      harness.env,
+      {
+        tenantId: 'tenant_legacy',
+        repoId: repo.repoId,
+        taskId: task.taskId,
+        runId: 'run_1',
+        mode: 'review_only'
+      },
+      async () => {}
+    );
+
+    const reviewPromptCommand = harness.commands
+      .map((entry) => entry.command)
+      .find((command) => command.includes('codex exec -m'));
+    expect(reviewPromptCommand).toBeDefined();
+    expect(reviewPromptCommand).toContain('codex exec -m gpt-5.3-codex');
+    expect(reviewPromptCommand).toContain('model_reasoning_effort="high"');
+    expect(reviewPromptCommand).not.toContain('codex exec -m gpt-5.1-codex-mini');
+  });
+
   it('falls back to native adapter review mode when no custom review prompt is configured', async () => {
     const task = buildTask({
       uiMeta: {
