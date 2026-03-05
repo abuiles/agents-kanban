@@ -148,6 +148,81 @@ export class RunSimulator {
     return this.store.getSnapshot().runs.find((candidate) => candidate.runId === runId)!;
   }
 
+  cancelRun(runId: string, reason = 'Run was cancelled by operator.'): AgentRun {
+    const now = new Date().toISOString();
+    let canceledRun: AgentRun | undefined;
+    this.clearRunTimers(runId);
+
+    this.store.update((snapshot) => {
+      const run = snapshot.runs.find((candidate) => candidate.runId === runId);
+      if (!run) {
+        return snapshot;
+      }
+      if (isTerminal(run.status)) {
+        canceledRun = run;
+        return snapshot;
+      }
+
+      const canceledError = {
+        at: now,
+        code: 'CANCELLED',
+        message: reason,
+        retryable: true,
+        phase: 'codex' as const
+      };
+      const nextRun: AgentRun = {
+        ...run,
+        status: 'FAILED',
+        pendingEvents: [],
+        timeline: [...run.timeline, { status: 'FAILED', at: now, note: reason }],
+        errors: [...run.errors, canceledError],
+        endedAt: now,
+        currentCommandId: undefined,
+        currentStepStartedAt: now
+      };
+      const nextTask = this.deriveTask(run.taskId, snapshot.tasks, 'FAILED', now, runId);
+      const generatedLogs = buildLogsForStatus(nextRun, 'FAILED', now);
+      canceledRun = nextRun;
+      return {
+        ...snapshot,
+        tasks: nextTask,
+        runs: snapshot.runs.map((candidate) => (candidate.runId === runId ? nextRun : candidate)),
+        events: [
+          ...snapshot.events,
+          {
+            id: `${runId}_event_${now}`,
+            runId,
+            repoId: run.repoId,
+            taskId: run.taskId,
+            at: now,
+            actorType: 'operator',
+            eventType: 'run.status_changed',
+            message: `Mock run moved to FAILED.`
+          } satisfies RunEvent
+        ],
+        commands: [
+          ...snapshot.commands,
+          {
+            id: `${runId}_command_failed_${now}`,
+            runId,
+            phase: 'bootstrap',
+            startedAt: now,
+            completedAt: now,
+            command: `mock cancel`,
+            status: 'completed',
+            source: 'system'
+          } satisfies RunCommand
+        ],
+        logs: [...snapshot.logs, ...generatedLogs]
+      };
+    });
+
+    if (!canceledRun) {
+      throw new Error(`Run ${runId} not found.`);
+    }
+    return canceledRun;
+  }
+
   private advanceRun(runId: string, status: RunStatus, note?: string) {
     const now = new Date().toISOString();
     let generatedLogs: RunLogEntry[] = [];

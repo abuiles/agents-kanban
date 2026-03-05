@@ -161,6 +161,10 @@ export type RetryRunInput = {
   checkpointId?: string;
 };
 
+export type CancelRunInput = {
+  reason?: string;
+};
+
 export type TakeOverRunInput = {
   sandboxRole?: SandboxRole;
 };
@@ -265,6 +269,7 @@ export interface AgentBoardApi {
   getRun(runId: string): Promise<AgentRun>;
   getRunCheckpoints(runId: string): Promise<RunCheckpoint[]>;
   retryRun(runId: string, input?: RetryRunInput): Promise<AgentRun>;
+  cancelRun(runId: string, input?: CancelRunInput): Promise<AgentRun>;
   rerunReview(runId: string): Promise<AgentRun>;
   requestRunChanges(runId: string, input: RequestRunChangesInput): Promise<AgentRun>;
   retryPreview(runId: string): Promise<AgentRun>;

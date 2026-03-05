@@ -15,6 +15,7 @@ import type {
   CreateUserApiTokenResult,
   InviteRecord,
   RequestRunChangesInput,
+  CancelRunInput,
   TakeOverRunInput,
   RetryRunInput,
   UpdateRepoInput,
@@ -282,6 +283,15 @@ export class HttpAgentBoardApi implements AgentBoardApi {
 
   async retryRun(runId: string, input?: RetryRunInput) {
     const run = await this.request<AgentRun>(`/api/runs/${encodeURIComponent(runId)}/retry`, {
+      method: 'POST',
+      ...(input ? { body: JSON.stringify(input) } : {})
+    });
+    await this.refresh();
+    return run;
+  }
+
+  async cancelRun(runId: string, input?: CancelRunInput) {
+    const run = await this.request<AgentRun>(`/api/runs/${encodeURIComponent(runId)}/cancel`, {
       method: 'POST',
       ...(input ? { body: JSON.stringify(input) } : {})
     });

@@ -15,6 +15,7 @@ import type {
   CreateUserApiTokenResult,
   InviteRecord,
   RequestRunChangesInput,
+  CancelRunInput,
   TakeOverRunInput,
   RetryRunInput,
   UpdateRepoInput,
@@ -696,6 +697,11 @@ export class LocalAgentBoardApi implements AgentBoardApi {
       status: 'ACTIVE',
       updatedAt: nowIso()
     });
+  }
+
+  async cancelRun(runId: string, input?: CancelRunInput): Promise<AgentRun> {
+    const reason = input?.reason?.trim() ?? 'Run was cancelled by operator.';
+    return this.simulator.cancelRun(runId, reason);
   }
 
   async rerunReview(runId: string): Promise<AgentRun> {
