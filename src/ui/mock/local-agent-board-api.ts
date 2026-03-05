@@ -691,6 +691,9 @@ export class LocalAgentBoardApi implements AgentBoardApi {
     if (!task) {
       throw new Error(`Task ${run.taskId} not found.`);
     }
+    if ((task.tags ?? []).includes('review_only')) {
+      return this.rerunReview(runId);
+    }
 
     return this.simulator.createRun({
       ...task,

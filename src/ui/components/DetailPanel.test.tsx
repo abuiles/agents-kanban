@@ -402,4 +402,20 @@ describe('DetailPanel', () => {
     expect(onRerunReview).toHaveBeenCalledTimes(1);
     expect(onRerunReview).toHaveBeenCalledWith('run_demo');
   });
+
+  it('hides Retry run for review-only tasks', () => {
+    const props = buildProps();
+    props.detail = {
+      ...props.detail,
+      task: {
+        ...props.detail.task,
+        tags: ['review_only']
+      }
+    };
+
+    render(<DetailPanel {...props} />);
+
+    expect(screen.queryByRole('button', { name: 'Retry run' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Re-run review' })).toBeInTheDocument();
+  });
 });

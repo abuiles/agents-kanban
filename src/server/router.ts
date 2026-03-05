@@ -35,7 +35,7 @@ import { parseBoardSnapshot } from '../ui/store/board-snapshot';
 import { scheduleRunJob } from './run-orchestrator';
 import { getRunUsage, getTenantRunUsage, getTenantUsageSummary } from './usage-reporting';
 import { normalizeTenantId, normalizeTenantIdStrict } from '../shared/tenant';
-import { getRepoHost, getRepoProjectPath, getRunReviewProvider, hasRunReview } from '../shared/scm';
+import { getRepoHost, getRepoProjectPath, getRepoScmBaseUrl, getRunReviewProvider, hasRunReview } from '../shared/scm';
 import * as tenantAuthDb from './tenant-auth-db';
 import { DEFAULT_REPO_SENTINEL_CONFIG } from '../shared/sentinel';
 import { SentinelController } from './sentinel';
@@ -101,6 +101,54 @@ function normalizeTagFilters(searchParams: URLSearchParams) {
     tags.push(trimmed);
   }
   return tags;
+}
+
+function isReviewOnlyTask(task: { tags?: string[] }) {
+  return (task.tags ?? []).includes('review_only');
+}
+
+function resolveReviewOnlyRunMode(task: { tags?: string[] }): 'review_only' | 'full_run' {
+  return isReviewOnlyTask(task) ? 'review_only' : 'full_run';
+}
+
+function buildCanonicalReviewUrl(repo: Repo, reviewProvider: 'github' | 'gitlab', reviewNumber: number) {
+  const origin = getRepoScmBaseUrl(repo);
+  const projectPath = getRepoProjectPath(repo);
+  return reviewProvider === 'github'
+    ? `${origin}/${projectPath}/pull/${reviewNumber}`
+    : `${origin}/${projectPath}/-/merge_requests/${reviewNumber}`;
+}
+
+function resolveReviewOnlyRunPatch(task: { sourceRef?: string }, repo: Repo) {
+  const sourceRef = task.sourceRef?.trim();
+  if (!sourceRef) {
+    throw badRequest('Review-only tasks require sourceRef to point to an existing pull/merge request.');
+  }
+
+  const normalizedSourceRef = getScmAdapter(repo).normalizeSourceRef(sourceRef, repo);
+  if (normalizedSourceRef.kind !== 'review_head') {
+    throw badRequest('Review-only tasks require sourceRef to resolve to a review head ref.');
+  }
+
+  const reviewProvider = normalizedSourceRef.reviewProvider ?? repo.scmProvider;
+  if (reviewProvider !== 'github' && reviewProvider !== 'gitlab') {
+    throw badRequest('Review-only tasks require github or gitlab review provider metadata.');
+  }
+
+  const reviewNumber = normalizedSourceRef.reviewNumber;
+  const reviewUrl = sourceRef.startsWith('http://') || sourceRef.startsWith('https://')
+    ? sourceRef
+    : buildCanonicalReviewUrl(repo, reviewProvider, reviewNumber);
+
+  return {
+    status: 'PR_OPEN' as const,
+    branchName: normalizedSourceRef.value,
+    reviewProvider,
+    reviewNumber,
+    reviewUrl,
+    prNumber: reviewNumber,
+    prUrl: reviewUrl
+  };
 }
 
 export async function handleSlackCommands(request: Request, env: Env, ctx: ExecutionContext<unknown>): Promise<Response> {
@@ -962,20 +1010,26 @@ export async function handleRunTask(request: Request, env: Env, params: RoutePar
     const requestContext = await resolveRequestTenantContext(env, board, request, { requireSession: true });
     const taskId = parsePathParam(params.taskId);
     const repoId = await resolveRepoIdForTask(board, taskId);
-    await assertRepoAccess(env, board, requestContext, repoId);
-    const run = await env.REPO_BOARD.getByName(repoId).startRun(taskId, { tenantId: requestContext.activeTenantId });
+    const repo = await assertRepoAccess(env, board, requestContext, repoId);
+    const repoBoard = env.REPO_BOARD.getByName(repoId);
+    const taskDetail = await repoBoard.getTask(taskId, requestContext.activeTenantId);
+    const mode = resolveReviewOnlyRunMode(taskDetail.task);
+    const run = await repoBoard.startRun(taskId, { tenantId: requestContext.activeTenantId });
+    if (mode === 'review_only') {
+      await repoBoard.transitionRun(run.runId, resolveReviewOnlyRunPatch(taskDetail.task, repo), requestContext.activeTenantId);
+    }
     const workflow = await scheduleRunJob(env, ctx as unknown as ExecutionContext, {
       tenantId: requestContext.activeTenantId,
       repoId,
       taskId,
       runId: run.runId,
-      mode: 'full_run'
+      mode
     });
-    await env.REPO_BOARD.getByName(repoId).transitionRun(run.runId, {
+    await repoBoard.transitionRun(run.runId, {
       workflowInstanceId: workflow.id,
       orchestrationMode: workflow.id.startsWith('local-alarm-') ? 'local_alarm' : 'workflow'
-    });
-    return json(await env.REPO_BOARD.getByName(repoId).getRun(run.runId, requestContext.activeTenantId));
+    }, requestContext.activeTenantId);
+    return json(await repoBoard.getRun(run.runId, requestContext.activeTenantId));
   });
 }
 
@@ -1008,23 +1062,38 @@ export async function handleRetryRun(request: Request, env: Env, params: RoutePa
     const runId = parsePathParam(params.runId);
     const repoId = await resolveRepoIdForRun(board, runId);
     await assertRepoAccess(env, board, requestContext, repoId);
+    const repoBoard = env.REPO_BOARD.getByName(repoId);
+    const run = await repoBoard.getRun(runId, requestContext.activeTenantId);
+    const taskDetail = await repoBoard.getTask(run.taskId, requestContext.activeTenantId);
+    const mode = resolveReviewOnlyRunMode(taskDetail.task);
     const retryInput = parseRetryRunInput(await readJson(request).catch(() => ({})));
-    const run = await env.REPO_BOARD.getByName(repoId).retryRun(runId, {
-      tenantId: requestContext.activeTenantId,
-      ...retryInput
-    });
+    const targetRun = mode === 'review_only'
+      ? run
+      : await repoBoard.retryRun(runId, {
+        tenantId: requestContext.activeTenantId,
+        ...retryInput
+      });
+
+    if (mode === 'review_only' && !hasRunReview(run)) {
+      throw badRequest('Manual review rerun requires an existing review context on this run.');
+    }
+    if (mode === 'review_only' && run.reviewExecution?.status === 'running') {
+      return json(run);
+    }
+
     const workflow = await scheduleRunJob(env, ctx as unknown as ExecutionContext, {
       tenantId: requestContext.activeTenantId,
       repoId,
-      taskId: run.taskId,
-      runId: run.runId,
-      mode: 'full_run'
+      taskId: targetRun.taskId,
+      runId: targetRun.runId,
+      mode
     });
-    await env.REPO_BOARD.getByName(repoId).transitionRun(run.runId, {
+    await repoBoard.transitionRun(targetRun.runId, {
       workflowInstanceId: workflow.id,
-      orchestrationMode: workflow.id.startsWith('local-alarm-') ? 'local_alarm' : 'workflow'
+      orchestrationMode: workflow.id.startsWith('local-alarm-') ? 'local_alarm' : 'workflow',
+      ...(mode === 'review_only' ? { appendTimelineNote: 'Manual review rerun queued from retry.' } : {})
     });
-    return json(await env.REPO_BOARD.getByName(repoId).getRun(run.runId, requestContext.activeTenantId));
+    return json(await repoBoard.getRun(targetRun.runId, requestContext.activeTenantId));
   });
 }
 
@@ -1091,6 +1160,8 @@ export async function handleRequestChanges(request: Request, env: Env, params: R
     const repo = await assertRepoAccess(env, board, requestContext, repoId);
     const repoBoard = env.REPO_BOARD.getByName(repoId);
     const existingRun = await repoBoard.getRun(runId, requestContext.activeTenantId);
+    const taskDetail = await repoBoard.getTask(existingRun.taskId, requestContext.activeTenantId);
+    const mode = resolveReviewOnlyRunMode(taskDetail.task);
     const selection = resolveRequestRunChangesSelection({
       findings: existingRun.reviewFindings ?? [],
       reviewSelection: body.reviewSelection
@@ -1170,7 +1241,7 @@ export async function handleRequestChanges(request: Request, env: Env, params: R
       repoId,
       taskId: run.taskId,
       runId: run.runId,
-      mode: 'full_run'
+      mode
     });
     await env.REPO_BOARD.getByName(repoId).transitionRun(run.runId, {
       workflowInstanceId: workflow.id,

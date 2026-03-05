@@ -165,6 +165,7 @@ export function DetailPanel({
   const currentCommand = latestRun?.currentCommandId ? latestCommands.find((command) => command.id === latestRun.currentCommandId) : undefined;
   const latestRunCheckpoints = latestRun?.checkpoints ?? [];
   const canCancelRun = latestRun && !['DONE', 'FAILED'].includes(latestRun.status);
+  const reviewOnlyTask = (task.tags ?? []).includes('review_only');
   const taskCheckpoints = detail.runs
     .flatMap((run) => run.checkpoints ?? [])
     .sort((left, right) => {
@@ -251,13 +252,15 @@ export function DetailPanel({
               >
                 Request changes
               </button>
-              <button
-                type="button"
-                onClick={() => onRetryRun(latestRun.runId)}
-                className="inline-flex h-9 items-center rounded-lg border border-cyan-400/35 bg-cyan-500/15 px-3 text-sm font-medium text-cyan-50 transition hover:bg-cyan-500/25"
-              >
-                Retry run
-              </button>
+              {!reviewOnlyTask ? (
+                <button
+                  type="button"
+                  onClick={() => onRetryRun(latestRun.runId)}
+                  className="inline-flex h-9 items-center rounded-lg border border-cyan-400/35 bg-cyan-500/15 px-3 text-sm font-medium text-cyan-50 transition hover:bg-cyan-500/25"
+                >
+                  Retry run
+                </button>
+              ) : null}
               <button
                 type="button"
                 onClick={() => onRerunReview(latestRun.runId)}
