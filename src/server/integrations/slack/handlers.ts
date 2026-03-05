@@ -1356,6 +1356,22 @@ function isAffirmativeConfirmation(text: string): boolean {
     || normalized === 'ship it';
 }
 
+function isNegativeConfirmation(text: string): boolean {
+  const normalized = text.trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+  return normalized === 'no'
+    || normalized === 'n'
+    || normalized === 'nope'
+    || normalized === 'nah'
+    || normalized === 'cancel'
+    || normalized === 'stop'
+    || normalized === 'never mind'
+    || normalized === 'dont'
+    || normalized === "don't";
+}
+
 function normalizePendingConfirmation(data: unknown): {
   repoId: string;
   title: string;
@@ -2223,6 +2239,16 @@ async function processReviewCommandFlow(
     currentRunId: started.runId,
     latestReviewRound: DEFAULT_REVIEW_ROUND
   });
+  await tenantAuthDb.upsertSlackIntakeSession(env, {
+    tenantId: input.tenantId,
+    channelId: input.channelId,
+    threadTs: input.threadTs,
+    status: 'completed',
+    turnCount: 0,
+    data: {
+      lastUserText: `review ${review.reviewNumber}`
+    }
+  });
   await postThreadPrompt(env, {
     tenantId: input.tenantId,
     channelId: input.channelId,
@@ -2650,6 +2676,25 @@ async function runIntentIntake(
   const pendingConfirmation = existing?.status === 'active' && !expired
     ? normalizePendingConfirmation(existing.data)
     : undefined;
+  if (pendingConfirmation && isNegativeConfirmation(input.text)) {
+    await tenantAuthDb.upsertSlackIntakeSession(env, {
+      tenantId: input.tenantId,
+      channelId: input.channelId,
+      threadTs: input.threadTs,
+      status: 'completed',
+      turnCount: currentTurn,
+      data: {
+        lastUserText: input.text
+      }
+    });
+    await postThreadPrompt(env, {
+      tenantId: input.tenantId,
+      channelId: input.channelId,
+      threadTs: input.threadTs,
+      text: 'Understood. I will not create a task from that request.'
+    });
+    return undefined;
+  }
   if (pendingConfirmation && isAffirmativeConfirmation(input.text)) {
     const payload = buildTaskPayloadFromIntent({
       repoId: pendingConfirmation.repoId,
