@@ -526,23 +526,23 @@ function toSingleLine(value: string | undefined) {
 }
 
 function stripSlackReviewLinkMarkup(value: string) {
-  return value.replace(/<([^>|]+)\|[^>]+>/g, '$1');
+  return value.replace(/<([^>|]+)(?:\|[^>]+)?>/g, '$1');
 }
 
 function parseReviewMarkerNumber(raw: string | undefined): number | undefined {
-  if (!raw) {
+  if (!raw?.trim()) {
     return undefined;
   }
-  const trimmed = raw.trim().replace(/^[#!]+/, '');
-  if (!trimmed || !/^\d+$/.test(trimmed)) {
+  const match = /(?:^|\W)(?:mr|merge request|pull request|pr)\s*[!#]?\s*(\d+)/gi.exec(raw);
+  if (!match?.[1]) {
     return undefined;
   }
-  const parsed = Number.parseInt(trimmed, 10);
+  const parsed = Number.parseInt(match[1], 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }
 
 function inferReviewInputFromText(text: string): SlackReviewFastPathInput | undefined {
-  const normalized = stripSlackReviewLinkMarkup(toSingleLine(text))
+  const normalized = sanitizeTextForReviewIntent(text)
     .replace(REVIEW_URL_TRIMMED_SUFFIX, '')
     .trim();
   if (!normalized) {
@@ -564,10 +564,27 @@ function inferReviewInputFromText(text: string): SlackReviewFastPathInput | unde
   return undefined;
 }
 
-function inferReviewInputFromMessages(messages: Array<{ text: string }>): SlackReviewFastPathInput | undefined {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const parsed = inferReviewInputFromText(messages[index]?.text ?? '');
-    if (parsed) {
+function inferReviewInputFromMessages(
+  currentText: string,
+  messages: Array<{ text: string; ts?: string }>
+): SlackReviewFastPathInput | undefined {
+  const direct = inferReviewInputFromText(currentText);
+  if (direct) {
+    return direct;
+  }
+
+  if (messages.length === 0) {
+    return undefined;
+  }
+  const source = [...messages]
+    .filter((message) => typeof message.text === 'string' && message.text.trim())
+    .sort((left, right) => Number.parseFloat(right.ts || '0') - Number.parseFloat(left.ts || '0'))
+    .map((message) => sanitizeTextForReviewIntent(message.text))
+    .filter(Boolean);
+
+  for (const line of source) {
+    const parsed = inferReviewInputFromText(line);
+    if (parsed?.reviewNumber) {
       return parsed;
     }
   }
@@ -583,6 +600,10 @@ function truncateForText(value: string, maxChars: number) {
 
 function stripLeadingSlackMention(text: string): string {
   return text.replace(/^(?:\s*<@[^>]+>\s*)+/, '').trim();
+}
+
+function sanitizeTextForReviewIntent(value: string): string {
+  return stripSlackReviewLinkMarkup(value).replace(/\s+/g, ' ').trim();
 }
 
 function normalizeKanvyInvocationText(rawText: string, input: { eventType?: string; channelType?: string }): string | undefined {
@@ -3031,40 +3052,32 @@ async function runSlackCommandAsync(
 ) {
   const tenantId = await resolveThreadTenantId(env, payload.teamId);
   const normalizedText = payload.text.trim();
-  const reviewInput = await (async () => {
-    const directReview = parseReviewFastPathInput(normalizedText);
-    if (directReview) {
-      return directReview;
-    }
-    if (!(normalizedText && normalizedText.toLowerCase() !== 'help' && shouldAttemptReviewIntentLlm(normalizedText))) {
-      return undefined;
-    }
-    if (payload.threadTs) {
-      const threadMessages = await fetchSlackThreadMessages(env, {
-        tenantId,
-        channelId: payload.channelId,
-        threadTs: payload.threadTs,
-        limit: 12
-      });
-      const inferredReview = inferReviewInputFromMessages(threadMessages);
-      if (inferredReview) {
-        return inferredReview;
-      }
-      const reviewPromptText = threadMessages.length > 0
-        ? buildIntentTextWithThreadContext(normalizedText, threadMessages)
-        : normalizedText;
-      return detectReviewCommandWithIntent(env, {
-        tenantId,
-        channelId: payload.channelId,
-        text: reviewPromptText
-      });
-    }
-    return detectReviewCommandWithIntent(env, {
+  const shouldAttemptReviewIntent = shouldAttemptReviewIntentLlm(normalizedText);
+  const getThreadMessages = async () => payload.threadTs
+    ? await fetchSlackThreadMessages(env, {
       tenantId,
       channelId: payload.channelId,
-      text: normalizedText
-    });
-  })();
+      threadTs: payload.threadTs,
+      limit: 12
+    })
+    : [];
+  const reviewInput = parseReviewFastPathInput(normalizedText)
+    ?? (normalizedText.toLowerCase() !== 'help' && shouldAttemptReviewIntent
+      ? await (async () => {
+        const threadMessages = await getThreadMessages();
+        const inferredFromThread = inferReviewInputFromMessages(normalizedText, threadMessages);
+        if (inferredFromThread) {
+          return inferredFromThread;
+        }
+        return detectReviewCommandWithIntent(env, {
+          tenantId,
+          channelId: payload.channelId,
+          text: threadMessages.length > 0
+            ? buildIntentTextWithThreadContext(normalizedText, threadMessages)
+            : normalizedText
+        });
+      })()
+      : undefined);
   let issueKey = reviewInput ? undefined : parseJiraFastPathIssueKey(payload.text);
   if (!reviewInput && !issueKey && normalizedText && normalizedText.toLowerCase() !== 'help') {
     issueKey = await detectJiraIssueKeyWithIntent(env, {
@@ -3405,7 +3418,7 @@ async function runSlackMentionAsync(
       return undefined;
     }
     const reviewContextMessages = await getReviewContextMessages();
-    const inferredReview = inferReviewInputFromMessages(reviewContextMessages);
+    const inferredReview = inferReviewInputFromMessages(normalizedText, reviewContextMessages);
     if (inferredReview) {
       return inferredReview;
     }
