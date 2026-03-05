@@ -118,6 +118,7 @@ function buildProps() {
     onRerunReview: vi.fn(),
     onRetryPreview: vi.fn(),
     onRetryEvidence: vi.fn(),
+    onCancelRun: vi.fn(),
     onOpenTerminal: vi.fn(),
     onTakeOverRun: vi.fn()
   };
@@ -146,6 +147,45 @@ describe('DetailPanel', () => {
     expect(onRetryPreview).toHaveBeenCalledWith('run_demo');
     expect(onRetryRun).not.toHaveBeenCalled();
     expect(onRetryEvidence).not.toHaveBeenCalled();
+  });
+
+  it('routes cancel clicks to the cancel handler', async () => {
+    const user = userEvent.setup();
+    const onCancelRun = vi.fn();
+    render(
+      <DetailPanel
+        {...buildProps()}
+        onCancelRun={onCancelRun}
+      />
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Cancel run' }));
+
+    expect(onCancelRun).toHaveBeenCalledTimes(1);
+    expect(onCancelRun).toHaveBeenCalledWith('run_demo');
+  });
+
+  it('hides the cancel button for terminal runs', () => {
+    const doneProps = buildProps();
+    doneProps.detail = {
+      ...doneProps.detail,
+      latestRun: {
+        ...doneProps.detail.latestRun!,
+        status: 'DONE'
+      },
+      runs: [
+        ...doneProps.detail.runs.slice(0, -1),
+        { ...doneProps.detail.runs[doneProps.detail.runs.length - 1]!, status: 'DONE' }
+      ]
+    };
+
+    render(
+      <DetailPanel
+        {...doneProps}
+      />
+    );
+
+    expect(screen.queryByRole('button', { name: 'Cancel run' })).not.toBeInTheDocument();
   });
 
   it('copies logs for debugging', async () => {

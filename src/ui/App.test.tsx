@@ -234,6 +234,24 @@ describe('App', () => {
     expect(await screen.findByText('Started a review rerun on the existing PR branch.')).toBeInTheDocument();
   });
 
+  it('cancels an active run from the inspector', async () => {
+    const user = userEvent.setup();
+    const api = getLocalAgentBoardApi();
+
+    await api.startRun('task_nav');
+    await api.setSelectedTaskId('task_nav');
+    render(<App api={api} />);
+
+    await screen.findByRole('button', { name: 'Cancel run' });
+    await user.click(screen.getByRole('button', { name: 'Cancel run' }));
+
+    await waitFor(() => {
+      const navRun = api.getSnapshot().runs.find((candidate) => candidate.taskId === 'task_nav' && candidate.status === 'FAILED');
+      expect(navRun).toBeDefined();
+    });
+    expect(await screen.findByText('Run cancellation requested.')).toBeInTheDocument();
+  });
+
   it('opens the terminal in a modal with the live stream panel', async () => {
     const user = userEvent.setup();
 

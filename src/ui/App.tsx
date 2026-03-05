@@ -250,6 +250,12 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
     setNotice('Retrying evidence for the current PR.');
   }
 
+  async function cancelRun(runId: string) {
+    const run = await api.cancelRun(runId, { reason: 'Cancelled from UI.' });
+    await api.setSelectedTaskId(run.taskId);
+    setNotice('Run cancellation requested.');
+  }
+
   async function openTerminal(runId: string) {
     const targetRun = snapshot.runs.find((run) => run.runId === runId);
     const shouldPreferReviewSandbox = targetRun?.reviewExecution?.status === 'completed'
@@ -645,6 +651,7 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
                 onRerunReview={(runId) => void rerunReview(runId)}
                 onRetryPreview={(runId) => void retryPreview(runId)}
                 onRetryEvidence={(runId) => void retryEvidence(runId)}
+                onCancelRun={(runId) => void cancelRun(runId)}
                 onOpenTerminal={(runId) => void openTerminal(runId)}
                 onTakeOverRun={(runId) => void takeOverRun(runId)}
               />

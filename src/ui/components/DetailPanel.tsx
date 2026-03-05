@@ -126,6 +126,7 @@ export function DetailPanel({
   onRerunReview,
   onRetryPreview,
   onRetryEvidence,
+  onCancelRun,
   onOpenTerminal,
   onTakeOverRun
 }: {
@@ -140,6 +141,7 @@ export function DetailPanel({
   onRerunReview: (runId: string) => void;
   onRetryPreview: (runId: string) => void;
   onRetryEvidence: (runId: string) => void;
+  onCancelRun: (runId: string) => void;
   onOpenTerminal: (runId: string) => void;
   onTakeOverRun: (runId: string) => void;
 }) {
@@ -162,6 +164,7 @@ export function DetailPanel({
   const latestEvents = latestRun ? events.filter((event) => event.runId === latestRun.runId) : [];
   const currentCommand = latestRun?.currentCommandId ? latestCommands.find((command) => command.id === latestRun.currentCommandId) : undefined;
   const latestRunCheckpoints = latestRun?.checkpoints ?? [];
+  const canCancelRun = latestRun && !['DONE', 'FAILED'].includes(latestRun.status);
   const taskCheckpoints = detail.runs
     .flatMap((run) => run.checkpoints ?? [])
     .sort((left, right) => {
@@ -232,6 +235,15 @@ export function DetailPanel({
         aside={
           latestRun ? (
             <div className="flex flex-wrap gap-2">
+              {canCancelRun ? (
+                <button
+                  type="button"
+                  onClick={() => onCancelRun(latestRun.runId)}
+                  className="inline-flex h-9 items-center rounded-lg border border-rose-400/35 bg-rose-500/15 px-3 text-sm font-medium text-rose-50 transition hover:bg-rose-500/25"
+                >
+                  Cancel run
+                </button>
+              ) : null}
               <button
                 type="button"
                 onClick={() => onRequestChanges(latestRun.runId)}
