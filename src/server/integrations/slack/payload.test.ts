@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseJiraFastPathIssueKey, parseSlackSlashCommandBody } from './payload';
+import { parseJiraFastPathIssueKey, parseReviewFastPathInput, parseSlackSlashCommandBody } from './payload';
 
 describe('slack payload parsing', () => {
   it('accepts free-text slash command input', () => {
@@ -34,5 +34,35 @@ describe('slack payload parsing', () => {
     }).toString();
     const parsed = parseSlackSlashCommandBody(rawBody);
     expect(parsed.text).toBe('help');
+  });
+
+  it('parses review fast-path number input', () => {
+    expect(parseReviewFastPathInput('review 1234')).toEqual({ reviewNumber: 1234 });
+  });
+
+  it('parses review fast-path GitHub URL input', () => {
+    expect(parseReviewFastPathInput('review https://github.com/abuiles/agents-kanban/pull/101')).toEqual({
+      reviewNumber: 101,
+      reviewUrl: 'https://github.com/abuiles/agents-kanban/pull/101',
+      providerHint: 'github',
+      repoHostHint: 'github.com',
+      projectPathHint: 'abuiles/agents-kanban'
+    });
+  });
+
+  it('parses review fast-path GitLab URL input', () => {
+    expect(parseReviewFastPathInput('review https://gitlab.example.com/group/subgroup/minions/-/merge_requests/88')).toEqual({
+      reviewNumber: 88,
+      reviewUrl: 'https://gitlab.example.com/group/subgroup/minions/-/merge_requests/88',
+      providerHint: 'gitlab',
+      repoHostHint: 'gitlab.example.com',
+      projectPathHint: 'group/subgroup/minions'
+    });
+  });
+
+  it('rejects unsupported review fast-path shapes', () => {
+    expect(parseReviewFastPathInput('review')).toBeUndefined();
+    expect(parseReviewFastPathInput('review abc')).toBeUndefined();
+    expect(parseReviewFastPathInput('review https://github.com/abuiles/agents-kanban/issues/1')).toBeUndefined();
   });
 });

@@ -445,10 +445,217 @@ describe('slack handlers', () => {
     const calledPayload = JSON.parse(((vi.mocked(global.fetch).mock.calls[0] as [string, RequestInit])[1].body as string));
     expect(calledPayload.text).toContain('/kanvy fix <JIRA_KEY>');
     expect(calledPayload.text).toContain('/kanvy help');
+    expect(calledPayload.text).toContain('/kanvy review <MR_NUMBER|MR_URL>');
     expect(calledPayload.text).toContain('Free-text flow');
     expect(fetchIssue).not.toHaveBeenCalled();
     expect(repoBoard.createTask).not.toHaveBeenCalled();
     expect(repoBoard.startRun).not.toHaveBeenCalled();
+  });
+
+  it('starts a review-only run from `/kanvy review <number>` when one review repo is available', async () => {
+    const repoBoard = makeRepoBoard({ taskId: 'task_review', runId: 'run_review' });
+    const boardIndex = makeBoardIndex([
+      {
+        repoId: 'repo_alpha',
+        slug: 'acme/repo-alpha',
+        scmProvider: 'github',
+        scmBaseUrl: 'https://github.com',
+        projectPath: 'acme/repo-alpha'
+      } as unknown as { repoId: string; slug: string }
+    ]);
+    const rawBody = new URLSearchParams({
+      command: '/kanvy',
+      text: 'review 1234',
+      channel_id: 'C123',
+      thread_ts: '1672531200.1234',
+      team_id: 'team_one',
+      user_id: 'U1',
+      response_url: 'https://hooks.slack.com/commands/review'
+    }).toString();
+    const timestamp = nowTs;
+    const signature = await buildSlackSignature('secret', timestamp, rawBody);
+    const request = new Request('https://example.test/api/integrations/slack/commands', {
+      method: 'POST',
+      headers: slackHeaders(timestamp, signature),
+      body: rawBody
+    });
+    const waitUntilTasks: Array<Promise<unknown>> = [];
+    const waitUntil = vi.fn((task: Promise<unknown>) => waitUntilTasks.push(task));
+    const env = makeEnv('secret', repoBoard, boardIndex);
+    await env.SECRETS_KV.put('slack/bot-token', 'xoxb-test');
+
+    const response = await handleSlackCommands(request, env, { waitUntil } as unknown as ExecutionContext<unknown>);
+    expect(response.status).toBe(200);
+    await waitUntilTasks[0];
+
+    expect(repoBoard.createTask).toHaveBeenCalledWith(expect.objectContaining({
+      repoId: 'repo_alpha',
+      sourceRef: 'pull/1234/head',
+      autoReviewMode: 'on'
+    }));
+    expect(runOrchestratorMocks.scheduleRunJob).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({
+        repoId: 'repo_alpha',
+        mode: 'review_only'
+      })
+    );
+    expect(repoBoard.transitionRun).toHaveBeenCalledWith('run_review', expect.objectContaining({
+      status: 'PR_OPEN',
+      reviewNumber: 1234,
+      reviewProvider: 'github',
+      branchName: 'pull/1234/head'
+    }), 'team_one');
+    expect(fetchIssue).not.toHaveBeenCalled();
+  });
+
+  it('starts a review-only run from GitHub review URL and resolves repo by URL mapping', async () => {
+    const repoBoard = makeRepoBoard({ taskId: 'task_review_url', runId: 'run_review_url' });
+    const boardIndex = makeBoardIndex([
+      {
+        repoId: 'repo_agents',
+        slug: 'abuiles/agents-kanban',
+        scmProvider: 'github',
+        scmBaseUrl: 'https://github.com',
+        projectPath: 'abuiles/agents-kanban'
+      } as unknown as { repoId: string; slug: string }
+    ]);
+    const rawBody = new URLSearchParams({
+      command: '/kanvy',
+      text: 'review https://github.com/abuiles/agents-kanban/pull/101',
+      channel_id: 'C123',
+      thread_ts: '1672531200.1234',
+      team_id: 'team_one',
+      user_id: 'U1',
+      response_url: 'https://hooks.slack.com/commands/review-url'
+    }).toString();
+    const signature = await buildSlackSignature('secret', nowTs, rawBody);
+    const request = new Request('https://example.test/api/integrations/slack/commands', {
+      method: 'POST',
+      headers: slackHeaders(nowTs, signature),
+      body: rawBody
+    });
+    const waitUntilTasks: Array<Promise<unknown>> = [];
+    const waitUntil = vi.fn((task: Promise<unknown>) => waitUntilTasks.push(task));
+    const env = makeEnv('secret', repoBoard, boardIndex);
+    await env.SECRETS_KV.put('slack/bot-token', 'xoxb-test');
+
+    const response = await handleSlackCommands(request, env, { waitUntil } as unknown as ExecutionContext<unknown>);
+    expect(response.status).toBe(200);
+    await waitUntilTasks[0];
+
+    expect(repoBoard.transitionRun).toHaveBeenCalledWith('run_review_url', expect.objectContaining({
+      reviewProvider: 'github',
+      reviewNumber: 101,
+      reviewUrl: 'https://github.com/abuiles/agents-kanban/pull/101'
+    }), 'team_one');
+    expect(runOrchestratorMocks.scheduleRunJob).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({ mode: 'review_only' })
+    );
+  });
+
+  it('starts a review-only run from GitLab review URL and resolves repo by URL mapping', async () => {
+    const repoBoard = makeRepoBoard({ taskId: 'task_review_gitlab', runId: 'run_review_gitlab' });
+    const boardIndex = makeBoardIndex([
+      {
+        repoId: 'repo_gitlab',
+        slug: 'group/subgroup/minions',
+        scmProvider: 'gitlab',
+        scmBaseUrl: 'https://gitlab.example.com',
+        projectPath: 'group/subgroup/minions'
+      } as unknown as { repoId: string; slug: string }
+    ]);
+    const rawBody = new URLSearchParams({
+      command: '/kanvy',
+      text: 'review https://gitlab.example.com/group/subgroup/minions/-/merge_requests/88',
+      channel_id: 'C123',
+      thread_ts: '1672531200.1234',
+      team_id: 'team_one',
+      user_id: 'U1',
+      response_url: 'https://hooks.slack.com/commands/review-gitlab'
+    }).toString();
+    const signature = await buildSlackSignature('secret', nowTs, rawBody);
+    const request = new Request('https://example.test/api/integrations/slack/commands', {
+      method: 'POST',
+      headers: slackHeaders(nowTs, signature),
+      body: rawBody
+    });
+    const waitUntilTasks: Array<Promise<unknown>> = [];
+    const waitUntil = vi.fn((task: Promise<unknown>) => waitUntilTasks.push(task));
+    const env = makeEnv('secret', repoBoard, boardIndex);
+    await env.SECRETS_KV.put('slack/bot-token', 'xoxb-test');
+
+    const response = await handleSlackCommands(request, env, { waitUntil } as unknown as ExecutionContext<unknown>);
+    expect(response.status).toBe(200);
+    await waitUntilTasks[0];
+
+    expect(repoBoard.transitionRun).toHaveBeenCalledWith('run_review_gitlab', expect.objectContaining({
+      reviewProvider: 'gitlab',
+      reviewNumber: 88,
+      reviewUrl: 'https://gitlab.example.com/group/subgroup/minions/-/merge_requests/88',
+      branchName: 'refs/merge-requests/88/head'
+    }), 'team_one');
+    expect(runOrchestratorMocks.scheduleRunJob).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({ mode: 'review_only' })
+    );
+  });
+
+  it('requests repo disambiguation for numeric review command when multiple review repos exist', async () => {
+    const repoBoard = makeRepoBoard({ taskId: 'task_review_amb', runId: 'run_review_amb' });
+    const boardIndex = makeBoardIndex([
+      {
+        repoId: 'repo_alpha',
+        slug: 'acme/repo-alpha',
+        scmProvider: 'github',
+        scmBaseUrl: 'https://github.com',
+        projectPath: 'acme/repo-alpha'
+      } as unknown as { repoId: string; slug: string },
+      {
+        repoId: 'repo_beta',
+        slug: 'group/repo-beta',
+        scmProvider: 'gitlab',
+        scmBaseUrl: 'https://gitlab.example.com',
+        projectPath: 'group/repo-beta'
+      } as unknown as { repoId: string; slug: string }
+    ]);
+    const rawBody = new URLSearchParams({
+      command: '/kanvy',
+      text: 'review 77',
+      channel_id: 'C123',
+      thread_ts: '1672531200.1234',
+      team_id: 'team_one',
+      user_id: 'U1',
+      response_url: 'https://hooks.slack.com/commands/review-amb'
+    }).toString();
+    const signature = await buildSlackSignature('secret', nowTs, rawBody);
+    const request = new Request('https://example.test/api/integrations/slack/commands', {
+      method: 'POST',
+      headers: slackHeaders(nowTs, signature),
+      body: rawBody
+    });
+    const waitUntilTasks: Array<Promise<unknown>> = [];
+    const waitUntil = vi.fn((task: Promise<unknown>) => waitUntilTasks.push(task));
+    const env = makeEnv('secret', repoBoard, boardIndex);
+    await env.SECRETS_KV.put('slack/bot-token', 'xoxb-test');
+
+    const response = await handleSlackCommands(request, env, { waitUntil } as unknown as ExecutionContext<unknown>);
+    expect(response.status).toBe(200);
+    await waitUntilTasks[0];
+
+    expect(repoBoard.createTask).not.toHaveBeenCalled();
+    expect(runOrchestratorMocks.scheduleRunJob).not.toHaveBeenCalled();
+    const calls = vi.mocked(global.fetch).mock.calls as Array<[RequestInfo | URL, RequestInit]>;
+    const disambiguation = calls.find((entry) =>
+      String(entry[0]).includes('review-amb')
+      && String(entry[1].body).includes('Multiple repositories are available')
+      && String(entry[1].body).includes('review_repo_disambiguation')
+    );
+    expect(disambiguation).toBeTruthy();
   });
 
   it('supports free-text intake and auto-creates task when parser returns complete intent', async () => {
@@ -835,6 +1042,71 @@ describe('slack handlers', () => {
       currentRunId: 'run_interaction',
       latestReviewRound: 0
     });
+  });
+
+  it('starts a review-only run from review_repo_disambiguation interaction', async () => {
+    const repoBoard = makeRepoBoard({ taskId: 'task_review_action', runId: 'run_review_action' });
+    const payload = {
+      type: 'block_actions',
+      container: { channel_id: 'C123', thread_ts: '1672531200.1234' },
+      actions: [
+        {
+          action_id: 'review_repo_disambiguation',
+          value: JSON.stringify({
+            tenantId: 'tenant_local',
+            channelId: 'C123',
+            threadTs: '1672531200.1234',
+            repoId: 'repo_alpha',
+            reviewNumber: 77,
+            reviewProvider: 'github',
+            reviewUrl: 'https://github.com/acme/repo-alpha/pull/77'
+          })
+        }
+      ]
+    };
+    const rawBody = new URLSearchParams({ payload: JSON.stringify(payload) }).toString();
+    const signature = await buildSlackSignature('secret', nowTs, rawBody);
+    const request = new Request('https://example.test/api/integrations/slack/interactions', {
+      method: 'POST',
+      headers: slackHeaders(nowTs, signature),
+      body: rawBody
+    });
+    const boardIndex = makeBoardIndex([
+      {
+        repoId: 'repo_alpha',
+        slug: 'acme/repo-alpha',
+        scmProvider: 'github',
+        scmBaseUrl: 'https://github.com',
+        projectPath: 'acme/repo-alpha'
+      } as unknown as { repoId: string; slug: string }
+    ]);
+
+    const response = await handleSlackInteractions(
+      request,
+      makeEnv('secret', repoBoard, boardIndex),
+      {} as unknown as ExecutionContext<unknown>
+    );
+    const body = await response.json() as { ok: true; action: string; taskId: string; runId: string; repoId: string };
+
+    expect(body).toMatchObject({
+      ok: true,
+      action: 'review_repo_disambiguation',
+      taskId: 'task_review_action',
+      runId: 'run_review_action',
+      repoId: 'repo_alpha'
+    });
+    expect(repoBoard.createTask).toHaveBeenCalledWith(expect.objectContaining({
+      sourceRef: 'pull/77/head',
+      autoReviewMode: 'on'
+    }));
+    expect(runOrchestratorMocks.scheduleRunJob).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({
+        repoId: 'repo_alpha',
+        mode: 'review_only'
+      })
+    );
   });
 
   it('dedupes repeated repo_disambiguation interaction payloads', async () => {

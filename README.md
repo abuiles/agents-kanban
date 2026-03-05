@@ -57,6 +57,7 @@ AgentsKanban helps you run AI-assisted software work the same way you already ma
 ### Slack, Jira, and GitLab MVP Loop
 
 - Trigger task execution from Slack slash commands with a Jira issue key (`/kanvy fix ABC-123`).
+- Trigger review-only execution against an existing PR/MR (`/kanvy review 1234` or `/kanvy review https://github.com/org/repo/pull/101`).
 - Show concise slash command usage help directly in Slack (`/kanvy help`).
 - Allow free-text `/kanvy <request>` from channel or thread; channel commands auto-create a thread handoff for intake continuation.
 - Resolve Jira project -> repository mapping and start the first run from `main`.

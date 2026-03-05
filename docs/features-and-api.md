@@ -79,11 +79,12 @@ Operational notes:
 
 - `POST /api/integrations/slack/commands`
   - Verified with Slack signing secret and replay window checks.
-  - Accepts `/kanvy fix <JIRA_KEY>`, `/kanvy help`, and `/kanvy <free-text request>`.
+  - Accepts `/kanvy fix <JIRA_KEY>`, `/kanvy review <MR_NUMBER|MR_URL>`, `/kanvy help`, and `/kanvy <free-text request>`.
+  - `/kanvy review` starts a review-only run and does not execute coding/test/push phases.
   - For free-text commands sent outside a thread, auto-creates a thread kickoff and responds with an ephemeral handoff link.
   - Acknowledges immediately and continues Jira/repo/run processing asynchronously.
 - `POST /api/integrations/slack/interactions`
-  - Supports actions: `repo_disambiguation`, `approve_rerun`, `pause`, `close`.
+  - Supports actions: `repo_disambiguation`, `review_repo_disambiguation`, `approve_rerun`, `pause`, `close`.
   - Uses thread binding context (`taskId`, `channelId`, `threadTs`, `currentRunId`, `latestReviewRound`) to keep decisions in one thread.
 - `POST /api/integrations/gitlab/webhook`
   - Verified with GitLab webhook token.

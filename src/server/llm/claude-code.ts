@@ -140,7 +140,7 @@ run_with_timeout claude -p --model ${shellQuote(request.model)} "$PROMPT"
 async function appendCommandLogs(
   repoBoard: Parameters<LlmAdapter['run']>[0]['repoBoard'],
   runId: string,
-  phase: 'bootstrap' | 'codex' | 'tests' | 'push' | 'pr' | 'preview' | 'evidence' | 'operator',
+  phase: 'bootstrap' | 'codex' | 'tests' | 'push' | 'pr' | 'preview' | 'evidence',
   stdout?: string,
   stderr?: string
 ) {
