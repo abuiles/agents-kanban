@@ -22,6 +22,16 @@ export type SlackReviewFastPathInput = {
   projectPathHint?: string;
 };
 
+function normalizeReviewTarget(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed.startsWith('<') || !trimmed.endsWith('>')) {
+    return trimmed;
+  }
+  const inner = trimmed.slice(1, -1);
+  const linkEnd = inner.indexOf('|');
+  return linkEnd === -1 ? inner : inner.slice(0, linkEnd).trim();
+}
+
 export type SlackInteractionValue = {
   tenantId?: string;
   taskId?: string;
@@ -352,7 +362,7 @@ export function parseReviewFastPathInput(text: string): SlackReviewFastPathInput
   if (!match?.[1]) {
     return undefined;
   }
-  const target = match[1].trim();
+  const target = normalizeReviewTarget(match[1]);
   const asNumber = parsePositiveInt(target);
   if (asNumber) {
     return { reviewNumber: asNumber };

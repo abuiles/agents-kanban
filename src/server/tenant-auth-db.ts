@@ -462,6 +462,34 @@ function parseSlackIntakeSessionData(value: unknown): SlackIntakeSessionData {
         ...(acceptanceCriteria ? { acceptanceCriteria } : {})
       };
     };
+    const readPendingReviewSelection = (raw: unknown): SlackIntakeSessionData['pendingReviewSelection'] => {
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+        return undefined;
+      }
+      const record = raw as Record<string, unknown>;
+      const reviewNumber = typeof record.reviewNumber === 'number' && Number.isFinite(record.reviewNumber)
+        ? Math.trunc(record.reviewNumber)
+        : undefined;
+      if (!reviewNumber || reviewNumber < 1) {
+        return undefined;
+      }
+      const choices = readStringArray(record.choices);
+      const reviewUrl = readString(record.reviewUrl);
+      const reviewProviderHintCandidate = record.reviewProviderHint;
+      const reviewProviderHint = readString(reviewProviderHintCandidate);
+      const normalizedReviewProviderHint = reviewProviderHint === 'github' || reviewProviderHint === 'gitlab'
+        ? reviewProviderHint
+        : undefined;
+      if (!choices?.length) {
+        return undefined;
+      }
+      return {
+        reviewNumber,
+        ...(reviewUrl ? { reviewUrl } : {}),
+        ...(normalizedReviewProviderHint ? { reviewProviderHint: normalizedReviewProviderHint } : {}),
+        choices
+      };
+    };
     return {
       intent: data.intent === 'fix_jira' || data.intent === 'create_task' || data.intent === 'unknown' ? data.intent : undefined,
       confidence: typeof data.confidence === 'number' && Number.isFinite(data.confidence) ? data.confidence : undefined,
@@ -475,7 +503,8 @@ function parseSlackIntakeSessionData(value: unknown): SlackIntakeSessionData {
       clarifyingQuestion: readString(data.clarifyingQuestion),
       lastUserText: readString(data.lastUserText),
       repoChoices: readStringArray(data.repoChoices),
-      pendingConfirmation: readPendingConfirmation(data.pendingConfirmation)
+      pendingConfirmation: readPendingConfirmation(data.pendingConfirmation),
+      pendingReviewSelection: readPendingReviewSelection(data.pendingReviewSelection)
     };
   } catch {
     return {};

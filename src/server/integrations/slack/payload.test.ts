@@ -60,6 +60,16 @@ describe('slack payload parsing', () => {
     });
   });
 
+  it('parses review fast-path Slack link input', () => {
+    expect(parseReviewFastPathInput('review <https://gitlab.rechargeapps.net/engineering/customcheckout/-/merge_requests/31446|31446>')).toEqual({
+      reviewNumber: 31446,
+      reviewUrl: 'https://gitlab.rechargeapps.net/engineering/customcheckout/-/merge_requests/31446',
+      providerHint: 'gitlab',
+      repoHostHint: 'gitlab.rechargeapps.net',
+      projectPathHint: 'engineering/customcheckout'
+    });
+  });
+
   it('rejects unsupported review fast-path shapes', () => {
     expect(parseReviewFastPathInput('review')).toBeUndefined();
     expect(parseReviewFastPathInput('review abc')).toBeUndefined();
