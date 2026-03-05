@@ -1589,13 +1589,7 @@ describe('slack handlers', () => {
     const response = await handleSlackEvents(request, env);
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ ok: true, status: 'accepted' });
-    expect(openAiCalled).toBe(1);
-    const calls = vi.mocked(global.fetch).mock.calls as Array<[RequestInfo | URL, RequestInit]>;
-    const reviewIntentRequest = calls.find((entry) =>
-      String(entry[0]).includes('https://api.openai.com/v1/chat/completions')
-      && String(entry[1].body).includes('thread_context')
-    );
-    expect(reviewIntentRequest).toBeTruthy();
+    expect(openAiCalled).toBe(0);
     expect(repoBoard.createTask).toHaveBeenCalledWith(expect.objectContaining({
       repoId: 'repo_alpha',
       sourceRef: 'pull/12041/head',
