@@ -2934,10 +2934,13 @@ async function runIntentIntake(
     channelId: string;
     threadTs: string;
     sourceMessageTs?: string;
-    text: string;
+    userText: string;
+    intentText?: string;
     responseUrl?: string;
   }
 ): Promise<RunKickoff | undefined> {
+  const userText = input.userText.trim();
+  const intentText = (input.intentText ?? input.userText).trim();
   const existing = await tenantAuthDb.getSlackIntakeSession(env, input.tenantId, input.channelId, input.threadTs);
   const expired = existing ? isSessionExpired(existing.lastActivityAt) : false;
   if (existing && expired && existing.status === 'active') {
@@ -2956,7 +2959,7 @@ async function runIntentIntake(
     ? normalizePendingReviewStart(existing.data)
     : undefined;
   if (pendingReviewStart) {
-    if (isNegativeConfirmation(input.text)) {
+    if (isNegativeConfirmation(userText)) {
       await tenantAuthDb.upsertSlackIntakeSession(env, {
         tenantId: input.tenantId,
         channelId: input.channelId,
@@ -2964,7 +2967,7 @@ async function runIntentIntake(
         status: 'completed',
         turnCount: currentTurn,
         data: {
-          lastUserText: input.text
+          lastUserText: userText
         }
       });
       await postThreadPrompt(env, {
@@ -2976,8 +2979,8 @@ async function runIntentIntake(
       return undefined;
     }
 
-    if (!isAffirmativeConfirmation(input.text)) {
-      const draftContext = input.text.trim();
+    if (!isAffirmativeConfirmation(userText)) {
+      const draftContext = userText;
       await tenantAuthDb.upsertSlackIntakeSession(env, {
         tenantId: input.tenantId,
         channelId: input.channelId,
@@ -2990,7 +2993,7 @@ async function runIntentIntake(
             ...pendingReviewStart,
             ...(draftContext ? { draftContext } : {})
           },
-          lastUserText: input.text
+          lastUserText: userText
         }
       });
       await postThreadPrompt(env, {
@@ -3040,7 +3043,7 @@ async function runIntentIntake(
       status: 'completed',
       turnCount: currentTurn,
       data: {
-        lastUserText: input.text
+        lastUserText: userText
       }
     });
     await postThreadPrompt(env, {
@@ -3067,7 +3070,7 @@ async function runIntentIntake(
     ? normalizePendingReviewRerun(existing.data)
     : undefined;
   if (pendingReviewRerun) {
-    if (isNegativeConfirmation(input.text)) {
+    if (isNegativeConfirmation(userText)) {
       await tenantAuthDb.upsertSlackIntakeSession(env, {
         tenantId: input.tenantId,
         channelId: input.channelId,
@@ -3075,7 +3078,7 @@ async function runIntentIntake(
         status: 'completed',
         turnCount: currentTurn,
         data: {
-          lastUserText: input.text
+          lastUserText: userText
         }
       });
       await postThreadPrompt(env, {
@@ -3087,8 +3090,8 @@ async function runIntentIntake(
       return undefined;
     }
 
-    if (!isAffirmativeConfirmation(input.text)) {
-      const rerunContext = input.text.trim();
+    if (!isAffirmativeConfirmation(userText)) {
+      const rerunContext = userText;
       await tenantAuthDb.upsertSlackIntakeSession(env, {
         tenantId: input.tenantId,
         channelId: input.channelId,
@@ -3101,7 +3104,7 @@ async function runIntentIntake(
             ...pendingReviewRerun,
             ...(rerunContext ? { draftContext: rerunContext } : {})
           },
-          lastUserText: input.text
+          lastUserText: userText
         }
       });
       await postThreadPrompt(env, {
@@ -3140,7 +3143,7 @@ async function runIntentIntake(
       status: 'completed',
       turnCount: currentTurn,
       data: {
-        lastUserText: input.text
+        lastUserText: userText
       }
     });
     await postThreadPrompt(env, {
@@ -3167,7 +3170,7 @@ async function runIntentIntake(
     ? normalizePendingReviewSelection(existing.data)
     : undefined;
   if (pendingReviewSelection) {
-    const selectedRepoId = resolveRepoFromReply(input.text, pendingReviewSelection.choices);
+    const selectedRepoId = resolveRepoFromReply(userText, pendingReviewSelection.choices);
     if (selectedRepoId) {
       const repos = await listTenantRepos(env, input.tenantId);
       const repo = repos.find((candidate) => candidate.repoId === selectedRepoId);
@@ -3218,7 +3221,7 @@ async function runIntentIntake(
         });
         return undefined;
       }
-    } else if (input.text.trim()) {
+    } else if (userText) {
       logSlackMentionIngestion({
         checkpoint: 'review_reply_invalid',
         tenantId: input.tenantId,
@@ -3244,7 +3247,7 @@ async function runIntentIntake(
   const pendingConfirmation = existing?.status === 'active' && !expired
     ? normalizePendingConfirmation(existing.data)
     : undefined;
-  if (pendingConfirmation && isNegativeConfirmation(input.text)) {
+  if (pendingConfirmation && isNegativeConfirmation(userText)) {
     await tenantAuthDb.upsertSlackIntakeSession(env, {
       tenantId: input.tenantId,
       channelId: input.channelId,
@@ -3252,7 +3255,7 @@ async function runIntentIntake(
       status: 'completed',
       turnCount: currentTurn,
       data: {
-        lastUserText: input.text
+        lastUserText: userText
       }
     });
     await postThreadPrompt(env, {
@@ -3263,7 +3266,7 @@ async function runIntentIntake(
     });
     return undefined;
   }
-  if (pendingConfirmation && isAffirmativeConfirmation(input.text)) {
+  if (pendingConfirmation && isAffirmativeConfirmation(userText)) {
     const payload = buildTaskPayloadFromIntent({
       repoId: pendingConfirmation.repoId,
       title: pendingConfirmation.title,
@@ -3291,7 +3294,7 @@ async function runIntentIntake(
       status: 'completed',
       turnCount: currentTurn,
       data: {
-        lastUserText: input.text
+        lastUserText: userText
       }
     });
     await postThreadPrompt(env, {
@@ -3308,7 +3311,7 @@ async function runIntentIntake(
   const sessionRepoChoices = existing?.status === 'active' && !expired
     ? normalizeRepoChoicesFromSession(existing.data)
     : [];
-  const selectedRepoFromNumber = resolveRepoFromNumberReply(input.text, sessionRepoChoices);
+  const selectedRepoFromNumber = resolveRepoFromNumberReply(userText, sessionRepoChoices);
   if (selectedRepoFromNumber) {
     previousIntent.repoId = selectedRepoFromNumber;
     previousIntent.repoHint = selectedRepoFromNumber;
@@ -3318,7 +3321,7 @@ async function runIntentIntake(
   });
   const availableRepos = await listAvailableRepoIdsForTenant(env, input.tenantId);
   const parsed = mergeIntentWithSession(await parseSlackIntentWithLlm(env, {
-    text: buildIntentParseInputText(input.text, previousIntent),
+    text: buildIntentParseInputText(intentText, previousIntent),
     settings,
     priorTurns: currentTurn,
     availableRepos,
@@ -3344,9 +3347,9 @@ async function runIntentIntake(
         text: ':eyes:'
       });
     }
-  }), previousIntent, input.text);
-  if (!parsed.taskPrompt?.trim() && !isLikelyRepoOnlyText(input.text)) {
-    parsed.taskPrompt = input.text.trim();
+  }), previousIntent, userText);
+  if (!parsed.taskPrompt?.trim() && !isLikelyRepoOnlyText(userText)) {
+    parsed.taskPrompt = userText;
   }
   if (!parsed.taskTitle?.trim() && parsed.taskPrompt?.trim()) {
     parsed.taskTitle = deriveTaskTitleFromPrompt(parsed.taskPrompt);
@@ -3384,7 +3387,7 @@ async function runIntentIntake(
       lastConfidence: parsed.confidence,
       data: {
         ...parsed,
-        lastUserText: input.text,
+        lastUserText: userText,
         pendingConfirmation: {
           repoId: repoResolution.repoId,
           title,
@@ -3431,7 +3434,7 @@ async function runIntentIntake(
       ...parsed,
       missingFields,
       clarifyingQuestion: question,
-      lastUserText: input.text,
+      lastUserText: userText,
       ...(disambiguationChoices.length > 0 ? { repoChoices: disambiguationChoices } : {})
     }
   });
@@ -3653,7 +3656,7 @@ async function runSlackCommandAsync(
         tenantId,
         channelId: payload.channelId,
         threadTs,
-        text: payload.text,
+        userText: payload.text,
         responseUrl: payload.threadTs ? payload.responseUrl : undefined
       });
       if (started) {
@@ -3996,7 +3999,8 @@ async function runSlackMentionAsync(
     channelId: payload.channelId,
     threadTs: payload.threadTs,
     sourceMessageTs: payload.eventTs,
-    text: intakeText
+    userText: normalizedText,
+    intentText: intakeText
   });
 }
 
