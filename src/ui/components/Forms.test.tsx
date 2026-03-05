@@ -229,6 +229,19 @@ describe('RepoForm', () => {
       })
     }));
   });
+
+  it('shows gpt-5.4 and xhigh for codex review settings, and hides xhigh for non-codex review adapters', async () => {
+    const user = userEvent.setup();
+
+    render(<RepoForm onSubmit={vi.fn()} />);
+
+    expect(screen.getByRole('option', { name: 'gpt-5.4' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'xhigh' })).toBeInTheDocument();
+
+    await user.selectOptions(getSelectField('Review LLM adapter')! as unknown as Element, 'cursor_cli');
+
+    expect(screen.queryByRole('option', { name: 'xhigh' })).not.toBeInTheDocument();
+  });
 });
 
 describe('TaskForm', () => {
@@ -299,5 +312,33 @@ describe('TaskForm', () => {
       codexModel: 'gpt-5.3-codex-spark',
       codexReasoningEffort: 'high'
     });
+  });
+
+  it('shows gpt-5.4 and xhigh for codex task settings, and hides xhigh for non-codex adapters', async () => {
+    const user = userEvent.setup();
+
+    render(
+      <TaskForm
+        repos={[
+          {
+            repoId: 'repo_demo',
+            slug: 'abuiles/minions-demo',
+            defaultBranch: 'main',
+            baselineUrl: 'https://minions-demo.abuiles.workers.dev/',
+            enabled: true,
+            createdAt: '2026-03-01T00:00:00.000Z',
+            updatedAt: '2026-03-01T00:00:00.000Z'
+          }
+        ]}
+        onSubmit={vi.fn()}
+      />
+    );
+
+    expect(screen.getByRole('option', { name: 'gpt-5.4' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'xhigh' })).toBeInTheDocument();
+
+    await user.selectOptions(getSelectField('LLM adapter')! as unknown as Element, 'cursor_cli');
+
+    expect(screen.queryByRole('option', { name: 'xhigh' })).not.toBeInTheDocument();
   });
 });

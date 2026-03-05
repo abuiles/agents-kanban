@@ -99,6 +99,24 @@ describe('task validation', () => {
     });
   });
 
+  it('accepts gpt-5.4 and xhigh for codex task payloads', () => {
+    const parsed = parseCreateTaskInput(
+      createTaskPayload({
+        llmAdapter: 'codex',
+        llmModel: 'gpt-5.4',
+        llmReasoningEffort: 'xhigh'
+      })
+    );
+
+    expect(parsed).toMatchObject({
+      llmAdapter: 'codex',
+      llmModel: 'gpt-5.4',
+      llmReasoningEffort: 'xhigh',
+      codexModel: 'gpt-5.4',
+      codexReasoningEffort: 'xhigh'
+    });
+  });
+
   it('accepts codex compatibility fields without explicit llmAdapter', () => {
     const parsed = parseCreateTaskInput(
       createTaskPayload({
@@ -180,6 +198,15 @@ describe('task validation', () => {
         codexModel: 'gpt-5.3-codex'
       })
     ).toThrow('Invalid LLM payload: codex compatibility fields require llmAdapter "codex".');
+  });
+
+  it('rejects xhigh for non-codex task adapters', () => {
+    expect(() =>
+      parseUpdateTaskInput({
+        llmAdapter: 'cursor_cli',
+        llmReasoningEffort: 'xhigh'
+      })
+    ).toThrow('Invalid llmReasoningEffort.');
   });
 
   it('defaults task auto-review mode to inherit for create payloads', () => {
@@ -484,6 +511,48 @@ describe('repo validation', () => {
       codexModel: 'gpt-5.3-codex-spark',
       codexReasoningEffort: 'high'
     });
+  });
+
+  it('accepts gpt-5.4 and xhigh for codex repo auto-review settings', () => {
+    const parsed = parseCreateRepoInput({
+      slug: 'abuiles/minions',
+      baselineUrl: 'https://example.com',
+      autoReview: {
+        enabled: true,
+        provider: 'github',
+        llmAdapter: 'codex',
+        llmModel: 'gpt-5.4',
+        llmReasoningEffort: 'xhigh',
+        codexModel: 'gpt-5.4',
+        codexReasoningEffort: 'xhigh'
+      }
+    });
+
+    expect(parsed.autoReview).toEqual({
+      enabled: true,
+      provider: 'github',
+      postInline: false,
+      postingMode: 'platform',
+      llmAdapter: 'codex',
+      llmModel: 'gpt-5.4',
+      llmReasoningEffort: 'xhigh',
+      codexModel: 'gpt-5.4',
+      codexReasoningEffort: 'xhigh'
+    });
+  });
+
+  it('rejects xhigh for non-codex repo auto-review adapters', () => {
+    expect(() =>
+      parseCreateRepoInput({
+        slug: 'abuiles/minions',
+        baselineUrl: 'https://example.com',
+        autoReview: {
+          enabled: true,
+          llmAdapter: 'cursor_cli',
+          llmReasoningEffort: 'xhigh'
+        }
+      })
+    ).toThrow('Invalid autoReview.llmReasoningEffort.');
   });
 
   it('rejects mismatched repo auto-review llm and codex model values', () => {

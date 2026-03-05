@@ -1355,7 +1355,7 @@ function normalizeLatestReviewRound(value: number | undefined) {
 }
 
 function toSupportedCodexModel(value: string | undefined): CreateTaskInput['codexModel'] {
-  if (value === 'gpt-5.3-codex' || value === 'gpt-5.3-codex-spark' || value === 'gpt-5.1-codex-mini') {
+  if (value === 'gpt-5.4' || value === 'gpt-5.3-codex' || value === 'gpt-5.3-codex-spark' || value === 'gpt-5.1-codex-mini') {
     return value;
   }
   return DEFAULT_TASK_LLM_MODEL;

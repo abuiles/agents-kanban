@@ -27,8 +27,20 @@ function getAutoReviewProviderDefaultForScm(scmProvider: ScmProvider): AutoRevie
 
 const CODEX_MODELS: Array<{ value: CodexModel; label: string }> = [
   { value: 'gpt-5.1-codex-mini', label: 'gpt-5.1-codex-mini (default)' },
+  { value: 'gpt-5.4', label: 'gpt-5.4' },
   { value: 'gpt-5.3-codex', label: 'gpt-5.3-codex' },
   { value: 'gpt-5.3-codex-spark', label: 'gpt-5.3-codex-spark' }
+];
+
+const LLM_REASONING_EFFORT_OPTIONS: Array<{ value: LlmReasoningEffort; label: string }> = [
+  { value: 'low', label: 'low' },
+  { value: 'medium', label: 'medium (default)' },
+  { value: 'high', label: 'high' }
+];
+
+const CODEX_REASONING_EFFORT_OPTIONS: Array<{ value: LlmReasoningEffort; label: string }> = [
+  ...LLM_REASONING_EFFORT_OPTIONS,
+  { value: 'xhigh', label: 'xhigh' }
 ];
 
 const DEFAULT_LLM_MODELS: Record<LlmAdapter, string> = {
@@ -504,6 +516,9 @@ export function RepoForm({
               if (!autoReviewLlmModel || autoReviewLlmModel === DEFAULT_LLM_MODELS.codex || autoReviewLlmModel === DEFAULT_LLM_MODELS.cursor_cli || autoReviewLlmModel === DEFAULT_LLM_MODELS.claude_code) {
                 setAutoReviewLlmModel(DEFAULT_LLM_MODELS[nextAdapter]);
               }
+              if (nextAdapter !== 'codex' && autoReviewLlmReasoningEffort === 'xhigh') {
+                setAutoReviewLlmReasoningEffort('medium');
+              }
             }}
           >
             <option value="codex">Codex</option>
@@ -532,9 +547,11 @@ export function RepoForm({
             value={autoReviewLlmReasoningEffort}
             onChange={(event) => setAutoReviewLlmReasoningEffort(event.target.value as LlmReasoningEffort)}
           >
-            <option value="low">low</option>
-            <option value="medium">medium (default)</option>
-            <option value="high">high</option>
+            {(autoReviewLlmAdapter === 'codex' ? CODEX_REASONING_EFFORT_OPTIONS : LLM_REASONING_EFFORT_OPTIONS).map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
           </select>
         </FieldShell>
       </div>
@@ -1013,6 +1030,9 @@ export function TaskForm({
               if (!llmModel || llmModel === DEFAULT_LLM_MODELS.codex || llmModel === DEFAULT_LLM_MODELS.cursor_cli || llmModel === DEFAULT_LLM_MODELS.claude_code) {
                 setLlmModel(DEFAULT_LLM_MODELS[nextAdapter]);
               }
+              if (nextAdapter !== 'codex' && llmReasoningEffort === 'xhigh') {
+                setLlmReasoningEffort('medium');
+              }
             }}
           >
             <option value="codex">Codex</option>
@@ -1041,9 +1061,11 @@ export function TaskForm({
             value={llmReasoningEffort}
             onChange={(event) => setLlmReasoningEffort(event.target.value as LlmReasoningEffort)}
           >
-            <option value="low">low</option>
-            <option value="medium">medium (default)</option>
-            <option value="high">high</option>
+            {(llmAdapter === 'codex' ? CODEX_REASONING_EFFORT_OPTIONS : LLM_REASONING_EFFORT_OPTIONS).map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
           </select>
         </FieldShell>
       </div>

@@ -12,8 +12,9 @@ import type {
 import { badRequest } from './errors';
 import { SCM_PROVIDERS, getAutoReviewProviderDefaultForScm } from '../../shared/scm';
 
-const CODEX_MODELS = new Set(['gpt-5.1-codex-mini', 'gpt-5.3-codex', 'gpt-5.3-codex-spark'] as const);
-const CODEX_REASONING_EFFORTS = new Set(['low', 'medium', 'high'] as const);
+const CODEX_MODELS = new Set(['gpt-5.1-codex-mini', 'gpt-5.3-codex', 'gpt-5.3-codex-spark', 'gpt-5.4'] as const);
+const LLM_REASONING_EFFORTS = new Set(['low', 'medium', 'high'] as const);
+const CODEX_REASONING_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh'] as const);
 const LLM_ADAPTERS = new Set(['codex', 'cursor_cli', 'claude_code'] as const);
 const LLM_AUTH_MODES = new Set(['bundle', 'api'] as const);
 const AUTO_REVIEW_PROVIDERS = new Set(['github', 'gitlab', 'jira'] as const);
@@ -276,7 +277,7 @@ function readTaskLlmFields(body: Record<string, unknown>, mode: 'create' | 'upda
     ? readTrimmedString(body.llmModel, 'llmModel', false)
     : undefined;
   const llmReasoningEffort = hasField('llmReasoningEffort')
-    ? readEnumValue(body.llmReasoningEffort, 'llmReasoningEffort', CODEX_REASONING_EFFORTS, false)
+    ? readTrimmedString(body.llmReasoningEffort, 'llmReasoningEffort', false)
     : undefined;
   const codexModel = hasField('codexModel')
     ? readEnumValue(body.codexModel, 'codexModel', CODEX_MODELS, false)
@@ -300,6 +301,9 @@ function readTaskLlmFields(body: Record<string, unknown>, mode: 'create' | 'upda
   const effectiveAdapter = llmAdapter ?? ((typeof codexModel !== 'undefined' || typeof codexReasoningEffort !== 'undefined') ? 'codex' : undefined);
   const effectiveModel = llmModel ?? codexModel;
   const effectiveReasoningEffort = llmReasoningEffort ?? codexReasoningEffort;
+  const normalizedLlmReasoningEffort = effectiveAdapter === 'codex'
+    ? readEnumValue(effectiveReasoningEffort, 'llmReasoningEffort', CODEX_REASONING_EFFORTS, false)
+    : readEnumValue(effectiveReasoningEffort, 'llmReasoningEffort', LLM_REASONING_EFFORTS, false);
   const normalizedCodexModel = (effectiveAdapter ?? 'codex') === 'codex'
     ? readEnumValue(codexModel ?? effectiveModel, 'llmModel', CODEX_MODELS, false)
     : codexModel;
@@ -314,7 +318,7 @@ function readTaskLlmFields(body: Record<string, unknown>, mode: 'create' | 'upda
   return {
     llmAdapter: effectiveAdapter,
     llmModel: effectiveModel,
-    llmReasoningEffort: effectiveReasoningEffort,
+    llmReasoningEffort: normalizedLlmReasoningEffort,
     codexModel: normalizedCodexModel,
     codexReasoningEffort: normalizedCodexReasoningEffort
   };
@@ -392,7 +396,7 @@ function readAutoReviewConfig(value: unknown, field: string, required = true): N
   const postingMode = readEnumValue(value.postingMode, `${field}.postingMode`, AUTO_REVIEW_POSTING_MODES, false);
   const llmAdapter = readEnumValue(value.llmAdapter, `${field}.llmAdapter`, LLM_ADAPTERS, false);
   const llmModel = readTrimmedString(value.llmModel, `${field}.llmModel`, false);
-  const llmReasoningEffort = readEnumValue(value.llmReasoningEffort, `${field}.llmReasoningEffort`, CODEX_REASONING_EFFORTS, false);
+  const llmReasoningEffort = readTrimmedString(value.llmReasoningEffort, `${field}.llmReasoningEffort`, false);
   const codexModel = readEnumValue(value.codexModel, `${field}.codexModel`, CODEX_MODELS, false);
   const codexReasoningEffort = readEnumValue(value.codexReasoningEffort, `${field}.codexReasoningEffort`, CODEX_REASONING_EFFORTS, false);
 
@@ -411,6 +415,9 @@ function readAutoReviewConfig(value: unknown, field: string, required = true): N
   const effectiveAdapter = llmAdapter ?? ((typeof codexModel !== 'undefined' || typeof codexReasoningEffort !== 'undefined') ? 'codex' : undefined);
   const effectiveModel = llmModel ?? codexModel;
   const effectiveReasoningEffort = llmReasoningEffort ?? codexReasoningEffort;
+  const normalizedLlmReasoningEffort = effectiveAdapter === 'codex'
+    ? readEnumValue(effectiveReasoningEffort, `${field}.llmReasoningEffort`, CODEX_REASONING_EFFORTS, false)
+    : readEnumValue(effectiveReasoningEffort, `${field}.llmReasoningEffort`, LLM_REASONING_EFFORTS, false);
   const normalizedCodexModel = (effectiveAdapter ?? 'codex') === 'codex'
     ? readEnumValue(codexModel ?? effectiveModel, `${field}.llmModel`, CODEX_MODELS, false)
     : codexModel;
@@ -430,7 +437,7 @@ function readAutoReviewConfig(value: unknown, field: string, required = true): N
     ...(prompt ? { prompt } : {}),
     ...(effectiveAdapter ? { llmAdapter: effectiveAdapter } : {}),
     ...(effectiveModel ? { llmModel: effectiveModel } : {}),
-    ...(effectiveReasoningEffort ? { llmReasoningEffort: effectiveReasoningEffort } : {}),
+    ...(normalizedLlmReasoningEffort ? { llmReasoningEffort: normalizedLlmReasoningEffort } : {}),
     ...(normalizedCodexModel ? { codexModel: normalizedCodexModel } : {}),
     ...(normalizedCodexReasoningEffort ? { codexReasoningEffort: normalizedCodexReasoningEffort } : {}),
   };
