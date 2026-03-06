@@ -147,6 +147,39 @@ describe('App', () => {
     expect(await screen.findByText('Updated group/platform/renamed.')).toBeInTheDocument();
   });
 
+  it('preserves repo LLM settings when saving edit form without touching LLM controls', async () => {
+    const user = userEvent.setup();
+    const api = getLocalAgentBoardApi();
+    const configuredRepo = await api.createRepo({
+      scmProvider: 'gitlab',
+      scmBaseUrl: 'https://gitlab.example.com',
+      projectPath: 'group/platform/llm-config',
+      baselineUrl: 'https://llm-config.example.com',
+      llmAdapter: 'codex',
+      llmModel: 'gpt-5.3-codex',
+      llmReasoningEffort: 'high'
+    });
+    await api.updateRepo(configuredRepo.repoId, { llmAuthMode: 'api' });
+
+    render(<App api={api} />);
+
+    const [repoFilter] = await screen.findAllByLabelText(/repo filter/i);
+    await user.selectOptions(repoFilter, configuredRepo.repoId);
+    await waitFor(() => {
+      expect(repoFilter).toHaveValue(configuredRepo.repoId);
+    });
+    await user.click(screen.getByRole('button', { name: 'Edit repo' }));
+    await user.click(screen.getByRole('button', { name: 'Save repo' }));
+
+    await waitFor(() => {
+      const repo = api.getSnapshot().repos.find((candidate) => candidate.repoId === configuredRepo.repoId);
+      expect(repo?.llmAdapter).toBe('codex');
+      expect(repo?.llmModel).toBe('gpt-5.3-codex');
+      expect(repo?.llmReasoningEffort).toBe('high');
+      expect(repo?.llmAuthMode).toBe('api');
+    });
+  });
+
   it('opens the task from the URL on load', async () => {
     window.history.replaceState({}, '', '/?taskId=task_kpi');
     localStorage.setItem('agentboard.ui-preferences.v1', JSON.stringify({ selectedRepoId: 'all', selectedTaskId: 'task_nav' }));
