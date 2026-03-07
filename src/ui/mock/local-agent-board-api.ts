@@ -610,6 +610,7 @@ export class LocalAgentBoardApi implements AgentBoardApi {
       acceptanceCriteria: input.acceptanceCriteria,
       context: input.context,
       tags: normalizeTaskTags(input.tags),
+      archived: false,
       baselineUrlOverride: input.baselineUrlOverride,
       status: input.status ?? 'INBOX',
       createdAt: timestamp,
@@ -643,10 +644,14 @@ export class LocalAgentBoardApi implements AgentBoardApi {
   async listTasks(filter?: { repoId?: string; tags?: string[] }): Promise<Task[]> {
     const tasks = getTasksForRepo(this.store.getSnapshot().tasks, filter?.repoId ?? 'all');
     const tags = normalizeTaskTags(filter?.tags);
+    const normalizedTasks = tasks.map((task) => ({
+      ...task,
+      archived: task.archived ?? false
+    }));
     if (!tags) {
-      return tasks;
+      return normalizedTasks;
     }
-    return tasks.filter((task) => tags.every((tag) => task.tags?.includes(tag)));
+    return normalizedTasks.filter((task) => tags.every((tag) => task.tags?.includes(tag)));
   }
 
   async getTask(taskId: string): Promise<TaskDetail> {
@@ -655,7 +660,13 @@ export class LocalAgentBoardApi implements AgentBoardApi {
       throw new Error(`Task ${taskId} not found.`);
     }
 
-    return detail;
+    return {
+      ...detail,
+      task: {
+        ...detail.task,
+        archived: detail.task.archived ?? false
+      }
+    };
   }
 
   async getTaskCheckpoints(taskId: string, options?: { latest?: boolean }): Promise<RunCheckpoint[]> {
@@ -687,6 +698,7 @@ export class LocalAgentBoardApi implements AgentBoardApi {
           sourceRef: patch.sourceRef ?? task.sourceRef,
           context: patch.context ?? task.context,
           tags: Object.prototype.hasOwnProperty.call(patch, 'tags') ? normalizeTaskTags(patch.tags) : normalizeTaskTags(task.tags),
+          archived: Object.prototype.hasOwnProperty.call(patch, 'archived') ? patch.archived ?? false : task.archived ?? false,
           acceptanceCriteria: patch.acceptanceCriteria ?? task.acceptanceCriteria,
           uiMeta: normalizeTaskUiMeta({
             simulationProfile: patch.simulationProfile ?? task.uiMeta?.simulationProfile ?? 'happy_path',

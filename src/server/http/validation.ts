@@ -875,6 +875,7 @@ export function parseUpdateTaskInput(body: unknown): UpdateTaskInput {
   if (hasOwn(body, 'context')) patch.context = readContext(body.context, false);
   if (hasOwn(body, 'baselineUrlOverride')) patch.baselineUrlOverride = readString(body.baselineUrlOverride, 'baselineUrlOverride', false);
   if (hasOwn(body, 'tags')) patch.tags = readTaskTags(body.tags, 'tags', false);
+  if (hasOwn(body, 'archived')) patch.archived = readBoolean(body.archived, 'archived', false);
   if (hasOwn(body, 'status')) patch.status = readString(body.status, 'status', false) as UpdateTaskInput['status'];
   if (hasOwn(body, 'autoReviewMode')) patch.autoReviewMode = readEnumValue(body.autoReviewMode, 'autoReviewMode', AUTO_REVIEW_MODES, false);
   if (hasOwn(body, 'autoReviewPrompt')) patch.autoReviewPrompt = readTrimmedString(body.autoReviewPrompt, 'autoReviewPrompt', false);

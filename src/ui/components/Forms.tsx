@@ -81,6 +81,26 @@ function PrimaryButton({ children, disabled }: { children: React.ReactNode; disa
   );
 }
 
+function FormSection({
+  title,
+  description,
+  children
+}: {
+  title: string;
+  description?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="space-y-4 rounded-2xl border border-slate-800/80 bg-slate-950/40 p-4 sm:p-5">
+      <div className="space-y-1">
+        <h3 className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-200">{title}</h3>
+        {description ? <p className="max-w-3xl text-sm text-slate-400">{description}</p> : null}
+      </div>
+      {children}
+    </section>
+  );
+}
+
 export function RepoForm({
   onSubmit,
   reviewPlaybooks = [],
@@ -300,7 +320,7 @@ export function RepoForm({
 
   return (
     <form
-      className="space-y-5"
+      className="space-y-6"
       onSubmit={async (event) => {
         event.preventDefault();
         await onSubmit({
@@ -399,296 +419,306 @@ export function RepoForm({
         setSentinelMaxAttempts('2');
       }}
     >
-      <div className="grid gap-4 md:grid-cols-3">
-        <FieldShell label="SCM provider">
-          <select
-            className={inputClass()}
-            value={scmProvider}
-            onChange={(event) => {
-              const nextProvider = event.target.value as ScmProvider;
-              setScmProvider(nextProvider);
-              setScmBaseUrl((currentValue) => {
-                const normalizedValue = currentValue.trim();
-                if (!normalizedValue || normalizedValue === DEFAULT_SCM_BASE_URLS[scmProvider]) {
-                  return DEFAULT_SCM_BASE_URLS[nextProvider];
-                }
-                return currentValue;
-              });
-              setAutoReviewProvider((currentProvider) => {
-                const currentDefault = getAutoReviewProviderDefaultForScm(scmProvider);
-                return currentProvider === currentDefault
-                  ? getAutoReviewProviderDefaultForScm(nextProvider)
-                  : currentProvider;
-              });
-            }}
-          >
-            <option value="github">GitHub</option>
-            <option value="gitlab">GitLab</option>
-          </select>
-        </FieldShell>
-        <FieldShell label={scmBaseUrlLabel} hint={scmBaseUrlHint}>
-          <input
-            className={inputClass()}
-            value={scmBaseUrl}
-            onChange={(event) => setScmBaseUrl(event.target.value)}
-            placeholder={DEFAULT_SCM_BASE_URLS[scmProvider]}
-            required
-          />
-        </FieldShell>
-        <FieldShell label="Project path" hint={projectPathHint}>
-          <input
-            className={inputClass()}
-            value={projectPath}
-            onChange={(event) => setProjectPath(event.target.value)}
-            placeholder={projectPathPlaceholder}
-            required
-          />
-        </FieldShell>
-        <FieldShell label="Default branch">
-          <input className={inputClass()} value={defaultBranch} onChange={(event) => setDefaultBranch(event.target.value)} required />
-        </FieldShell>
-      </div>
-      <FieldShell label="Baseline URL" hint="Used as the before state for evidence runs.">
-        <input className={inputClass()} value={baselineUrl} onChange={(event) => setBaselineUrl(event.target.value)} placeholder="https://example.com" required />
-      </FieldShell>
-      <div className="grid gap-4 md:grid-cols-3">
-        <FieldShell label="Preview mode" hint="Skip bypasses preview discovery entirely.">
-          <select className={inputClass()} value={previewMode} onChange={(event) => setPreviewMode(event.target.value as NonNullable<CreateRepoInput['previewMode']>)}>
-            <option value="auto">Auto</option>
-            <option value="skip">Skip</option>
-          </select>
-        </FieldShell>
-        <FieldShell label="Evidence mode" hint="Skip disables evidence even when preview succeeds.">
-          <select className={inputClass()} value={evidenceMode} onChange={(event) => setEvidenceMode(event.target.value as NonNullable<CreateRepoInput['evidenceMode']>)}>
-            <option value="auto">Auto</option>
-            <option value="skip">Skip</option>
-          </select>
-        </FieldShell>
-        <FieldShell label="Preview adapter" hint={previewEnabled ? 'Choose how preview URLs are resolved.' : 'Preview is skipped, so adapter settings are inactive.'}>
-          <select
-            className={inputClass()}
-            value={previewAdapter}
-            onChange={(event) => setPreviewAdapter(event.target.value as PreviewAdapterKind)}
-            disabled={!previewEnabled}
-          >
-            <option value="cloudflare_checks">Cloudflare checks</option>
-            <option value="prompt_recipe">Prompt recipe</option>
-          </select>
-        </FieldShell>
-      </div>
-      {previewEnabled && previewAdapter === 'cloudflare_checks' ? (
-        <FieldShell label="Check or pipeline name" hint={previewCheckHint}>
-          <input className={inputClass()} value={previewCheckName} onChange={(event) => setPreviewCheckName(event.target.value)} placeholder="Workers Builds: app" />
-        </FieldShell>
-      ) : null}
-      {previewEnabled && previewAdapter === 'prompt_recipe' ? (
-        <FieldShell label="Prompt recipe" hint="Instructions for deriving a usable preview URL from repo metadata, review state, and checks.">
+      <FormSection title="Repo basics" description="Connection settings, source of truth, and baseline used for previews and evidence.">
+        <div className="grid gap-4 md:grid-cols-3">
+          <FieldShell label="SCM provider">
+            <select
+              className={inputClass()}
+              value={scmProvider}
+              onChange={(event) => {
+                const nextProvider = event.target.value as ScmProvider;
+                setScmProvider(nextProvider);
+                setScmBaseUrl((currentValue) => {
+                  const normalizedValue = currentValue.trim();
+                  if (!normalizedValue || normalizedValue === DEFAULT_SCM_BASE_URLS[scmProvider]) {
+                    return DEFAULT_SCM_BASE_URLS[nextProvider];
+                  }
+                  return currentValue;
+                });
+                setAutoReviewProvider((currentProvider) => {
+                  const currentDefault = getAutoReviewProviderDefaultForScm(scmProvider);
+                  return currentProvider === currentDefault
+                    ? getAutoReviewProviderDefaultForScm(nextProvider)
+                    : currentProvider;
+                });
+              }}
+            >
+              <option value="github">GitHub</option>
+              <option value="gitlab">GitLab</option>
+            </select>
+          </FieldShell>
+          <FieldShell label={scmBaseUrlLabel} hint={scmBaseUrlHint}>
+            <input
+              className={inputClass()}
+              value={scmBaseUrl}
+              onChange={(event) => setScmBaseUrl(event.target.value)}
+              placeholder={DEFAULT_SCM_BASE_URLS[scmProvider]}
+              required
+            />
+          </FieldShell>
+          <FieldShell label="Project path" hint={projectPathHint}>
+            <input
+              className={inputClass()}
+              value={projectPath}
+              onChange={(event) => setProjectPath(event.target.value)}
+              placeholder={projectPathPlaceholder}
+              required
+            />
+          </FieldShell>
+          <FieldShell label="Default branch">
+            <input className={inputClass()} value={defaultBranch} onChange={(event) => setDefaultBranch(event.target.value)} required />
+          </FieldShell>
+          <FieldShell label="Baseline URL" hint="Used as the before state for evidence runs.">
+            <input className={inputClass()} value={baselineUrl} onChange={(event) => setBaselineUrl(event.target.value)} placeholder="https://example.com" required />
+          </FieldShell>
+        </div>
+      </FormSection>
+
+      <FormSection title="Preview and evidence" description="Control whether the system attempts preview discovery and evidence capture for this repo.">
+        <div className="grid gap-4 md:grid-cols-3">
+          <FieldShell label="Preview mode" hint="Skip bypasses preview discovery entirely.">
+            <select className={inputClass()} value={previewMode} onChange={(event) => setPreviewMode(event.target.value as NonNullable<CreateRepoInput['previewMode']>)}>
+              <option value="auto">Auto</option>
+              <option value="skip">Skip</option>
+            </select>
+          </FieldShell>
+          <FieldShell label="Evidence mode" hint="Skip disables evidence even when preview succeeds.">
+            <select className={inputClass()} value={evidenceMode} onChange={(event) => setEvidenceMode(event.target.value as NonNullable<CreateRepoInput['evidenceMode']>)}>
+              <option value="auto">Auto</option>
+              <option value="skip">Skip</option>
+            </select>
+          </FieldShell>
+          <FieldShell label="Preview adapter" hint={previewEnabled ? 'Choose how preview URLs are resolved.' : 'Preview is skipped, so adapter settings are inactive.'}>
+            <select
+              className={inputClass()}
+              value={previewAdapter}
+              onChange={(event) => setPreviewAdapter(event.target.value as PreviewAdapterKind)}
+              disabled={!previewEnabled}
+            >
+              <option value="cloudflare_checks">Cloudflare checks</option>
+              <option value="prompt_recipe">Prompt recipe</option>
+            </select>
+          </FieldShell>
+        </div>
+        {previewEnabled && previewAdapter === 'cloudflare_checks' ? (
+          <FieldShell label="Check or pipeline name" hint={previewCheckHint}>
+            <input className={inputClass()} value={previewCheckName} onChange={(event) => setPreviewCheckName(event.target.value)} placeholder="Workers Builds: app" />
+          </FieldShell>
+        ) : null}
+        {previewEnabled && previewAdapter === 'prompt_recipe' ? (
+          <FieldShell label="Prompt recipe" hint="Instructions for deriving a usable preview URL from repo metadata, review state, and checks.">
+            <textarea
+              className={textareaClass()}
+              value={promptRecipe}
+              onChange={(event) => setPromptRecipe(event.target.value)}
+              rows={5}
+              placeholder="Find the preview URL from deployment logs or commit statuses and return one usable URL."
+              required
+            />
+          </FieldShell>
+        ) : null}
+      </FormSection>
+
+      <FormSection title="Review defaults" description="Default review behavior applied when tasks inherit repo policy.">
+        <div className="grid gap-4 md:grid-cols-3">
+          <FieldShell label="Auto-review enabled" hint="Enable automatic review runs for this repo by default.">
+            <div className="flex h-11 items-center gap-3 rounded-xl border border-slate-700 bg-slate-900/90 px-3 text-sm text-slate-100">
+              <input
+                type="checkbox"
+                checked={autoReviewEnabled}
+                onChange={(event) => setAutoReviewEnabled(event.target.checked)}
+                className="h-4 w-4 rounded border-slate-600 bg-slate-950 text-cyan-400 focus:ring-cyan-400/30"
+              />
+              <span>{autoReviewEnabled ? 'Enabled' : 'Disabled'}</span>
+            </div>
+          </FieldShell>
+          <FieldShell label="Auto-review provider" hint="Which integration should handle review automation.">
+            <select className={inputClass()} value={autoReviewProvider} onChange={(event) => setAutoReviewProvider(event.target.value as AutoReviewProvider)}>
+              <option value="github">GitHub</option>
+              <option value="gitlab">GitLab</option>
+              <option value="jira">Jira</option>
+            </select>
+          </FieldShell>
+          <FieldShell label="Post inline comments" hint="Add findings directly in review comments when supported.">
+            <div className="flex h-11 items-center gap-3 rounded-xl border border-slate-700 bg-slate-900/90 px-3 text-sm text-slate-100">
+              <input
+                type="checkbox"
+                checked={autoReviewPostInline}
+                onChange={(event) => setAutoReviewPostInline(event.target.checked)}
+                className="h-4 w-4 rounded border-slate-600 bg-slate-950 text-cyan-400 focus:ring-cyan-400/30"
+              />
+              <span>{autoReviewPostInline ? 'Enabled' : 'Disabled'}</span>
+            </div>
+          </FieldShell>
+        </div>
+        <FieldShell label="Auto-review prompt" hint="Optional override prompt used when auto-review is enabled.">
           <textarea
             className={textareaClass()}
-            value={promptRecipe}
-            onChange={(event) => setPromptRecipe(event.target.value)}
-            rows={5}
-            placeholder="Find the preview URL from deployment logs or commit statuses and return one usable URL."
-            required
+            value={autoReviewPrompt}
+            onChange={(event) => setAutoReviewPrompt(event.target.value)}
+            rows={4}
+            placeholder="Prioritize API contract stability and security findings."
           />
         </FieldShell>
-      ) : null}
-      <div className="grid gap-4 md:grid-cols-3">
-        <FieldShell label="Auto-review enabled" hint="Enable automatic review runs for this repo by default.">
-          <div className="flex h-11 items-center gap-3 rounded-xl border border-slate-700 bg-slate-900/90 px-3 text-sm text-slate-100">
-            <input
-              type="checkbox"
-              checked={autoReviewEnabled}
-              onChange={(event) => setAutoReviewEnabled(event.target.checked)}
-              className="h-4 w-4 rounded border-slate-600 bg-slate-950 text-cyan-400 focus:ring-cyan-400/30"
-            />
-            <span>{autoReviewEnabled ? 'Enabled' : 'Disabled'}</span>
-          </div>
-        </FieldShell>
-        <FieldShell label="Auto-review provider" hint="Which integration should handle review automation.">
-          <select className={inputClass()} value={autoReviewProvider} onChange={(event) => setAutoReviewProvider(event.target.value as AutoReviewProvider)}>
-            <option value="github">GitHub</option>
-            <option value="gitlab">GitLab</option>
-            <option value="jira">Jira</option>
-          </select>
-        </FieldShell>
-        <FieldShell label="Post inline comments" hint="Add findings directly in review comments when supported.">
-          <div className="flex h-11 items-center gap-3 rounded-xl border border-slate-700 bg-slate-900/90 px-3 text-sm text-slate-100">
-            <input
-              type="checkbox"
-              checked={autoReviewPostInline}
-              onChange={(event) => setAutoReviewPostInline(event.target.checked)}
-              className="h-4 w-4 rounded border-slate-600 bg-slate-950 text-cyan-400 focus:ring-cyan-400/30"
-            />
-            <span>{autoReviewPostInline ? 'Enabled' : 'Disabled'}</span>
-          </div>
-        </FieldShell>
-      </div>
-      <FieldShell label="Auto-review prompt" hint="Optional override prompt used when auto-review is enabled.">
-        <textarea
-          className={textareaClass()}
-          value={autoReviewPrompt}
-          onChange={(event) => setAutoReviewPrompt(event.target.value)}
-          rows={4}
-          placeholder="Prioritize API contract stability and security findings."
-        />
-      </FieldShell>
-      <FieldShell label="Auto-review playbook" hint="Optional default playbook for review runs in this repo.">
-        <select className={inputClass()} value={autoReviewPlaybookId} onChange={(event) => setAutoReviewPlaybookId(event.target.value)}>
-          <option value="">None</option>
-          {reviewPlaybooks.filter((playbook) => playbook.enabled).map((playbook) => (
-            <option key={playbook.playbookId} value={playbook.playbookId}>
-              {playbook.name}
-            </option>
-          ))}
-        </select>
-      </FieldShell>
-      <div className="grid gap-4 md:grid-cols-2">
-        <FieldShell label="Review LLM adapter" hint="Executor used for review rounds for this repo.">
-          <select
-            className={inputClass()}
-            value={autoReviewLlmAdapter}
-            onChange={(event) => {
-              const nextAdapter = event.target.value as LlmAdapter;
-              setAutoReviewLlmAdapter(nextAdapter);
-              if (!autoReviewLlmModel || autoReviewLlmModel === DEFAULT_LLM_MODELS.codex || autoReviewLlmModel === DEFAULT_LLM_MODELS.cursor_cli || autoReviewLlmModel === DEFAULT_LLM_MODELS.claude_code) {
-                setAutoReviewLlmModel(DEFAULT_LLM_MODELS[nextAdapter]);
-              }
-              if (nextAdapter !== 'codex' && autoReviewLlmReasoningEffort === 'xhigh') {
-                setAutoReviewLlmReasoningEffort('medium');
-              }
-            }}
-          >
-            <option value="codex">Codex</option>
-            <option value="cursor_cli">Cursor CLI</option>
-            <option value="claude_code">Claude Code</option>
-          </select>
-        </FieldShell>
-        <FieldShell label="Review LLM model" hint="Model used by repo-level review runs.">
-          {autoReviewLlmAdapter === 'codex' ? (
-            <select className={inputClass()} value={autoReviewLlmModel} onChange={(event) => setAutoReviewLlmModel(event.target.value)}>
-              {CODEX_MODELS.map((model) => (
-                <option key={model.value} value={model.value}>
-                  {model.label}
-                </option>
-              ))}
-            </select>
-          ) : (
-            <input className={inputClass()} value={autoReviewLlmModel} onChange={(event) => setAutoReviewLlmModel(event.target.value)} placeholder={autoReviewLlmAdapter === 'claude_code' ? 'claude-opus-4-1' : 'cursor-default'} />
-          )}
-        </FieldShell>
-      </div>
-      <div className="grid gap-4 md:grid-cols-2">
-        <FieldShell label="Review reasoning effort" hint="Reasoning effort hint for review execution.">
-          <select
-            className={inputClass()}
-            value={autoReviewLlmReasoningEffort}
-            onChange={(event) => setAutoReviewLlmReasoningEffort(event.target.value as LlmReasoningEffort)}
-          >
-            {(autoReviewLlmAdapter === 'codex' ? CODEX_REASONING_EFFORT_OPTIONS : LLM_REASONING_EFFORT_OPTIONS).map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
+        <FieldShell label="Auto-review playbook" hint="Optional default playbook for review runs in this repo.">
+          <select className={inputClass()} value={autoReviewPlaybookId} onChange={(event) => setAutoReviewPlaybookId(event.target.value)}>
+            <option value="">None</option>
+            {reviewPlaybooks.filter((playbook) => playbook.enabled).map((playbook) => (
+              <option key={playbook.playbookId} value={playbook.playbookId}>
+                {playbook.name}
               </option>
             ))}
           </select>
         </FieldShell>
-      </div>
-      <div className="grid gap-4 md:grid-cols-3">
-        <FieldShell label="Task LLM adapter" hint="Default executor for new tasks in this repo.">
-          <select
-            className={inputClass()}
-            value={llmAdapter}
-            onChange={(event) => {
-              const nextAdapter = event.target.value as LlmAdapter;
-              setLlmAdapter(nextAdapter);
-              if (!llmModel || llmModel === DEFAULT_LLM_MODELS.codex || llmModel === DEFAULT_LLM_MODELS.cursor_cli || llmModel === DEFAULT_LLM_MODELS.claude_code) {
-                setLlmModel(DEFAULT_LLM_MODELS[nextAdapter]);
-              }
-              if (nextAdapter !== 'codex' && llmReasoningEffort === 'xhigh') {
-                setLlmReasoningEffort('medium');
-              }
-            }}
-          >
-            <option value="codex">Codex</option>
-            <option value="cursor_cli">Cursor CLI</option>
-            <option value="claude_code">Claude Code</option>
-          </select>
-        </FieldShell>
-        <FieldShell label="Task LLM model" hint="Default model for new tasks in this repo.">
-          {llmAdapter === 'codex' ? (
-            <select className={inputClass()} value={llmModel} onChange={(event) => setLlmModel(event.target.value)}>
-              {CODEX_MODELS.map((model) => (
-                <option key={model.value} value={model.value}>
-                  {model.label}
+        <div className="grid gap-4 md:grid-cols-2">
+          <FieldShell label="Review LLM adapter" hint="Executor used for review rounds for this repo.">
+            <select
+              className={inputClass()}
+              value={autoReviewLlmAdapter}
+              onChange={(event) => {
+                const nextAdapter = event.target.value as LlmAdapter;
+                setAutoReviewLlmAdapter(nextAdapter);
+                if (!autoReviewLlmModel || autoReviewLlmModel === DEFAULT_LLM_MODELS.codex || autoReviewLlmModel === DEFAULT_LLM_MODELS.cursor_cli || autoReviewLlmModel === DEFAULT_LLM_MODELS.claude_code) {
+                  setAutoReviewLlmModel(DEFAULT_LLM_MODELS[nextAdapter]);
+                }
+                if (nextAdapter !== 'codex' && autoReviewLlmReasoningEffort === 'xhigh') {
+                  setAutoReviewLlmReasoningEffort('medium');
+                }
+              }}
+            >
+              <option value="codex">Codex</option>
+              <option value="cursor_cli">Cursor CLI</option>
+              <option value="claude_code">Claude Code</option>
+            </select>
+          </FieldShell>
+          <FieldShell label="Review LLM model" hint="Model used by repo-level review runs.">
+            {autoReviewLlmAdapter === 'codex' ? (
+              <select className={inputClass()} value={autoReviewLlmModel} onChange={(event) => setAutoReviewLlmModel(event.target.value)}>
+                {CODEX_MODELS.map((model) => (
+                  <option key={model.value} value={model.value}>
+                    {model.label}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <input className={inputClass()} value={autoReviewLlmModel} onChange={(event) => setAutoReviewLlmModel(event.target.value)} placeholder={autoReviewLlmAdapter === 'claude_code' ? 'claude-opus-4-1' : 'cursor-default'} />
+            )}
+          </FieldShell>
+          <FieldShell label="Review reasoning effort" hint="Reasoning effort hint for review execution.">
+            <select
+              className={inputClass()}
+              value={autoReviewLlmReasoningEffort}
+              onChange={(event) => setAutoReviewLlmReasoningEffort(event.target.value as LlmReasoningEffort)}
+            >
+              {(autoReviewLlmAdapter === 'codex' ? CODEX_REASONING_EFFORT_OPTIONS : LLM_REASONING_EFFORT_OPTIONS).map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
                 </option>
               ))}
             </select>
-          ) : (
-            <input className={inputClass()} value={llmModel} onChange={(event) => setLlmModel(event.target.value)} placeholder="cursor-default" />
-          )}
-        </FieldShell>
-        <FieldShell label="Task reasoning effort" hint="Default executor reasoning effort for new tasks.">
-          <select className={inputClass()} value={llmReasoningEffort} onChange={(event) => setLlmReasoningEffort(event.target.value as LlmReasoningEffort)}>
-            {(llmAdapter === 'codex' ? CODEX_REASONING_EFFORT_OPTIONS : LLM_REASONING_EFFORT_OPTIONS).map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-        </FieldShell>
-      </div>
-      <div className="grid gap-4 md:grid-cols-3">
-        <FieldShell label="LLM auth mode" hint="API mode skips .codex restore and requires OPENAI_API_KEY.">
-          <select className={inputClass()} value={llmAuthMode} onChange={(event) => setLlmAuthMode(event.target.value as NonNullable<CreateRepoInput['llmAuthMode']>)}>
-            <option value="bundle">Codex bundle (.codex)</option>
-            <option value="api">OpenAI API key (OPENAI_API_KEY)</option>
-          </select>
-        </FieldShell>
-        <FieldShell label="LLM profile id" hint="Optional profile identifier used by adapter integrations.">
-          <input className={inputClass()} value={llmProfileId} onChange={(event) => setLlmProfileId(event.target.value)} placeholder="codex-default" />
-        </FieldShell>
-        <FieldShell label="LLM auth bundle key" hint="Optional R2 key for executor credentials (for example `.codex` auth tarball).">
-          <input className={inputClass()} value={llmAuthBundleR2Key} onChange={(event) => setLlmAuthBundleR2Key(event.target.value)} placeholder={llmAdapter === 'codex' ? 'auth/codex.tgz' : llmAdapter === 'claude_code' ? 'auth/claude.tgz' : 'auth/cursor.tgz'} />
-        </FieldShell>
-      </div>
-      <div className="grid gap-4 md:grid-cols-2">
-        <FieldShell label=".agents bundle key" hint="Optional R2 key for a home `.agents` tarball injected into sandbox runs.">
-          <input className={inputClass()} value={agentsBundleR2Key} onChange={(event) => setAgentsBundleR2Key(event.target.value)} placeholder="auth/agents-home.tgz" />
-        </FieldShell>
-        <FieldShell label="Codex auth bundle key" hint="Optional R2 key for a `.codex` auth bundle tarball.">
-          <input className={inputClass()} value={codexAuthBundleR2Key} onChange={(event) => setCodexAuthBundleR2Key(event.target.value)} placeholder="auth/codex.tgz" />
-        </FieldShell>
-      </div>
-      <div className="grid gap-4 md:grid-cols-2">
-        <FieldShell label="Commit template" hint="Optional. Tokens: {taskTitle}, {taskId}, {runId}, {repoSlug}, {defaultMessage}.">
-          <input
-            className={inputClass()}
-            value={commitMessageTemplate}
-            onChange={(event) => setCommitMessageTemplate(event.target.value)}
-            placeholder="feat(cp): {taskTitle} [{taskId}]"
+          </FieldShell>
+        </div>
+      </FormSection>
+
+      <FormSection title="Task execution defaults" description="Choose the default executor and model for new tasks created in this repo.">
+        <div className="grid gap-4 md:grid-cols-3">
+          <FieldShell label="Task LLM adapter" hint="Default executor for new tasks in this repo.">
+            <select
+              className={inputClass()}
+              value={llmAdapter}
+              onChange={(event) => {
+                const nextAdapter = event.target.value as LlmAdapter;
+                setLlmAdapter(nextAdapter);
+                if (!llmModel || llmModel === DEFAULT_LLM_MODELS.codex || llmModel === DEFAULT_LLM_MODELS.cursor_cli || llmModel === DEFAULT_LLM_MODELS.claude_code) {
+                  setLlmModel(DEFAULT_LLM_MODELS[nextAdapter]);
+                }
+                if (nextAdapter !== 'codex' && llmReasoningEffort === 'xhigh') {
+                  setLlmReasoningEffort('medium');
+                }
+              }}
+            >
+              <option value="codex">Codex</option>
+              <option value="cursor_cli">Cursor CLI</option>
+              <option value="claude_code">Claude Code</option>
+            </select>
+          </FieldShell>
+          <FieldShell label="Task LLM model" hint="Default model for new tasks in this repo.">
+            {llmAdapter === 'codex' ? (
+              <select className={inputClass()} value={llmModel} onChange={(event) => setLlmModel(event.target.value)}>
+                {CODEX_MODELS.map((model) => (
+                  <option key={model.value} value={model.value}>
+                    {model.label}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <input className={inputClass()} value={llmModel} onChange={(event) => setLlmModel(event.target.value)} placeholder="cursor-default" />
+            )}
+          </FieldShell>
+          <FieldShell label="Task reasoning effort" hint="Default executor reasoning effort for new tasks.">
+            <select className={inputClass()} value={llmReasoningEffort} onChange={(event) => setLlmReasoningEffort(event.target.value as LlmReasoningEffort)}>
+              {(llmAdapter === 'codex' ? CODEX_REASONING_EFFORT_OPTIONS : LLM_REASONING_EFFORT_OPTIONS).map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </FieldShell>
+        </div>
+      </FormSection>
+
+      <FormSection title="Auth and commit policy" description="Credentials, runtime bundles, and commit conventions used during task execution.">
+        <div className="grid gap-4 md:grid-cols-3">
+          <FieldShell label="LLM auth mode" hint="API mode skips .codex restore and requires OPENAI_API_KEY.">
+            <select className={inputClass()} value={llmAuthMode} onChange={(event) => setLlmAuthMode(event.target.value as NonNullable<CreateRepoInput['llmAuthMode']>)}>
+              <option value="bundle">Codex bundle (.codex)</option>
+              <option value="api">OpenAI API key (OPENAI_API_KEY)</option>
+            </select>
+          </FieldShell>
+          <FieldShell label="LLM profile id" hint="Optional profile identifier used by adapter integrations.">
+            <input className={inputClass()} value={llmProfileId} onChange={(event) => setLlmProfileId(event.target.value)} placeholder="codex-default" />
+          </FieldShell>
+          <FieldShell label="LLM auth bundle key" hint="Optional R2 key for executor credentials (for example `.codex` auth tarball).">
+            <input className={inputClass()} value={llmAuthBundleR2Key} onChange={(event) => setLlmAuthBundleR2Key(event.target.value)} placeholder={llmAdapter === 'codex' ? 'auth/codex.tgz' : llmAdapter === 'claude_code' ? 'auth/claude.tgz' : 'auth/cursor.tgz'} />
+          </FieldShell>
+          <FieldShell label=".agents bundle key" hint="Optional R2 key for a home `.agents` tarball injected into sandbox runs.">
+            <input className={inputClass()} value={agentsBundleR2Key} onChange={(event) => setAgentsBundleR2Key(event.target.value)} placeholder="auth/agents-home.tgz" />
+          </FieldShell>
+          <FieldShell label="Codex auth bundle key" hint="Optional R2 key for a `.codex` auth bundle tarball.">
+            <input className={inputClass()} value={codexAuthBundleR2Key} onChange={(event) => setCodexAuthBundleR2Key(event.target.value)} placeholder="auth/codex.tgz" />
+          </FieldShell>
+        </div>
+        <div className="grid gap-4 md:grid-cols-2">
+          <FieldShell label="Commit template" hint="Optional. Tokens: {taskTitle}, {taskId}, {runId}, {repoSlug}, {defaultMessage}.">
+            <input
+              className={inputClass()}
+              value={commitMessageTemplate}
+              onChange={(event) => setCommitMessageTemplate(event.target.value)}
+              placeholder="feat(cp): {taskTitle} [{taskId}]"
+            />
+          </FieldShell>
+          <FieldShell label="Commit regex" hint="Optional JS regex that commit messages must match.">
+            <input
+              className={inputClass()}
+              value={commitMessageRegex}
+              onChange={(event) => setCommitMessageRegex(event.target.value)}
+              placeholder="^feat\\(cp\\): .+ \\[task_[a-z0-9_]+\\]$"
+            />
+          </FieldShell>
+        </div>
+        <FieldShell label="Commit examples" hint="Optional. One example commit message per line.">
+          <textarea
+            className={textareaClass()}
+            value={commitMessageExamples}
+            onChange={(event) => setCommitMessageExamples(event.target.value)}
+            rows={4}
+            placeholder={'feat(cp): Add banner block support [task_abc123]\nfix(cp): Correct CTA URL handling [task_def456]'}
           />
         </FieldShell>
-        <FieldShell label="Commit regex" hint="Optional JS regex that commit messages must match.">
-          <input
-            className={inputClass()}
-            value={commitMessageRegex}
-            onChange={(event) => setCommitMessageRegex(event.target.value)}
-            placeholder="^feat\\(cp\\): .+ \\[task_[a-z0-9_]+\\]$"
-          />
-        </FieldShell>
-      </div>
-      <FieldShell label="Commit examples" hint="Optional. One example commit message per line.">
-        <textarea
-          className={textareaClass()}
-          value={commitMessageExamples}
-          onChange={(event) => setCommitMessageExamples(event.target.value)}
-          rows={4}
-          placeholder={'feat(cp): Add banner block support [task_abc123]\nfix(cp): Correct CTA URL handling [task_def456]'}
-        />
-      </FieldShell>
-      <div className="rounded-xl border border-slate-800 bg-slate-950/40 p-4">
-        <div className="text-sm font-semibold text-slate-100">Sentinel</div>
-        <div className="mt-3 grid gap-4 md:grid-cols-2">
+      </FormSection>
+
+      <FormSection title="Sentinel" description="Merge guardrails, automation policy, and remediation behavior for orchestrated runs.">
+        <div className="grid gap-4 md:grid-cols-2">
           <FieldShell label="Enabled" hint="Allow operators to orchestrate this repo with sentinel APIs.">
             <div className="flex h-11 items-center gap-3 rounded-xl border border-slate-700 bg-slate-900/90 px-3 text-sm text-slate-100">
               <input
@@ -712,7 +742,7 @@ export function RepoForm({
             </FieldShell>
           ) : null}
         </div>
-        <div className="mt-3 grid gap-4 md:grid-cols-2">
+        <div className="grid gap-4 md:grid-cols-2">
           <FieldShell label="Require checks green">
             <div className="flex h-11 items-center gap-3 rounded-xl border border-slate-700 bg-slate-900/90 px-3 text-sm text-slate-100">
               <input
@@ -736,7 +766,7 @@ export function RepoForm({
             </div>
           </FieldShell>
         </div>
-        <div className="mt-3 grid gap-4 md:grid-cols-3">
+        <div className="grid gap-4 md:grid-cols-3">
           <FieldShell label="Auto-merge enabled">
             <div className="flex h-11 items-center gap-3 rounded-xl border border-slate-700 bg-slate-900/90 px-3 text-sm text-slate-100">
               <input
@@ -766,8 +796,6 @@ export function RepoForm({
               <span>{sentinelDeleteBranch ? 'Delete' : 'Keep'}</span>
             </div>
           </FieldShell>
-        </div>
-        <div className="mt-3 grid gap-4 md:grid-cols-3">
           <FieldShell label="Rebase before merge">
             <div className="flex h-11 items-center gap-3 rounded-xl border border-slate-700 bg-slate-900/90 px-3 text-sm text-slate-100">
               <input
@@ -794,7 +822,7 @@ export function RepoForm({
             <input className={inputClass()} type="number" min={1} step={1} value={sentinelMaxAttempts} onChange={(event) => setSentinelMaxAttempts(event.target.value)} />
           </FieldShell>
         </div>
-      </div>
+      </FormSection>
       <PrimaryButton>{submitLabel}</PrimaryButton>
     </form>
   );
@@ -966,7 +994,7 @@ export function TaskForm({
 
   return (
     <form
-      className="space-y-5"
+      className="space-y-6"
       onSubmit={async (event) => {
         event.preventDefault();
         if (!repoId) {
@@ -1017,168 +1045,171 @@ export function TaskForm({
         setLlmReasoningEffort(resetRepoDefaults.llmReasoningEffort);
       }}
     >
-      <div className="grid gap-4 md:grid-cols-2">
-        <FieldShell label="Repo">
-          <select className={inputClass()} value={repoId} onChange={(event) => setRepoId(event.target.value)} required disabled={!repos.length}>
-            {repos.map((repo) => (
-              <option key={repo.repoId} value={repo.repoId}>
-                {repo.slug}
-              </option>
-            ))}
-          </select>
-        </FieldShell>
-        <FieldShell label="Initial status">
-          <select className={inputClass()} value={status} onChange={(event) => setStatus(event.target.value as TaskStatus)}>
-            {['INBOX', 'READY', 'ACTIVE', 'REVIEW', 'DONE', 'FAILED'].map((column) => (
-              <option key={column} value={column}>
-                {column}
-              </option>
-            ))}
-          </select>
-        </FieldShell>
-      </div>
-
-      {!repos.length ? <p className="rounded-xl border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-sm text-amber-100">Add a repo before creating tasks.</p> : null}
-
-      <FieldShell label="Title">
-        <input className={inputClass()} value={title} onChange={(event) => setTitle(event.target.value)} required />
-      </FieldShell>
-
-      <FieldShell label="Description">
-        <textarea className={textareaClass()} value={description} onChange={(event) => setDescription(event.target.value)} rows={2} />
-      </FieldShell>
-
-      <FieldShell label="Source ref" hint="Optional GitHub PR URL, branch URL, branch name, or commit SHA to start the run from.">
-        <input
-          className={inputClass()}
-          value={sourceRef}
-          onChange={(event) => setSourceRef(event.target.value)}
-          placeholder="https://github.com/owner/repo/pull/4"
-        />
-      </FieldShell>
-
-      <FieldShell label="Task prompt">
-        <textarea className={textareaClass()} value={taskPrompt} onChange={(event) => setTaskPrompt(event.target.value)} rows={5} required />
-      </FieldShell>
-
-      <div className="grid gap-4 xl:grid-cols-2">
-        <FieldShell label="Acceptance criteria" hint="One line per criterion.">
-          <textarea className={textareaClass()} value={criteria} onChange={(event) => setCriteria(event.target.value)} rows={5} required />
-        </FieldShell>
-        <FieldShell label="Context links" hint="Use label|url per line.">
-          <textarea className={textareaClass()} value={links} onChange={(event) => setLinks(event.target.value)} rows={5} placeholder="Spec|https://docs.example.com/spec" />
-        </FieldShell>
-      </div>
-
-      <div className="grid gap-4 xl:grid-cols-2">
-        <FieldShell label="Notes">
-          <textarea className={textareaClass()} value={notes} onChange={(event) => setNotes(event.target.value)} rows={3} />
-        </FieldShell>
-        <FieldShell label="Baseline override">
-          <input className={inputClass()} value={baselineUrlOverride} onChange={(event) => setBaselineUrlOverride(event.target.value)} placeholder="https://staging.example.com" />
-        </FieldShell>
-      </div>
-      <div className="grid gap-4 xl:grid-cols-2">
-        <FieldShell label="Dependencies" hint="One upstream task id per line. Optional: task_id|primary">
-          <textarea
-            className={textareaClass()}
-            value={dependencies}
-            onChange={(event) => setDependencies(event.target.value)}
-            rows={4}
-            placeholder="task_repo_123abc\ntask_repo_456def|primary"
-          />
-        </FieldShell>
-        <FieldShell label="Auto-start eligibility" hint="When enabled, this task can auto-start once dependency/source rules pass.">
-          <div className="flex h-11 items-center gap-3 rounded-xl border border-slate-700 bg-slate-900/90 px-3 text-sm text-slate-100">
-            <input
-              type="checkbox"
-              checked={autoStartEligible}
-              onChange={(event) => setAutoStartEligible(event.target.checked)}
-              className="h-4 w-4 rounded border-slate-600 bg-slate-950 text-cyan-400 focus:ring-cyan-400/30"
-            />
-            <span>{autoStartEligible ? 'Eligible' : 'Not eligible'}</span>
-          </div>
-        </FieldShell>
-      </div>
-      <div className="grid gap-4 xl:grid-cols-2">
-        <FieldShell label="Auto-review mode" hint="inherit uses repo setting; on/off force behavior for this task.">
-          <select className={inputClass()} value={autoReviewMode} onChange={(event) => setAutoReviewMode(event.target.value as NonNullable<CreateTaskInput['autoReviewMode']>)}>
-            <option value="inherit">Inherit</option>
-            <option value="on">On</option>
-            <option value="off">Off</option>
-          </select>
-        </FieldShell>
-        <FieldShell label="Auto-review prompt" hint="Optional override prompt for this task.">
-          <textarea
-            className={textareaClass()}
-            value={autoReviewPrompt}
-            onChange={(event) => setAutoReviewPrompt(event.target.value)}
-            rows={4}
-            placeholder="Inspect for security and performance regressions."
-          />
-        </FieldShell>
-      </div>
-      <FieldShell label="Auto-review playbook" hint="Optional task override. Inherit uses repo default; None disables playbook selection.">
-        <select className={inputClass()} value={autoReviewPlaybookId} onChange={(event) => setAutoReviewPlaybookId(event.target.value)}>
-          <option value="inherit">Inherit</option>
-          <option value="">None</option>
-          {reviewPlaybooks.filter((playbook) => playbook.enabled).map((playbook) => (
-            <option key={playbook.playbookId} value={playbook.playbookId}>
-              {playbook.name}
-            </option>
-          ))}
-        </select>
-      </FieldShell>
-      <div className="grid gap-4 md:grid-cols-2">
-        <FieldShell label="LLM adapter" hint="Selects the executor for this task.">
-          <select
-            className={inputClass()}
-            value={llmAdapter}
-            onChange={(event) => {
-              const nextAdapter = event.target.value as LlmAdapter;
-              setLlmAdapter(nextAdapter);
-              if (!llmModel || llmModel === DEFAULT_LLM_MODELS.codex || llmModel === DEFAULT_LLM_MODELS.cursor_cli || llmModel === DEFAULT_LLM_MODELS.claude_code) {
-                setLlmModel(DEFAULT_LLM_MODELS[nextAdapter]);
-              }
-              if (nextAdapter !== 'codex' && llmReasoningEffort === 'xhigh') {
-                setLlmReasoningEffort('medium');
-              }
-            }}
-          >
-            <option value="codex">Codex</option>
-            <option value="cursor_cli">Cursor CLI</option>
-            <option value="claude_code">Claude Code</option>
-          </select>
-        </FieldShell>
-        <FieldShell label="LLM model" hint="Per-task execution model for the selected adapter.">
-          {llmAdapter === 'codex' ? (
-            <select className={inputClass()} value={llmModel} onChange={(event) => setLlmModel(event.target.value)}>
-              {CODEX_MODELS.map((model) => (
-                <option key={model.value} value={model.value}>
-                  {model.label}
+      <FormSection title="Task basics" description="Choose the repo, initial lane, and core task definition.">
+        <div className="grid gap-4 md:grid-cols-2">
+          <FieldShell label="Repo">
+            <select className={inputClass()} value={repoId} onChange={(event) => setRepoId(event.target.value)} required disabled={!repos.length}>
+              {repos.map((repo) => (
+                <option key={repo.repoId} value={repo.repoId}>
+                  {repo.slug}
                 </option>
               ))}
             </select>
-          ) : (
-            <input className={inputClass()} value={llmModel} onChange={(event) => setLlmModel(event.target.value)} placeholder="cursor-default" />
-          )}
+          </FieldShell>
+          <FieldShell label="Initial status">
+            <select className={inputClass()} value={status} onChange={(event) => setStatus(event.target.value as TaskStatus)}>
+              {['INBOX', 'READY', 'ACTIVE', 'REVIEW', 'DONE', 'FAILED'].map((column) => (
+                <option key={column} value={column}>
+                  {column}
+                </option>
+              ))}
+            </select>
+          </FieldShell>
+        </div>
+
+        {!repos.length ? <p className="rounded-xl border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-sm text-amber-100">Add a repo before creating tasks.</p> : null}
+
+        <FieldShell label="Title">
+          <input className={inputClass()} value={title} onChange={(event) => setTitle(event.target.value)} required />
         </FieldShell>
-      </div>
-      <div className="grid gap-4 md:grid-cols-2">
-        <FieldShell label="Reasoning effort" hint="Executor reasoning effort hint.">
-          <select
+
+        <FieldShell label="Description">
+          <textarea className={textareaClass()} value={description} onChange={(event) => setDescription(event.target.value)} rows={2} />
+        </FieldShell>
+
+        <FieldShell label="Source ref" hint="Optional GitHub PR URL, branch URL, branch name, or commit SHA to start the run from.">
+          <input
             className={inputClass()}
-            value={llmReasoningEffort}
-            onChange={(event) => setLlmReasoningEffort(event.target.value as LlmReasoningEffort)}
-          >
-            {(llmAdapter === 'codex' ? CODEX_REASONING_EFFORT_OPTIONS : LLM_REASONING_EFFORT_OPTIONS).map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
+            value={sourceRef}
+            onChange={(event) => setSourceRef(event.target.value)}
+            placeholder="https://github.com/owner/repo/pull/4"
+          />
+        </FieldShell>
+
+        <FieldShell label="Task prompt">
+          <textarea className={textareaClass()} value={taskPrompt} onChange={(event) => setTaskPrompt(event.target.value)} rows={5} required />
+        </FieldShell>
+      </FormSection>
+
+      <FormSection title="Requirements and context" description="Define acceptance criteria, supporting context, and prerequisites for execution.">
+        <div className="grid gap-4 xl:grid-cols-2">
+          <FieldShell label="Acceptance criteria" hint="One line per criterion.">
+            <textarea className={textareaClass()} value={criteria} onChange={(event) => setCriteria(event.target.value)} rows={5} required />
+          </FieldShell>
+          <FieldShell label="Context links" hint="Use label|url per line.">
+            <textarea className={textareaClass()} value={links} onChange={(event) => setLinks(event.target.value)} rows={5} placeholder="Spec|https://docs.example.com/spec" />
+          </FieldShell>
+          <FieldShell label="Notes">
+            <textarea className={textareaClass()} value={notes} onChange={(event) => setNotes(event.target.value)} rows={3} />
+          </FieldShell>
+          <FieldShell label="Dependencies" hint="One upstream task id per line. Optional: task_id|primary">
+            <textarea
+              className={textareaClass()}
+              value={dependencies}
+              onChange={(event) => setDependencies(event.target.value)}
+              rows={4}
+              placeholder="task_repo_123abc\ntask_repo_456def|primary"
+            />
+          </FieldShell>
+        </div>
+      </FormSection>
+
+      <FormSection title="Automation and review" description="Set task-specific overrides for baseline, auto-start, and review behavior.">
+        <div className="grid gap-4 xl:grid-cols-2">
+          <FieldShell label="Baseline override">
+            <input className={inputClass()} value={baselineUrlOverride} onChange={(event) => setBaselineUrlOverride(event.target.value)} placeholder="https://staging.example.com" />
+          </FieldShell>
+          <FieldShell label="Auto-start eligibility" hint="When enabled, this task can auto-start once dependency/source rules pass.">
+            <div className="flex h-11 items-center gap-3 rounded-xl border border-slate-700 bg-slate-900/90 px-3 text-sm text-slate-100">
+              <input
+                type="checkbox"
+                checked={autoStartEligible}
+                onChange={(event) => setAutoStartEligible(event.target.checked)}
+                className="h-4 w-4 rounded border-slate-600 bg-slate-950 text-cyan-400 focus:ring-cyan-400/30"
+              />
+              <span>{autoStartEligible ? 'Eligible' : 'Not eligible'}</span>
+            </div>
+          </FieldShell>
+          <FieldShell label="Auto-review mode" hint="inherit uses repo setting; on/off force behavior for this task.">
+            <select className={inputClass()} value={autoReviewMode} onChange={(event) => setAutoReviewMode(event.target.value as NonNullable<CreateTaskInput['autoReviewMode']>)}>
+              <option value="inherit">Inherit</option>
+              <option value="on">On</option>
+              <option value="off">Off</option>
+            </select>
+          </FieldShell>
+          <FieldShell label="Auto-review prompt" hint="Optional override prompt for this task.">
+            <textarea
+              className={textareaClass()}
+              value={autoReviewPrompt}
+              onChange={(event) => setAutoReviewPrompt(event.target.value)}
+              rows={4}
+              placeholder="Inspect for security and performance regressions."
+            />
+          </FieldShell>
+        </div>
+        <FieldShell label="Auto-review playbook" hint="Optional task override. Inherit uses repo default; None disables playbook selection.">
+          <select className={inputClass()} value={autoReviewPlaybookId} onChange={(event) => setAutoReviewPlaybookId(event.target.value)}>
+            <option value="inherit">Inherit</option>
+            <option value="">None</option>
+            {reviewPlaybooks.filter((playbook) => playbook.enabled).map((playbook) => (
+              <option key={playbook.playbookId} value={playbook.playbookId}>
+                {playbook.name}
               </option>
             ))}
           </select>
         </FieldShell>
-      </div>
+      </FormSection>
+
+      <FormSection title="Execution defaults" description="Choose the executor, model, and reasoning level for this task run.">
+        <div className="grid gap-4 md:grid-cols-2">
+          <FieldShell label="LLM adapter" hint="Selects the executor for this task.">
+            <select
+              className={inputClass()}
+              value={llmAdapter}
+              onChange={(event) => {
+                const nextAdapter = event.target.value as LlmAdapter;
+                setLlmAdapter(nextAdapter);
+                if (!llmModel || llmModel === DEFAULT_LLM_MODELS.codex || llmModel === DEFAULT_LLM_MODELS.cursor_cli || llmModel === DEFAULT_LLM_MODELS.claude_code) {
+                  setLlmModel(DEFAULT_LLM_MODELS[nextAdapter]);
+                }
+                if (nextAdapter !== 'codex' && llmReasoningEffort === 'xhigh') {
+                  setLlmReasoningEffort('medium');
+                }
+              }}
+            >
+              <option value="codex">Codex</option>
+              <option value="cursor_cli">Cursor CLI</option>
+              <option value="claude_code">Claude Code</option>
+            </select>
+          </FieldShell>
+          <FieldShell label="LLM model" hint="Per-task execution model for the selected adapter.">
+            {llmAdapter === 'codex' ? (
+              <select className={inputClass()} value={llmModel} onChange={(event) => setLlmModel(event.target.value)}>
+                {CODEX_MODELS.map((model) => (
+                  <option key={model.value} value={model.value}>
+                    {model.label}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <input className={inputClass()} value={llmModel} onChange={(event) => setLlmModel(event.target.value)} placeholder="cursor-default" />
+            )}
+          </FieldShell>
+          <FieldShell label="Reasoning effort" hint="Executor reasoning effort hint.">
+            <select
+              className={inputClass()}
+              value={llmReasoningEffort}
+              onChange={(event) => setLlmReasoningEffort(event.target.value as LlmReasoningEffort)}
+            >
+              {(llmAdapter === 'codex' ? CODEX_REASONING_EFFORT_OPTIONS : LLM_REASONING_EFFORT_OPTIONS).map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </FieldShell>
+        </div>
+      </FormSection>
       <PrimaryButton disabled={!repos.length}>{submitLabel}</PrimaryButton>
     </form>
   );

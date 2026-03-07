@@ -1,4 +1,4 @@
-import type { ChangeEvent, FormEvent } from 'react';
+import type { FormEvent } from 'react';
 import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { Board } from './components/Board';
 import { ControlSurfaceHeader, SummaryRow } from './components/ControlSurface';
@@ -7,7 +7,8 @@ import { RepoForm, TaskForm } from './components/Forms';
 import { Modal } from './components/Modal';
 import { RunTerminal } from './components/RunTerminal';
 import { getTaskDetail, getTasksByColumn, getTasksForRepo } from './domain/selectors';
-import type { ReviewPlaybook, RunCommand, RunEvent, RunLogEntry, TaskStatus, TerminalBootstrap } from './domain/types';
+import { filterTasksForView, getDashboardStats, isTaskArchived, sortTasksForBoard, type DashboardViewMode } from './domain/dashboard';
+import type { ReviewPlaybook, RunCommand, RunEvent, RunLogEntry, Task, TaskStatus, TerminalBootstrap } from './domain/types';
 import type { AgentBoardApi, AuthSession, InviteRecord, RepoSentinelStatus, UserApiTokenRecord } from './domain/api';
 import { getAgentBoardApi } from './api';
 import { downloadJson } from './store/import-export';
@@ -36,6 +37,7 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
   const [terminalModalRunId, setTerminalModalRunId] = useState<string | undefined>();
   const [terminalResumeCopied, setTerminalResumeCopied] = useState(false);
   const [notice, setNotice] = useState<string | undefined>();
+  const [adminToolsOpen, setAdminToolsOpen] = useState(false);
   const [authSession, setAuthSession] = useState<AuthSession | undefined>();
   const [authLoading, setAuthLoading] = useState(true);
   const [authMode, setAuthMode] = useState<'login' | 'accept_invite'>('login');
@@ -66,14 +68,45 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
   const [newPlaybookName, setNewPlaybookName] = useState('');
   const [newPlaybookPrompt, setNewPlaybookPrompt] = useState('');
   const [reviewPlaybookError, setReviewPlaybookError] = useState<string | undefined>();
+  const [taskView, setTaskView] = useState<DashboardViewMode>('all');
+  const [showArchived, setShowArchived] = useState(false);
+  const [multiSelectMode, setMultiSelectMode] = useState(false);
+  const [selectedTaskIds, setSelectedTaskIds] = useState<string[]>([]);
 
   const selectedRepoId = snapshot.ui.selectedRepoId;
   const selectedTaskId = snapshot.ui.selectedTaskId;
   const repos = snapshot.repos;
   const selectedRepo = selectedRepoId === 'all' ? undefined : repos.find((repo) => repo.repoId === selectedRepoId);
   const repoToEdit = repoToEditId ? repos.find((repo) => repo.repoId === repoToEditId) : undefined;
-  const visibleTasks = getTasksForRepo(snapshot.tasks, selectedRepoId);
-  const tasksByColumn = getTasksByColumn(visibleTasks);
+  const runsByTask = useMemo(
+    () => new Map(
+      snapshot.runs
+        .slice()
+        .sort((left, right) => right.startedAt.localeCompare(left.startedAt))
+        .map((run) => [run.taskId, run] as const)
+    ),
+    [snapshot.runs]
+  );
+  const repoTasks = getTasksForRepo(snapshot.tasks, selectedRepoId);
+  const archivedTasks = useMemo(
+    () => repoTasks.filter((task) => isTaskArchived(task)).sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)),
+    [repoTasks]
+  );
+  const visibleTasks = useMemo(
+    () => filterTasksForView(repoTasks.filter((task) => !isTaskArchived(task)), runsByTask, taskView),
+    [repoTasks, runsByTask, taskView]
+  );
+  const tasksByColumn = useMemo(() => {
+    const grouped = getTasksByColumn(visibleTasks);
+    return (Object.keys(grouped) as TaskStatus[]).reduce((acc, column) => {
+      acc[column] = sortTasksForBoard(grouped[column], runsByTask);
+      return acc;
+    }, {} as Record<TaskStatus, Task[]>);
+  }, [runsByTask, visibleTasks]);
+  const dashboardStats = useMemo(
+    () => getDashboardStats(repoTasks.filter((task) => !isTaskArchived(task)), archivedTasks, runsByTask, taskView),
+    [archivedTasks, repoTasks, runsByTask, taskView]
+  );
   const detail = getTaskDetail(snapshot, selectedTaskId);
   const taskToEdit = taskToEditId ? snapshot.tasks.find((task) => task.taskId === taskToEditId) : undefined;
   const logs: RunLogEntry[] = detail?.latestRun
@@ -355,8 +388,74 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
     setChangeRequestIncludeReplies(false);
   }, [changeRequestRunId]);
 
+  useEffect(() => {
+    if (detail?.task.archived) {
+      setShowArchived(true);
+    }
+  }, [detail?.task.archived, detail?.task.taskId]);
+
+  useEffect(() => {
+    setSelectedTaskIds((current) => current.filter((taskId) => snapshot.tasks.some((task) => task.taskId === taskId && !task.archived)));
+  }, [snapshot.tasks]);
+
   async function toggleTaskSelection(taskId: string) {
+    if (multiSelectMode) {
+      setSelectedTaskIds((current) => current.includes(taskId) ? current.filter((value) => value !== taskId) : [...current, taskId]);
+      return;
+    }
+
     await api.setSelectedTaskId(selectedTaskId === taskId ? undefined : taskId);
+  }
+
+  async function archiveTask(taskId: string) {
+    await api.updateTask(taskId, { archived: true });
+    setShowArchived(true);
+    await api.setSelectedTaskId(taskId);
+    setNotice('Task archived. It is hidden from the main board until restored.');
+  }
+
+  async function restoreTask(taskId: string) {
+    await api.updateTask(taskId, { archived: false });
+    await api.setSelectedTaskId(taskId);
+    setNotice('Task restored to the active board.');
+  }
+
+  function toggleMultiSelectMode() {
+    setMultiSelectMode((current) => {
+      if (current) {
+        setSelectedTaskIds([]);
+      }
+      return !current;
+    });
+  }
+
+  function clearSelectedTasks() {
+    setSelectedTaskIds([]);
+  }
+
+  async function archiveSelectedTasks() {
+    const taskIds = selectedTaskIds.filter((taskId) => snapshot.tasks.some((task) => task.taskId === taskId && !task.archived));
+    if (!taskIds.length) {
+      setNotice('Select tasks to archive.');
+      return;
+    }
+
+    await Promise.all(taskIds.map((taskId) => api.updateTask(taskId, { archived: true })));
+    setSelectedTaskIds([]);
+    setMultiSelectMode(false);
+    setNotice(`Archived ${taskIds.length} selected ${taskIds.length === 1 ? 'task' : 'tasks'}.`);
+  }
+
+  async function archiveTasksByStatus(status: TaskStatus) {
+    const taskIds = visibleTasks.filter((task) => task.status === status && !task.archived).map((task) => task.taskId);
+    if (!taskIds.length) {
+      setNotice(`No ${status.toLowerCase()} tasks to archive.`);
+      return;
+    }
+
+    await Promise.all(taskIds.map((taskId) => api.updateTask(taskId, { archived: true })));
+    setSelectedTaskIds((current) => current.filter((taskId) => !taskIds.includes(taskId)));
+    setNotice(`Archived ${taskIds.length} ${status.toLowerCase()} ${taskIds.length === 1 ? 'task' : 'tasks'}.`);
   }
 
   async function copyTerminalResumeCommand() {
@@ -372,22 +471,6 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
       window.setTimeout(() => setTerminalResumeCopied(false), 2_000);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : 'Failed to copy the resume command.');
-    }
-  }
-
-  async function handleImport(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
-    if (!file) {
-      return;
-    }
-
-    try {
-      await api.importState(await file.text());
-      setNotice('Imported board state.');
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : 'Import failed.');
-    } finally {
-      event.target.value = '';
     }
   }
 
@@ -586,88 +669,110 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
   return (
     <div className="min-h-screen px-4 py-4 text-slate-100 sm:px-6 xl:px-8">
       <div className="mx-auto flex w-full max-w-[1900px] flex-col gap-3">
-        <div className="flex items-center justify-between rounded-xl border border-slate-700 bg-slate-900/70 px-3 py-2 text-sm">
-          <div className="flex items-center gap-3">
-            <span className="text-slate-300">Signed in as <span className="text-slate-100">{authSession.user.email}</span></span>
-            <span className="rounded-lg border border-slate-700 px-2 py-1 text-xs uppercase tracking-[0.1em] text-slate-300">
-              {isOwner ? 'owner' : 'member'}
-            </span>
-          </div>
-          <button className="rounded-lg border border-slate-700 px-3 py-1.5 text-slate-200 hover:bg-slate-800" onClick={() => void handleLogout()}>
-            Sign out
-          </button>
-        </div>
-        <div className={`grid gap-3 ${isOwner ? 'xl:grid-cols-2' : ''}`}>
-          {isOwner ? (
-            <section className="rounded-xl border border-slate-700 bg-slate-900/70 p-4">
-              <h2 className="text-sm font-semibold text-slate-100">Invite Management</h2>
-              <form className="mt-3 grid gap-2 md:grid-cols-[1fr_auto_auto]" onSubmit={(event) => void handleCreateInvite(event)}>
-                <input
-                  className="h-10 rounded-lg border border-slate-700 bg-slate-900/90 px-3 text-sm"
-                  placeholder="Invite email"
-                  value={inviteEmail}
-                  onChange={(event) => setInviteEmail(event.target.value)}
-                  required
-                />
-                <select className="h-10 rounded-lg border border-slate-700 bg-slate-900 px-2 text-sm" value={inviteRole} onChange={(event) => setInviteRole(event.target.value as 'owner' | 'member')}>
-                  <option value="member">Member</option>
-                  <option value="owner">Owner</option>
-                </select>
-                <button type="submit" className="h-10 rounded-lg border border-cyan-400/35 bg-cyan-500/15 px-3 text-sm text-cyan-50">Create invite</button>
-              </form>
-              {inviteCreateError ? <div className="mt-2 text-sm text-rose-300">{inviteCreateError}</div> : null}
-              {inviteListError ? <div className="mt-2 text-sm text-rose-300">{inviteListError}</div> : null}
-              {createdInviteToken ? (
-                <div className="mt-3 rounded-lg border border-amber-400/35 bg-amber-500/10 p-3 text-xs text-amber-100">
-                  <div>Invite token (shown once):</div>
-                  <code className="mt-1 block break-all">{createdInviteToken.token}</code>
-                  <div className="mt-1 text-amber-200">Invite ID: {createdInviteToken.inviteId}</div>
-                </div>
+        <section className="rounded-2xl border border-slate-800 bg-slate-950/70 px-4 py-3 shadow-[0_12px_40px_rgba(2,6,23,0.25)]">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <div className="flex min-w-0 flex-wrap items-center gap-2 text-sm">
+              <span className="text-slate-300">
+                Signed in as <span className="font-medium text-slate-100">{authSession.user.email}</span>
+              </span>
+              <span className="rounded-lg border border-slate-700 px-2 py-1 text-[11px] uppercase tracking-[0.14em] text-slate-300">
+                {isOwner ? 'owner' : 'member'}
+              </span>
+              {isOwner ? (
+                <span className="rounded-lg border border-slate-800 bg-slate-900/80 px-2 py-1 text-[11px] uppercase tracking-[0.14em] text-slate-400">
+                  {invites.length} invites
+                </span>
               ) : null}
-              <div className="mt-3 max-h-48 space-y-2 overflow-auto">
-                {invites.length ? invites.map((invite) => (
-                  <div key={invite.id} className="rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2 text-xs text-slate-300">
-                    <div>{invite.email} · {invite.role} · {invite.status}</div>
-                    <div className="text-slate-500">Created {new Date(invite.createdAt).toLocaleString()}</div>
-                  </div>
-                )) : (
-                  <div className="text-xs text-slate-500">No invites yet.</div>
-                )}
-              </div>
-            </section>
-          ) : null}
-          <section className="rounded-xl border border-slate-700 bg-slate-900/70 p-4">
-            <h2 className="text-sm font-semibold text-slate-100">Personal API Tokens</h2>
-            <form className="mt-3 grid gap-2 md:grid-cols-[1fr_1fr_1fr_auto]" onSubmit={(event) => void handleCreateApiToken(event)}>
-              <input className="h-10 rounded-lg border border-slate-700 bg-slate-900/90 px-3 text-sm" placeholder="Token name" value={apiTokenName} onChange={(event) => setApiTokenName(event.target.value)} required />
-              <input className="h-10 rounded-lg border border-slate-700 bg-slate-900/90 px-3 text-sm" placeholder="Scopes (comma-separated)" value={apiTokenScopes} onChange={(event) => setApiTokenScopes(event.target.value)} />
-              <input className="h-10 rounded-lg border border-slate-700 bg-slate-900/90 px-3 text-sm" type="datetime-local" value={apiTokenExpiresAt} onChange={(event) => setApiTokenExpiresAt(event.target.value)} />
-              <button type="submit" className="h-10 rounded-lg border border-cyan-400/35 bg-cyan-500/15 px-3 text-sm text-cyan-50">Create token</button>
-            </form>
-            {apiTokenError ? <div className="mt-2 text-sm text-rose-300">{apiTokenError}</div> : null}
-            {createdApiToken ? (
-              <div className="mt-3 rounded-lg border border-amber-400/35 bg-amber-500/10 p-3 text-xs text-amber-100">
-                <div>API token (shown once):</div>
-                <code className="mt-1 block break-all">{createdApiToken}</code>
-              </div>
-            ) : null}
-            <div className="mt-3 max-h-48 space-y-2 overflow-auto">
-              {apiTokens.length ? apiTokens.map((token) => (
-                <div key={token.id} className="flex items-center justify-between gap-3 rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2 text-xs text-slate-300">
-                  <div>
-                    <div>{token.name}</div>
-                    <div className="text-slate-500">{token.scopes.join(', ') || 'No scopes'} · Created {new Date(token.createdAt).toLocaleString()}</div>
-                  </div>
-                  <button className="rounded border border-rose-400/40 bg-rose-500/10 px-2 py-1 text-rose-200" onClick={() => void handleRevokeApiToken(token.id)}>
-                    Revoke
-                  </button>
-                </div>
-              )) : (
-                <div className="text-xs text-slate-500">No API tokens yet.</div>
-              )}
+              <span className="rounded-lg border border-slate-800 bg-slate-900/80 px-2 py-1 text-[11px] uppercase tracking-[0.14em] text-slate-400">
+                {apiTokens.length} tokens
+              </span>
             </div>
-          </section>
-        </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                className="rounded-lg border border-slate-700 px-3 py-1.5 text-sm text-slate-200 hover:bg-slate-800"
+                onClick={() => setAdminToolsOpen((current) => !current)}
+              >
+                {adminToolsOpen ? 'Hide access tools' : 'Show access tools'}
+              </button>
+              <button className="rounded-lg border border-slate-700 px-3 py-1.5 text-slate-200 hover:bg-slate-800" onClick={() => void handleLogout()}>
+                Sign out
+              </button>
+            </div>
+          </div>
+          {adminToolsOpen ? (
+            <div className={`mt-3 grid gap-3 ${isOwner ? 'xl:grid-cols-2' : ''}`}>
+              {isOwner ? (
+                <section className="rounded-xl border border-slate-700 bg-slate-900/70 p-4">
+                  <h2 className="text-sm font-semibold text-slate-100">Invite Management</h2>
+                  <form className="mt-3 grid gap-2 md:grid-cols-[1fr_auto_auto]" onSubmit={(event) => void handleCreateInvite(event)}>
+                    <input
+                      className="h-10 rounded-lg border border-slate-700 bg-slate-900/90 px-3 text-sm"
+                      placeholder="Invite email"
+                      value={inviteEmail}
+                      onChange={(event) => setInviteEmail(event.target.value)}
+                      required
+                    />
+                    <select className="h-10 rounded-lg border border-slate-700 bg-slate-900 px-2 text-sm" value={inviteRole} onChange={(event) => setInviteRole(event.target.value as 'owner' | 'member')}>
+                      <option value="member">Member</option>
+                      <option value="owner">Owner</option>
+                    </select>
+                    <button type="submit" className="h-10 rounded-lg border border-cyan-400/35 bg-cyan-500/15 px-3 text-sm text-cyan-50">Create invite</button>
+                  </form>
+                  {inviteCreateError ? <div className="mt-2 text-sm text-rose-300">{inviteCreateError}</div> : null}
+                  {inviteListError ? <div className="mt-2 text-sm text-rose-300">{inviteListError}</div> : null}
+                  {createdInviteToken ? (
+                    <div className="mt-3 rounded-lg border border-amber-400/35 bg-amber-500/10 p-3 text-xs text-amber-100">
+                      <div>Invite token (shown once):</div>
+                      <code className="mt-1 block break-all">{createdInviteToken.token}</code>
+                      <div className="mt-1 text-amber-200">Invite ID: {createdInviteToken.inviteId}</div>
+                    </div>
+                  ) : null}
+                  <div className="mt-3 max-h-48 space-y-2 overflow-auto">
+                    {invites.length ? invites.map((invite) => (
+                      <div key={invite.id} className="rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2 text-xs text-slate-300">
+                        <div>{invite.email} · {invite.role} · {invite.status}</div>
+                        <div className="text-slate-500">Created {new Date(invite.createdAt).toLocaleString()}</div>
+                      </div>
+                    )) : (
+                      <div className="text-xs text-slate-500">No invites yet.</div>
+                    )}
+                  </div>
+                </section>
+              ) : null}
+              <section className="rounded-xl border border-slate-700 bg-slate-900/70 p-4">
+                <h2 className="text-sm font-semibold text-slate-100">Personal API Tokens</h2>
+                <form className="mt-3 grid gap-2 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_auto]" onSubmit={(event) => void handleCreateApiToken(event)}>
+                  <input className="min-w-0 h-10 rounded-lg border border-slate-700 bg-slate-900/90 px-3 text-sm" placeholder="Token name" value={apiTokenName} onChange={(event) => setApiTokenName(event.target.value)} required />
+                  <input className="min-w-0 h-10 rounded-lg border border-slate-700 bg-slate-900/90 px-3 text-sm" placeholder="Scopes (comma-separated)" value={apiTokenScopes} onChange={(event) => setApiTokenScopes(event.target.value)} />
+                  <input className="min-w-0 h-10 rounded-lg border border-slate-700 bg-slate-900/90 px-3 text-sm" type="datetime-local" value={apiTokenExpiresAt} onChange={(event) => setApiTokenExpiresAt(event.target.value)} />
+                  <button type="submit" className="h-10 rounded-lg border border-cyan-400/35 bg-cyan-500/15 px-3 text-sm text-cyan-50 xl:justify-self-start">Create token</button>
+                </form>
+                {apiTokenError ? <div className="mt-2 text-sm text-rose-300">{apiTokenError}</div> : null}
+                {createdApiToken ? (
+                  <div className="mt-3 rounded-lg border border-amber-400/35 bg-amber-500/10 p-3 text-xs text-amber-100">
+                    <div>API token (shown once):</div>
+                    <code className="mt-1 block break-all">{createdApiToken}</code>
+                  </div>
+                ) : null}
+                <div className="mt-3 max-h-48 space-y-2 overflow-auto">
+                  {apiTokens.length ? apiTokens.map((token) => (
+                    <div key={token.id} className="flex items-center justify-between gap-3 rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2 text-xs text-slate-300">
+                      <div>
+                        <div>{token.name}</div>
+                        <div className="text-slate-500">{token.scopes.join(', ') || 'No scopes'} · Created {new Date(token.createdAt).toLocaleString()}</div>
+                      </div>
+                      <button className="rounded border border-rose-400/40 bg-rose-500/10 px-2 py-1 text-rose-200" onClick={() => void handleRevokeApiToken(token.id)}>
+                        Revoke
+                      </button>
+                    </div>
+                  )) : (
+                    <div className="text-xs text-slate-500">No API tokens yet.</div>
+                  )}
+                </div>
+              </section>
+            </div>
+          ) : null}
+        </section>
         <ControlSurfaceHeader
           repos={repos}
           selectedRepoId={selectedRepoId}
@@ -677,11 +782,16 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
           onEditRepo={selectedRepo ? () => setRepoToEditId(selectedRepo.repoId) : undefined}
           onCreateTask={() => setTaskModalOpen(true)}
           onExport={() => downloadJson('agents-kanban-export.json', api.exportState())}
-          onImport={handleImport}
         />
 
-        <SummaryRow repos={repos} visibleTasks={visibleTasks} />
-
+        <SummaryRow
+          repos={repos}
+          stats={dashboardStats}
+          taskView={taskView}
+          onTaskViewChange={setTaskView}
+          showArchived={showArchived}
+          onToggleArchived={() => setShowArchived((current) => !current)}
+        />
         {notice ? (
           <div className="rounded-xl border border-cyan-500/20 bg-cyan-500/10 px-4 py-2.5 text-sm text-cyan-50 shadow-[0_8px_24px_rgba(8,47,73,0.25)]">
             {notice}
@@ -694,9 +804,18 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
               tasksByColumn={tasksByColumn}
               repos={repos}
               runs={snapshot.runs}
+              archivedTasks={archivedTasks}
+              showArchived={showArchived}
+              multiSelectMode={multiSelectMode}
+              selectedTaskIds={new Set(selectedTaskIds)}
               selectedTaskId={selectedTaskId}
               onSelectTask={(taskId) => void toggleTaskSelection(taskId)}
               onMoveTask={(taskId, status) => void moveTask(taskId, status)}
+              onToggleArchived={() => setShowArchived((current) => !current)}
+              onToggleMultiSelectMode={toggleMultiSelectMode}
+              onClearSelectedTasks={clearSelectedTasks}
+              onArchiveSelectedTasks={() => void archiveSelectedTasks()}
+              onArchiveColumn={(status) => void archiveTasksByStatus(status)}
             />
           </div>
           {detail ? (
@@ -716,6 +835,8 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
                 onCancelRun={(runId) => void cancelRun(runId)}
                 onOpenTerminal={(runId) => void openTerminal(runId)}
                 onTakeOverRun={(runId) => void takeOverRun(runId)}
+                onArchiveTask={(taskId) => void archiveTask(taskId)}
+                onRestoreTask={(taskId) => void restoreTask(taskId)}
               />
             </div>
           ) : null}
@@ -736,7 +857,7 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
       ) : null}
 
       {repoToEdit ? (
-        <Modal title={`Edit ${repoToEdit.projectPath ?? repoToEdit.slug}`} onClose={() => setRepoToEditId(undefined)}>
+        <Modal title={`Repo settings · ${repoToEdit.projectPath ?? repoToEdit.slug}`} onClose={() => setRepoToEditId(undefined)}>
           <div className="space-y-4">
             <RepoForm
               reviewPlaybooks={reviewPlaybooks}
