@@ -705,6 +705,7 @@ export function parseCreateRepoInput(body: unknown): CreateRepoInput {
     llmProfileId: readTrimmedString(body.llmProfileId, 'llmProfileId', false),
     llmAuthBundleR2Key: readTrimmedString(body.llmAuthBundleR2Key, 'llmAuthBundleR2Key', false)
       ?? readTrimmedString(body.codexAuthBundleR2Key, 'codexAuthBundleR2Key', false),
+    agentsBundleR2Key: readTrimmedString(body.agentsBundleR2Key, 'agentsBundleR2Key', false),
     defaultBranch: readTrimmedString(body.defaultBranch, 'defaultBranch', false),
     baselineUrl: readTrimmedString(body.baselineUrl, 'baselineUrl')!,
     autoReview: {
@@ -763,6 +764,7 @@ export function parseUpdateRepoInput(body: unknown): UpdateRepoInput {
   if (hasOwn(body, 'llmAuthMode')) patch.llmAuthMode = readEnumValue(body.llmAuthMode, 'llmAuthMode', LLM_AUTH_MODES, false);
   if (hasOwn(body, 'llmProfileId')) patch.llmProfileId = readTrimmedString(body.llmProfileId, 'llmProfileId', false);
   if (hasOwn(body, 'llmAuthBundleR2Key')) patch.llmAuthBundleR2Key = readTrimmedString(body.llmAuthBundleR2Key, 'llmAuthBundleR2Key', false);
+  if (hasOwn(body, 'agentsBundleR2Key')) patch.agentsBundleR2Key = readTrimmedString(body.agentsBundleR2Key, 'agentsBundleR2Key', false);
   if (patch.slug && patch.projectPath && patch.slug !== patch.projectPath) {
     throw badRequest('Invalid repo patch payload: slug and projectPath must match when both are provided.');
   }

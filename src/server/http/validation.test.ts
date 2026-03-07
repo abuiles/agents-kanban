@@ -803,6 +803,22 @@ describe('repo validation', () => {
       codexAuthBundleR2Key: 'auth/llm.tgz'
     });
   });
+
+  it('accepts agents bundle key in create and update payloads', () => {
+    expect(parseCreateRepoInput({
+      slug: 'acme/renamed',
+      baselineUrl: 'https://example.com',
+      agentsBundleR2Key: 'auth/agents-home.tgz'
+    })).toMatchObject({
+      agentsBundleR2Key: 'auth/agents-home.tgz'
+    });
+
+    expect(parseUpdateRepoInput({
+      agentsBundleR2Key: 'auth/agents-home-v2.tgz'
+    })).toMatchObject({
+      agentsBundleR2Key: 'auth/agents-home-v2.tgz'
+    });
+  });
 });
 
 describe('request run validation', () => {

@@ -15,6 +15,7 @@ This folder is the source of truth for active planning and execution.
 - [P9: GitHub Auto-Review Provider](./p9-github-auto-review-provider.md)
 - [P10: Slack Free-Text Intent Intake + Model-Selectable Parser (One-Shot, S10 in progress)](./p10-slack-intent-intake-one-shot.md)
 - [P11: Review Sandbox Operator Control and Attachability](./p11-review-sandbox-operator-control.md)
+- [P12: `.agents` Home Bundle Injection](./p12-agents-home-bundle-injection.md)
 - [Migration Status](./migration-status.md)
 
 ## How to use

@@ -326,6 +326,35 @@ beforeEach(() => {
 });
 
 describe('executeRunJob LLM adapter coverage', () => {
+  it('restores .agents home bundle using global fallback key when configured', async () => {
+    const task = buildTask({
+      uiMeta: {
+        llmAdapter: 'codex',
+        llmModel: 'gpt-5.3-codex',
+        llmReasoningEffort: 'medium'
+      }
+    });
+    const repo = buildRepo();
+    const harness = createHarness(task, repo);
+    (harness.env as Env & { AGENTS_BUNDLE_R2_KEY?: string }).AGENTS_BUNDLE_R2_KEY = 'auth/agents-home.tgz';
+    const sandbox = buildSandbox([
+      { type: 'stdout', data: 'Applied fix.\n' },
+      { type: 'exit', exitCode: 0 }
+    ]);
+    sandboxState.current = sandbox;
+
+    await executeRunJob(harness.env, {
+      tenantId: 'tenant_legacy',
+      repoId: repo.repoId,
+      taskId: task.taskId,
+      runId: 'run_1',
+      mode: 'full_run'
+    }, async () => {});
+
+    expect(sandbox.commands.some((command) => command.includes('base64 -d /workspace/agents-home.tgz.b64'))).toBe(true);
+    expect(harness.logs.some((entry) => entry.message.includes('.agents home bundle restored from auth/agents-home.tgz.'))).toBe(true);
+  });
+
   it('keeps explicit source ref when remote ref exists', async () => {
     const task = buildTask({
       sourceRef: 'main',

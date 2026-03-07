@@ -100,6 +100,7 @@ export function RepoForm({
   const initialLlmAuthMode = initialValues?.llmAuthMode ?? 'bundle';
   const initialLlmProfileId = initialValues?.llmProfileId ?? '';
   const initialLlmAuthBundleR2Key = initialValues?.llmAuthBundleR2Key ?? initialValues?.codexAuthBundleR2Key ?? '';
+  const initialAgentsBundleR2Key = initialValues?.agentsBundleR2Key ?? '';
   const normalizedPreview = normalizeRepoPreviewConfig({
     previewAdapter: initialValues?.previewAdapter,
     previewConfig: initialValues?.previewConfig,
@@ -153,6 +154,7 @@ export function RepoForm({
   const [llmAuthMode, setLlmAuthMode] = useState<NonNullable<CreateRepoInput['llmAuthMode']>>(initialLlmAuthMode);
   const [llmProfileId, setLlmProfileId] = useState(initialLlmProfileId);
   const [llmAuthBundleR2Key, setLlmAuthBundleR2Key] = useState(initialLlmAuthBundleR2Key);
+  const [agentsBundleR2Key, setAgentsBundleR2Key] = useState(initialAgentsBundleR2Key);
   const [promptRecipe, setPromptRecipe] = useState(initialPromptRecipe);
   const [autoReviewEnabled, setAutoReviewEnabled] = useState(initialAutoReviewEnabled);
   const [autoReviewProvider, setAutoReviewProvider] = useState<AutoReviewProvider>(initialAutoReviewProvider);
@@ -193,6 +195,7 @@ export function RepoForm({
     setLlmAuthMode(initialLlmAuthMode);
     setLlmProfileId(initialLlmProfileId);
     setLlmAuthBundleR2Key(initialLlmAuthBundleR2Key);
+    setAgentsBundleR2Key(initialAgentsBundleR2Key);
     setPromptRecipe(initialPromptRecipe);
     setAutoReviewEnabled(initialAutoReviewEnabled);
     setAutoReviewProvider(initialAutoReviewProvider);
@@ -239,6 +242,7 @@ export function RepoForm({
     initialLlmAuthMode,
     initialLlmProfileId,
     initialLlmAuthBundleR2Key,
+    initialAgentsBundleR2Key,
     initialPromptRecipe,
     initialCodexAuthBundleR2Key,
     initialCommitMessageTemplate,
@@ -303,6 +307,7 @@ export function RepoForm({
           llmAuthMode,
           llmProfileId: llmProfileId || undefined,
           llmAuthBundleR2Key: llmAuthBundleR2Key || undefined,
+          agentsBundleR2Key: agentsBundleR2Key || undefined,
           defaultBranch,
           baselineUrl,
           enabled: true,
@@ -359,6 +364,7 @@ export function RepoForm({
         setLlmAuthMode('bundle');
         setLlmProfileId('');
         setLlmAuthBundleR2Key('');
+        setAgentsBundleR2Key('');
         setPromptRecipe('');
         setAutoReviewEnabled(false);
         setAutoReviewProvider(getAutoReviewProviderDefaultForScm('github'));
@@ -626,7 +632,10 @@ export function RepoForm({
           <input className={inputClass()} value={llmAuthBundleR2Key} onChange={(event) => setLlmAuthBundleR2Key(event.target.value)} placeholder={llmAdapter === 'codex' ? 'auth/codex.tgz' : llmAdapter === 'claude_code' ? 'auth/claude.tgz' : 'auth/cursor.tgz'} />
         </FieldShell>
       </div>
-      <div className="grid gap-4 md:grid-cols-1">
+      <div className="grid gap-4 md:grid-cols-2">
+        <FieldShell label=".agents bundle key" hint="Optional R2 key for a home `.agents` tarball injected into sandbox runs.">
+          <input className={inputClass()} value={agentsBundleR2Key} onChange={(event) => setAgentsBundleR2Key(event.target.value)} placeholder="auth/agents-home.tgz" />
+        </FieldShell>
         <FieldShell label="Codex auth bundle key" hint="Optional R2 key for a `.codex` auth bundle tarball.">
           <input className={inputClass()} value={codexAuthBundleR2Key} onChange={(event) => setCodexAuthBundleR2Key(event.target.value)} placeholder="auth/codex.tgz" />
         </FieldShell>

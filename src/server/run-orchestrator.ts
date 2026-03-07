@@ -28,6 +28,7 @@ import {
   REVIEW_FINDINGS_OUTPUT_SCHEMA
 } from './shared/review-contract';
 import { executePromptWithLlmAdapter } from './llm/runtime';
+import { restoreAgentsHomeBundle } from './llm/home-bundle';
 import { getReviewPostingAdapter } from './review-posting/registry';
 import type { ReviewContextComment, ReviewReplyContext } from './review-posting/adapter';
 import { normalizeRepoCheckpointConfig } from '../shared/checkpoint';
@@ -2201,6 +2202,7 @@ async function restoreLlmAuthForRepoMode(input: {
   await input.llmContext.repoBoard.appendRunLogs(input.llmContext.runId, [
     buildRunLog(input.llmContext.runId, `LLM auth mode: ${mode}.`, input.phase)
   ]);
+  await restoreAgentsHomeBundle(input.llmContext, input.repo, input.phase);
 
   if (input.llmAdapter.kind !== 'codex') {
     await input.llmAdapter.restoreAuth({ ...input.llmContext, repo: input.repo });

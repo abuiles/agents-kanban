@@ -252,6 +252,7 @@ export class LocalAgentBoardApi implements AgentBoardApi {
       llmModel: input.llmModel,
       llmReasoningEffort: input.llmReasoningEffort,
       llmProfileId: input.llmProfileId,
+      agentsBundleR2Key: input.agentsBundleR2Key,
       llmAuthBundleR2Key: input.llmAuthBundleR2Key ?? input.codexAuthBundleR2Key,
       defaultBranch: input.defaultBranch ?? 'main',
       baselineUrl: input.baselineUrl,

@@ -367,6 +367,7 @@ export type Repo = {
   llmAuthMode?: 'bundle' | 'api';
   llmProfileId?: string;
   llmAuthBundleR2Key?: string;
+  agentsBundleR2Key?: string;
   defaultBranch: string;
   baselineUrl: string;
   enabled: boolean;

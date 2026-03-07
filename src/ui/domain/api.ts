@@ -96,6 +96,7 @@ export type CreateRepoInput = {
   llmAuthMode?: Repo['llmAuthMode'];
   llmProfileId?: string;
   llmAuthBundleR2Key?: string;
+  agentsBundleR2Key?: string;
   defaultBranch?: string;
   baselineUrl: string;
   enabled?: boolean;
