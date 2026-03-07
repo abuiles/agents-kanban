@@ -1,5 +1,5 @@
 import type { CreateRepoInput, UpdateRepoInput, UpsertScmCredentialInput } from '../../ui/domain/api';
-import type { BoardSnapshotV1, Repo, ScmCredential, ScmProvider, Tenant, TenantMember, TenantSeatSummary, User, UserSession } from '../../ui/domain/types';
+import type { BoardSnapshotV1, Repo, ReviewPlaybook, ScmCredential, ScmProvider, Tenant, TenantMember, TenantSeatSummary, User, UserSession } from '../../ui/domain/types';
 import { DurableObject } from 'cloudflare:workers';
 import { badRequest, conflict, forbidden, notFound, unauthorized } from '../http/errors';
 import { createRepoId } from '../shared/ids';
@@ -12,6 +12,7 @@ import { DEFAULT_REPO_SENTINEL_CONFIG, normalizeRepoSentinelConfig } from '../..
 import { DEFAULT_TENANT_ID, normalizeTenantId } from '../../shared/tenant';
 
 const REPOS_STORAGE_KEY = 'board-index-repos';
+const REVIEW_PLAYBOOKS_STORAGE_KEY = 'board-index-review-playbooks';
 const SCM_CREDENTIALS_STORAGE_KEY = 'board-index-scm-credentials';
 const TENANTS_STORAGE_KEY = 'board-index-tenants';
 const TENANT_MEMBERSHIPS_STORAGE_KEY = 'board-index-tenant-memberships';
@@ -95,6 +96,7 @@ type SecurityAuditLogEntry = {
 
 export class BoardIndexDO extends DurableObject<Env> {
   private repos: Repo[] = [];
+  private reviewPlaybooks: ReviewPlaybook[] = [];
   private scmCredentials: StoredScmCredential[] = [];
   private tenants: Tenant[] = [];
   private tenantMemberships: TenantMember[] = [];
@@ -110,6 +112,7 @@ export class BoardIndexDO extends DurableObject<Env> {
     super(ctx, env);
     this.ready = this.ctx.blockConcurrencyWhile(async () => {
       const storedRepos = (await this.ctx.storage.get<Repo[]>(REPOS_STORAGE_KEY)) ?? [];
+      const storedReviewPlaybooks = (await this.ctx.storage.get<ReviewPlaybook[]>(REVIEW_PLAYBOOKS_STORAGE_KEY)) ?? [];
       const storedScmCredentials = (await this.ctx.storage.get<StoredScmCredential[]>(SCM_CREDENTIALS_STORAGE_KEY)) ?? [];
       const storedTenants = (await this.ctx.storage.get<Tenant[]>(TENANTS_STORAGE_KEY)) ?? [];
       const storedTenantMemberships = (await this.ctx.storage.get<TenantMember[]>(TENANT_MEMBERSHIPS_STORAGE_KEY)) ?? [];
@@ -120,6 +123,7 @@ export class BoardIndexDO extends DurableObject<Env> {
       const storedPlatformSupportSessions = (await this.ctx.storage.get<PlatformSupportSession[]>(PLATFORM_SUPPORT_SESSIONS_STORAGE_KEY)) ?? [];
       const storedSecurityAuditLog = (await this.ctx.storage.get<SecurityAuditLogEntry[]>(SECURITY_AUDIT_LOG_STORAGE_KEY)) ?? [];
       this.repos = storedRepos.map((repo) => normalizeRepo(repo));
+      this.reviewPlaybooks = storedReviewPlaybooks.map((playbook) => normalizeReviewPlaybook(playbook));
       this.scmCredentials = storedScmCredentials.map((credential) => normalizeStoredScmCredential(credential));
       this.tenants = storedTenants.map((tenant) => normalizeTenantRecord(tenant));
       this.tenantMemberships = storedTenantMemberships.map((membership) => normalizeTenantMemberRecord(membership));
@@ -168,6 +172,73 @@ export class BoardIndexDO extends DurableObject<Env> {
       throw notFound(`Repo ${repoId} not found.`);
     }
     return repo;
+  }
+
+  async listReviewPlaybooks(tenantId: string) {
+    await this.ready;
+    const normalizedTenantId = normalizeTenantId(tenantId);
+    return [...this.reviewPlaybooks]
+      .filter((playbook) => normalizeTenantId(playbook.tenantId) === normalizedTenantId)
+      .sort((left, right) => left.name.localeCompare(right.name));
+  }
+
+  async getReviewPlaybook(playbookId: string) {
+    await this.ready;
+    return this.reviewPlaybooks.find((candidate) => candidate.playbookId === playbookId);
+  }
+
+  async createReviewPlaybook(input: { tenantId: string; name: string; prompt: string; enabled?: boolean }) {
+    await this.ready;
+    const tenantId = normalizeTenantId(input.tenantId);
+    const now = new Date().toISOString();
+    const playbook: ReviewPlaybook = normalizeReviewPlaybook({
+      playbookId: `playbook_${crypto.randomUUID()}`,
+      tenantId,
+      name: input.name,
+      prompt: input.prompt,
+      enabled: input.enabled ?? true,
+      createdAt: now,
+      updatedAt: now
+    });
+    this.reviewPlaybooks = [playbook, ...this.reviewPlaybooks];
+    await this.persist();
+    return playbook;
+  }
+
+  async updateReviewPlaybook(playbookId: string, patch: { name?: string; prompt?: string; enabled?: boolean }, tenantId?: string) {
+    await this.ready;
+    const existing = await this.getReviewPlaybook(playbookId);
+    if (!existing) {
+      throw notFound(`Review playbook ${playbookId} not found.`);
+    }
+    if (tenantId && normalizeTenantId(existing.tenantId) !== normalizeTenantId(tenantId)) {
+      throw forbidden(`Review playbook ${playbookId} is not accessible in this tenant context.`);
+    }
+    const updated = normalizeReviewPlaybook({
+      ...existing,
+      ...patch,
+      playbookId: existing.playbookId,
+      tenantId: existing.tenantId,
+      createdAt: existing.createdAt,
+      updatedAt: new Date().toISOString()
+    });
+    this.reviewPlaybooks = this.reviewPlaybooks.map((candidate) => (candidate.playbookId === playbookId ? updated : candidate));
+    await this.persist();
+    return updated;
+  }
+
+  async deleteReviewPlaybook(playbookId: string, tenantId?: string): Promise<{ playbookId: string; deleted: true }> {
+    await this.ready;
+    const existing = await this.getReviewPlaybook(playbookId);
+    if (!existing) {
+      throw notFound(`Review playbook ${playbookId} not found.`);
+    }
+    if (tenantId && normalizeTenantId(existing.tenantId) !== normalizeTenantId(tenantId)) {
+      throw forbidden(`Review playbook ${playbookId} is not accessible in this tenant context.`);
+    }
+    this.reviewPlaybooks = this.reviewPlaybooks.filter((candidate) => candidate.playbookId !== playbookId);
+    await this.persist();
+    return { playbookId, deleted: true };
   }
 
   async listTenantsForUser(userId: string): Promise<Tenant[]> {
@@ -1054,6 +1125,7 @@ export class BoardIndexDO extends DurableObject<Env> {
 
   private async persist() {
     await this.ctx.storage.put(REPOS_STORAGE_KEY, this.repos);
+    await this.ctx.storage.put(REVIEW_PLAYBOOKS_STORAGE_KEY, this.reviewPlaybooks);
     await this.ctx.storage.put(SCM_CREDENTIALS_STORAGE_KEY, this.scmCredentials);
     await this.ctx.storage.put(TENANTS_STORAGE_KEY, this.tenants);
     await this.ctx.storage.put(TENANT_MEMBERSHIPS_STORAGE_KEY, this.tenantMemberships);
@@ -1221,6 +1293,7 @@ function buildRepoRecord(input: CreateRepoInput | Repo): Repo {
     postInline: input.autoReview?.postInline ?? false,
     postingMode: input.autoReview?.postingMode ?? 'platform',
     ...(input.autoReview?.prompt ? { prompt: input.autoReview.prompt.trim() } : {}),
+    ...(input.autoReview?.playbookId ? { playbookId: input.autoReview.playbookId.trim() } : {}),
     ...(input.autoReview?.llmAdapter ? { llmAdapter: input.autoReview.llmAdapter } : {}),
     ...(input.autoReview?.llmModel ? { llmModel: input.autoReview.llmModel.trim() } : {}),
     ...(input.autoReview?.llmReasoningEffort ? { llmReasoningEffort: input.autoReview.llmReasoningEffort } : {}),
@@ -1373,6 +1446,17 @@ function normalizeTenantMemberRecord(member: TenantMember): TenantMember {
     userId: member.userId.trim(),
     role: member.role === 'owner' ? 'owner' : 'member',
     seatState: member.seatState === 'invited' || member.seatState === 'revoked' ? member.seatState : 'active'
+  };
+}
+
+function normalizeReviewPlaybook(playbook: ReviewPlaybook): ReviewPlaybook {
+  return {
+    ...playbook,
+    playbookId: playbook.playbookId.trim(),
+    tenantId: normalizeTenantId(playbook.tenantId),
+    name: playbook.name.trim(),
+    prompt: playbook.prompt.trim(),
+    enabled: Boolean(playbook.enabled)
   };
 }
 

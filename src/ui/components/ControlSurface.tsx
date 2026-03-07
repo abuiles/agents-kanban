@@ -60,6 +60,7 @@ export function ControlSurfaceHeader({
   selectedRepoId,
   onRepoChange,
   onAddRepo,
+  onManageReviewPlaybooks,
   onEditRepo,
   onCreateTask,
   onExport,
@@ -69,6 +70,7 @@ export function ControlSurfaceHeader({
   selectedRepoId: string | 'all';
   onRepoChange: (repoId: string | 'all') => void;
   onAddRepo: () => void;
+  onManageReviewPlaybooks?: () => void;
   onEditRepo?: () => void;
   onCreateTask: () => void;
   onExport: () => void;
@@ -115,6 +117,11 @@ export function ControlSurfaceHeader({
               <ActionButton variant="secondary" onClick={onAddRepo}>
                 Add repo
               </ActionButton>
+              {onManageReviewPlaybooks ? (
+                <ActionButton variant="secondary" onClick={onManageReviewPlaybooks}>
+                  Review playbooks
+                </ActionButton>
+              ) : null}
               <ActionButton variant="ghost" onClick={onExport}>
                 Export
               </ActionButton>

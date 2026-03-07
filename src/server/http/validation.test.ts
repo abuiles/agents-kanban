@@ -239,6 +239,11 @@ describe('task validation', () => {
     expect(parsed.autoReviewPrompt).toBe('Keep reviews tight');
   });
 
+  it('keeps explicit empty task playbook overrides in update payloads so assignments can be cleared', () => {
+    const parsed = parseUpdateTaskInput({ autoReviewPlaybookId: '' });
+    expect(parsed.autoReviewPlaybookId).toBe('');
+  });
+
   it('rejects invalid task auto-review mode', () => {
     expect(() =>
       parseCreateTaskInput(
@@ -668,6 +673,18 @@ describe('repo validation', () => {
 
     expect(parsed.autoReview).toEqual({
       postInline: true
+    });
+  });
+
+  it('keeps explicit empty repo auto-review playbook fields in update payloads so assignments can be cleared', () => {
+    const parsed = parseUpdateRepoInput({
+      autoReview: {
+        playbookId: ''
+      }
+    });
+
+    expect(parsed.autoReview).toEqual({
+      playbookId: ''
     });
   });
 

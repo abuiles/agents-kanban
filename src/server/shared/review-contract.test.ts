@@ -86,6 +86,73 @@ describe('resolveAutoReviewConfig', () => {
     expect(result.prompt).toBeUndefined();
   });
 
+  it('uses enabled playbook prompts when repo selects a playbook and task inherits', () => {
+    const result = resolveAutoReviewConfig(
+      buildRepo({
+        autoReview: {
+          enabled: true,
+          provider: 'gitlab',
+          postInline: false,
+          playbookId: 'playbook_security'
+        }
+      }),
+      buildTask({ uiMeta: { autoReviewMode: 'inherit' } }),
+      [{
+        playbookId: 'playbook_security',
+        tenantId: 'tenant_default',
+        name: 'Security',
+        prompt: 'Use security checklist.',
+        enabled: true,
+        createdAt: '2026-03-02T00:00:00.000Z',
+        updatedAt: '2026-03-02T00:00:00.000Z'
+      }]
+    );
+
+    expect(result.enabled).toBe(true);
+    expect(result.promptSource).toBe('playbook');
+    expect(result.prompt).toBe('Use security checklist.');
+  });
+
+  it('falls back to native prompt mode when selected playbook is missing or disabled', () => {
+    const missing = resolveAutoReviewConfig(
+      buildRepo({
+        autoReview: {
+          enabled: true,
+          provider: 'gitlab',
+          postInline: false,
+          playbookId: 'playbook_missing'
+        }
+      }),
+      buildTask({ uiMeta: { autoReviewMode: 'inherit' } }),
+      []
+    );
+    const disabled = resolveAutoReviewConfig(
+      buildRepo({
+        autoReview: {
+          enabled: true,
+          provider: 'gitlab',
+          postInline: false,
+          playbookId: 'playbook_disabled'
+        }
+      }),
+      buildTask({ uiMeta: { autoReviewMode: 'inherit' } }),
+      [{
+        playbookId: 'playbook_disabled',
+        tenantId: 'tenant_default',
+        name: 'Disabled',
+        prompt: 'Should not run.',
+        enabled: false,
+        createdAt: '2026-03-02T00:00:00.000Z',
+        updatedAt: '2026-03-02T00:00:00.000Z'
+      }]
+    );
+
+    expect(missing.promptSource).toBe('native');
+    expect(missing.prompt).toBeUndefined();
+    expect(disabled.promptSource).toBe('native');
+    expect(disabled.prompt).toBeUndefined();
+  });
+
   it('includes repo-level review llm settings in resolved config', () => {
     const result = resolveAutoReviewConfig(
       buildRepo({

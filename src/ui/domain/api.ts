@@ -17,6 +17,7 @@ import type {
   RunCheckpoint,
   RunEvent,
   RunLogEntry,
+  ReviewPlaybook,
   ScmCredential,
   SimulationProfile,
   Task,
@@ -32,6 +33,7 @@ import type {
 export type RepoAutoReviewInput = {
   enabled?: boolean;
   prompt?: string;
+  playbookId?: string;
   provider?: AutoReviewProvider;
   postInline?: boolean;
   postingMode?: AutoReviewPostingMode;
@@ -139,6 +141,7 @@ export type CreateTaskInput = {
   status?: TaskStatus;
   autoReviewMode?: AutoReviewMode;
   autoReviewPrompt?: string;
+  autoReviewPlaybookId?: string;
   simulationProfile?: SimulationProfile;
   llmAdapter?: LlmAdapter;
   llmModel?: string;
@@ -238,6 +241,14 @@ export type CreateUserApiTokenResult = {
   token: string;
 };
 
+export type CreateReviewPlaybookInput = {
+  name: string;
+  prompt: string;
+  enabled?: boolean;
+};
+
+export type UpdateReviewPlaybookInput = Partial<CreateReviewPlaybookInput>;
+
 export interface AgentBoardApi {
   subscribe(listener: () => void): () => void;
   getSnapshot(): BoardSnapshotV1;
@@ -250,6 +261,10 @@ export interface AgentBoardApi {
   createApiToken(input: CreateUserApiTokenInput): Promise<CreateUserApiTokenResult>;
   listApiTokens(): Promise<UserApiTokenRecord[]>;
   revokeApiToken(tokenId: string): Promise<void>;
+  listReviewPlaybooks(): Promise<ReviewPlaybook[]>;
+  createReviewPlaybook(input: CreateReviewPlaybookInput): Promise<ReviewPlaybook>;
+  updateReviewPlaybook(playbookId: string, patch: UpdateReviewPlaybookInput): Promise<ReviewPlaybook>;
+  deleteReviewPlaybook(playbookId: string): Promise<{ playbookId: string; deleted: true }>;
   createRepo(input: CreateRepoInput): Promise<Repo>;
   listRepos(): Promise<Repo[]>;
   updateRepo(repoId: string, patch: UpdateRepoInput): Promise<Repo>;

@@ -7,7 +7,7 @@ import { RepoForm, TaskForm } from './components/Forms';
 import { Modal } from './components/Modal';
 import { RunTerminal } from './components/RunTerminal';
 import { getTaskDetail, getTasksByColumn, getTasksForRepo } from './domain/selectors';
-import type { RunCommand, RunEvent, RunLogEntry, TaskStatus, TerminalBootstrap } from './domain/types';
+import type { ReviewPlaybook, RunCommand, RunEvent, RunLogEntry, TaskStatus, TerminalBootstrap } from './domain/types';
 import type { AgentBoardApi, AuthSession, InviteRecord, RepoSentinelStatus, UserApiTokenRecord } from './domain/api';
 import { getAgentBoardApi } from './api';
 import { downloadJson } from './store/import-export';
@@ -61,6 +61,11 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
   const [repoSentinelStatus, setRepoSentinelStatus] = useState<RepoSentinelStatus | undefined>();
   const [repoSentinelLoading, setRepoSentinelLoading] = useState(false);
   const [repoSentinelError, setRepoSentinelError] = useState<string | undefined>();
+  const [reviewPlaybooks, setReviewPlaybooks] = useState<ReviewPlaybook[]>([]);
+  const [reviewPlaybooksModalOpen, setReviewPlaybooksModalOpen] = useState(false);
+  const [newPlaybookName, setNewPlaybookName] = useState('');
+  const [newPlaybookPrompt, setNewPlaybookPrompt] = useState('');
+  const [reviewPlaybookError, setReviewPlaybookError] = useState<string | undefined>();
 
   const selectedRepoId = snapshot.ui.selectedRepoId;
   const selectedTaskId = snapshot.ui.selectedTaskId;
@@ -127,6 +132,15 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
       })
       .catch((error) => {
         setApiTokenError(error instanceof Error ? error.message : 'Failed to load API tokens.');
+      });
+
+    void api.listReviewPlaybooks()
+      .then((playbooks) => {
+        setReviewPlaybooks(playbooks);
+        setReviewPlaybookError(undefined);
+      })
+      .catch((error) => {
+        setReviewPlaybookError(error instanceof Error ? error.message : 'Failed to load review playbooks.');
       });
   }, [api, authSession, isOwner]);
 
@@ -483,6 +497,53 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
     }
   }
 
+  async function refreshReviewPlaybooks() {
+    const playbooks = await api.listReviewPlaybooks();
+    setReviewPlaybooks(playbooks);
+  }
+
+  async function handleCreateReviewPlaybook(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setReviewPlaybookError(undefined);
+    try {
+      const created = await api.createReviewPlaybook({
+        name: newPlaybookName.trim(),
+        prompt: newPlaybookPrompt.trim(),
+        enabled: true
+      });
+      setReviewPlaybooks((current) => [created, ...current]);
+      setNewPlaybookName('');
+      setNewPlaybookPrompt('');
+      setNotice(`Created review playbook ${created.name}.`);
+    } catch (error) {
+      setReviewPlaybookError(error instanceof Error ? error.message : 'Failed to create review playbook.');
+    }
+  }
+
+  async function handleToggleReviewPlaybook(playbook: ReviewPlaybook) {
+    setReviewPlaybookError(undefined);
+    try {
+      const updated = await api.updateReviewPlaybook(playbook.playbookId, { enabled: !playbook.enabled });
+      setReviewPlaybooks((current) =>
+        current.map((candidate) => (candidate.playbookId === playbook.playbookId ? updated : candidate))
+      );
+      setNotice(`Review playbook ${updated.name} ${updated.enabled ? 'enabled' : 'disabled'}.`);
+    } catch (error) {
+      setReviewPlaybookError(error instanceof Error ? error.message : 'Failed to update review playbook.');
+    }
+  }
+
+  async function handleDeleteReviewPlaybook(playbook: ReviewPlaybook) {
+    setReviewPlaybookError(undefined);
+    try {
+      await api.deleteReviewPlaybook(playbook.playbookId);
+      setReviewPlaybooks((current) => current.filter((candidate) => candidate.playbookId !== playbook.playbookId));
+      setNotice(`Deleted review playbook ${playbook.name}.`);
+    } catch (error) {
+      setReviewPlaybookError(error instanceof Error ? error.message : 'Failed to delete review playbook.');
+    }
+  }
+
   if (authLoading) {
     return <div className="min-h-screen px-4 py-8 text-slate-100">Loading...</div>;
   }
@@ -612,6 +673,7 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
           selectedRepoId={selectedRepoId}
           onRepoChange={(repoId) => void api.setSelectedRepoId(repoId)}
           onAddRepo={() => setRepoModalOpen(true)}
+          onManageReviewPlaybooks={() => setReviewPlaybooksModalOpen(true)}
           onEditRepo={selectedRepo ? () => setRepoToEditId(selectedRepo.repoId) : undefined}
           onCreateTask={() => setTaskModalOpen(true)}
           onExport={() => downloadJson('agents-kanban-export.json', api.exportState())}
@@ -663,6 +725,7 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
       {repoModalOpen ? (
         <Modal title="Add repo" onClose={() => setRepoModalOpen(false)}>
           <RepoForm
+            reviewPlaybooks={reviewPlaybooks}
             onSubmit={async (input) => {
               await api.createRepo(input);
               setRepoModalOpen(false);
@@ -676,6 +739,7 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
         <Modal title={`Edit ${repoToEdit.projectPath ?? repoToEdit.slug}`} onClose={() => setRepoToEditId(undefined)}>
           <div className="space-y-4">
             <RepoForm
+              reviewPlaybooks={reviewPlaybooks}
               initialValues={{
                 slug: repoToEdit.slug,
                 scmProvider: repoToEdit.scmProvider,
@@ -801,6 +865,7 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
         <Modal title="Create task" onClose={() => setTaskModalOpen(false)}>
           <TaskForm
             repos={repos}
+            reviewPlaybooks={reviewPlaybooks}
             onSubmit={async (input) => {
               const task = await api.createTask(input);
               await api.setSelectedTaskId(task.taskId);
@@ -834,12 +899,14 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
               baselineUrlOverride: taskToEdit.baselineUrlOverride,
               autoReviewMode: taskToEdit.uiMeta?.autoReviewMode,
               autoReviewPrompt: taskToEdit.uiMeta?.autoReviewPrompt,
+              autoReviewPlaybookId: taskToEdit.uiMeta?.autoReviewPlaybookId,
               llmAdapter: taskToEdit.uiMeta?.llmAdapter,
               llmModel: taskToEdit.uiMeta?.llmModel,
               llmReasoningEffort: taskToEdit.uiMeta?.llmReasoningEffort,
               codexModel: taskToEdit.uiMeta?.codexModel,
               codexReasoningEffort: taskToEdit.uiMeta?.codexReasoningEffort
             }}
+            reviewPlaybooks={reviewPlaybooks}
             submitLabel="Save task"
             onSubmit={async (input) => {
               await api.updateTask(taskToEdit.taskId, input);
@@ -848,6 +915,87 @@ export default function App({ api: providedApi }: { api?: AgentBoardApi }) {
               setNotice(`Updated ${taskToEdit.title}.`);
             }}
           />
+        </Modal>
+      ) : null}
+
+      {reviewPlaybooksModalOpen ? (
+        <Modal
+          title="Review playbooks"
+          onClose={() => {
+            setReviewPlaybooksModalOpen(false);
+            setReviewPlaybookError(undefined);
+            void refreshReviewPlaybooks();
+          }}
+        >
+          <div className="space-y-4">
+            <form className="space-y-3" onSubmit={(event) => void handleCreateReviewPlaybook(event)}>
+              <label className="grid gap-2 text-sm">
+                <span className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">Name</span>
+                <input
+                  className="h-11 rounded-xl border border-slate-700 bg-slate-900/90 px-3 text-sm text-slate-100 outline-none transition focus:border-cyan-400 focus:ring-2 focus:ring-cyan-400/20"
+                  value={newPlaybookName}
+                  onChange={(event) => setNewPlaybookName(event.target.value)}
+                  placeholder="Security-first review"
+                  required
+                />
+              </label>
+              <label className="grid gap-2 text-sm">
+                <span className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">Prompt</span>
+                <textarea
+                  className="rounded-xl border border-slate-700 bg-slate-900/90 px-3 py-2.5 text-sm text-slate-100 outline-none transition focus:border-cyan-400 focus:ring-2 focus:ring-cyan-400/20"
+                  value={newPlaybookPrompt}
+                  onChange={(event) => setNewPlaybookPrompt(event.target.value)}
+                  rows={5}
+                  placeholder="Use skill x to review..."
+                  required
+                />
+              </label>
+              <button
+                type="submit"
+                className="inline-flex h-10 items-center justify-center rounded-lg border border-cyan-400/35 bg-cyan-500/15 px-3 text-sm text-cyan-50 transition hover:bg-cyan-500/25"
+              >
+                Create playbook
+              </button>
+            </form>
+
+            {reviewPlaybookError ? <div className="text-sm text-rose-300">{reviewPlaybookError}</div> : null}
+
+            <div className="space-y-2">
+              {reviewPlaybooks.length ? reviewPlaybooks.map((playbook) => (
+                <div key={playbook.playbookId} className="rounded-xl border border-slate-800 bg-slate-950/70 px-3 py-3">
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="text-sm font-semibold text-slate-100">{playbook.name}</div>
+                      <div className="mt-1 text-xs text-slate-400">{playbook.enabled ? 'Enabled' : 'Disabled'}</div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        className="rounded border border-amber-400/40 bg-amber-500/10 px-2.5 py-1 text-xs text-amber-200"
+                        onClick={() => void handleToggleReviewPlaybook(playbook)}
+                      >
+                        {playbook.enabled ? 'Disable' : 'Enable'}
+                      </button>
+                      <button
+                        type="button"
+                        className="rounded border border-rose-400/40 bg-rose-500/10 px-2.5 py-1 text-xs text-rose-200"
+                        onClick={() => void handleDeleteReviewPlaybook(playbook)}
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+                  <pre className="mt-2 max-h-36 overflow-auto whitespace-pre-wrap rounded-lg border border-slate-800 bg-slate-950/80 px-2 py-1 text-xs text-slate-300">
+                    {playbook.prompt}
+                  </pre>
+                </div>
+              )) : (
+                <div className="rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2 text-sm text-slate-400">
+                  No review playbooks yet. Tasks and repos can still run native review without a playbook.
+                </div>
+              )}
+            </div>
+          </div>
         </Modal>
       ) : null}
 

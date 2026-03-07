@@ -9,6 +9,7 @@ import type {
   PreviewAdapterKind,
   RepoSentinelConfig,
   Repo,
+  ReviewPlaybook,
   ScmProvider,
   TaskContextLink,
   TaskDependency,
@@ -82,10 +83,12 @@ function PrimaryButton({ children, disabled }: { children: React.ReactNode; disa
 
 export function RepoForm({
   onSubmit,
+  reviewPlaybooks = [],
   initialValues,
   submitLabel = 'Add repo'
 }: {
   onSubmit: (input: CreateRepoInput) => Promise<void> | void;
+  reviewPlaybooks?: ReviewPlaybook[];
   initialValues?: Partial<CreateRepoInput>;
   submitLabel?: string;
 }) {
@@ -111,6 +114,7 @@ export function RepoForm({
   const initialAutoReviewProvider = initialValues?.autoReview?.provider ?? getAutoReviewProviderDefaultForScm(initialScmProvider);
   const initialAutoReviewPostInline = initialValues?.autoReview?.postInline ?? false;
   const initialAutoReviewPrompt = initialValues?.autoReview?.prompt ?? '';
+  const initialAutoReviewPlaybookId = initialValues?.autoReview?.playbookId ?? '';
   const initialAutoReviewLlmAdapter = initialValues?.autoReview?.llmAdapter ?? 'codex';
   const initialAutoReviewLlmModel = initialValues?.autoReview?.llmModel
     ?? initialValues?.autoReview?.codexModel
@@ -160,6 +164,7 @@ export function RepoForm({
   const [autoReviewProvider, setAutoReviewProvider] = useState<AutoReviewProvider>(initialAutoReviewProvider);
   const [autoReviewPostInline, setAutoReviewPostInline] = useState(initialAutoReviewPostInline);
   const [autoReviewPrompt, setAutoReviewPrompt] = useState(initialAutoReviewPrompt);
+  const [autoReviewPlaybookId, setAutoReviewPlaybookId] = useState(initialAutoReviewPlaybookId);
   const [autoReviewLlmAdapter, setAutoReviewLlmAdapter] = useState<LlmAdapter>(initialAutoReviewLlmAdapter);
   const [autoReviewLlmModel, setAutoReviewLlmModel] = useState(initialAutoReviewLlmModel);
   const [autoReviewLlmReasoningEffort, setAutoReviewLlmReasoningEffort] = useState<LlmReasoningEffort>(initialAutoReviewLlmReasoningEffort);
@@ -201,6 +206,7 @@ export function RepoForm({
     setAutoReviewProvider(initialAutoReviewProvider);
     setAutoReviewPostInline(initialAutoReviewPostInline);
     setAutoReviewPrompt(initialAutoReviewPrompt);
+    setAutoReviewPlaybookId(initialAutoReviewPlaybookId);
     setAutoReviewLlmAdapter(initialAutoReviewLlmAdapter);
     setAutoReviewLlmModel(initialAutoReviewLlmModel);
     setAutoReviewLlmReasoningEffort(initialAutoReviewLlmReasoningEffort);
@@ -229,6 +235,7 @@ export function RepoForm({
     initialAutoReviewProvider,
     initialAutoReviewPostInline,
     initialAutoReviewPrompt,
+    initialAutoReviewPlaybookId,
     initialAutoReviewLlmAdapter,
     initialAutoReviewLlmModel,
     initialAutoReviewLlmReasoningEffort,
@@ -316,6 +323,7 @@ export function RepoForm({
             provider: autoReviewProvider,
             postInline: autoReviewPostInline,
             ...(autoReviewPrompt.trim() ? { prompt: autoReviewPrompt.trim() } : {}),
+            playbookId: autoReviewPlaybookId.trim() || '',
             llmAdapter: autoReviewLlmAdapter,
             llmModel: autoReviewLlmModel || undefined,
             llmReasoningEffort: autoReviewLlmReasoningEffort,
@@ -370,6 +378,7 @@ export function RepoForm({
         setAutoReviewProvider(getAutoReviewProviderDefaultForScm('github'));
         setAutoReviewPostInline(false);
         setAutoReviewPrompt('');
+        setAutoReviewPlaybookId('');
         setAutoReviewLlmAdapter('codex');
         setAutoReviewLlmModel('gpt-5.1-codex-mini');
         setAutoReviewLlmReasoningEffort('medium');
@@ -523,6 +532,16 @@ export function RepoForm({
           rows={4}
           placeholder="Prioritize API contract stability and security findings."
         />
+      </FieldShell>
+      <FieldShell label="Auto-review playbook" hint="Optional default playbook for review runs in this repo.">
+        <select className={inputClass()} value={autoReviewPlaybookId} onChange={(event) => setAutoReviewPlaybookId(event.target.value)}>
+          <option value="">None</option>
+          {reviewPlaybooks.filter((playbook) => playbook.enabled).map((playbook) => (
+            <option key={playbook.playbookId} value={playbook.playbookId}>
+              {playbook.name}
+            </option>
+          ))}
+        </select>
       </FieldShell>
       <div className="grid gap-4 md:grid-cols-2">
         <FieldShell label="Review LLM adapter" hint="Executor used for review rounds for this repo.">
@@ -831,12 +850,14 @@ function parseDependencies(value: string): TaskDependency[] {
 
 export function TaskForm({
   repos,
+  reviewPlaybooks = [],
   onSubmit,
   initialStatus = 'INBOX',
   initialValues,
   submitLabel = 'Create task'
 }: {
   repos: Repo[];
+  reviewPlaybooks?: ReviewPlaybook[];
   onSubmit: (input: CreateTaskInput) => Promise<void> | void;
   initialStatus?: TaskStatus;
   initialValues?: Partial<CreateTaskInput>;
@@ -861,6 +882,7 @@ export function TaskForm({
   const initialLlmReasoningEffort = initialValues?.llmReasoningEffort ?? initialValues?.codexReasoningEffort ?? initialRepoLlmDefaults.llmReasoningEffort;
   const initialAutoReviewMode = initialValues?.autoReviewMode ?? 'inherit';
   const initialAutoReviewPrompt = initialValues?.autoReviewPrompt ?? '';
+  const initialAutoReviewPlaybookId = initialValues?.autoReviewPlaybookId ?? 'inherit';
 
   const [repoId, setRepoId] = useState(initialRepoId);
   const [title, setTitle] = useState(initialTitle);
@@ -876,6 +898,7 @@ export function TaskForm({
   const [autoStartEligible, setAutoStartEligible] = useState(initialAutoStartEligible);
   const [autoReviewMode, setAutoReviewMode] = useState<NonNullable<AutoReviewMode>>(initialAutoReviewMode);
   const [autoReviewPrompt, setAutoReviewPrompt] = useState(initialAutoReviewPrompt);
+  const [autoReviewPlaybookId, setAutoReviewPlaybookId] = useState(initialAutoReviewPlaybookId);
   const [llmAdapter, setLlmAdapter] = useState<LlmAdapter>(initialLlmAdapter);
   const [llmModel, setLlmModel] = useState(initialLlmModel);
   const [llmReasoningEffort, setLlmReasoningEffort] = useState<LlmReasoningEffort>(initialLlmReasoningEffort);
@@ -916,6 +939,7 @@ export function TaskForm({
     setAutoStartEligible(initialAutoStartEligible);
     setAutoReviewMode(initialAutoReviewMode);
     setAutoReviewPrompt(initialAutoReviewPrompt);
+    setAutoReviewPlaybookId(initialAutoReviewPlaybookId);
     setLlmAdapter(initialLlmAdapter);
     setLlmModel(initialLlmModel);
     setLlmReasoningEffort(initialLlmReasoningEffort);
@@ -923,6 +947,7 @@ export function TaskForm({
     initialAutoStartEligible,
     initialAutoReviewMode,
     initialAutoReviewPrompt,
+    initialAutoReviewPlaybookId,
     initialBaselineUrlOverride,
     initialLlmAdapter,
     initialLlmModel,
@@ -964,6 +989,7 @@ export function TaskForm({
           baselineUrlOverride: baselineUrlOverride || undefined,
           autoReviewMode,
           autoReviewPrompt: autoReviewPrompt.trim() || undefined,
+          autoReviewPlaybookId: autoReviewPlaybookId === 'inherit' ? undefined : autoReviewPlaybookId,
           simulationProfile: 'happy_path',
           llmAdapter,
           llmModel: llmModel || undefined,
@@ -984,6 +1010,7 @@ export function TaskForm({
         setAutoStartEligible(false);
         setAutoReviewMode('inherit');
         setAutoReviewPrompt('');
+        setAutoReviewPlaybookId('inherit');
         const resetRepoDefaults = resolveRepoTaskLlmDefaults(repos.find((repo) => repo.repoId === repoId));
         setLlmAdapter(resetRepoDefaults.llmAdapter);
         setLlmModel(resetRepoDefaults.llmModel);
@@ -1091,6 +1118,17 @@ export function TaskForm({
           />
         </FieldShell>
       </div>
+      <FieldShell label="Auto-review playbook" hint="Optional task override. Inherit uses repo default; None disables playbook selection.">
+        <select className={inputClass()} value={autoReviewPlaybookId} onChange={(event) => setAutoReviewPlaybookId(event.target.value)}>
+          <option value="inherit">Inherit</option>
+          <option value="">None</option>
+          {reviewPlaybooks.filter((playbook) => playbook.enabled).map((playbook) => (
+            <option key={playbook.playbookId} value={playbook.playbookId}>
+              {playbook.name}
+            </option>
+          ))}
+        </select>
+      </FieldShell>
       <div className="grid gap-4 md:grid-cols-2">
         <FieldShell label="LLM adapter" hint="Selects the executor for this task.">
           <select
