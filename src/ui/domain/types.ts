@@ -484,6 +484,7 @@ export type Task = {
   acceptanceCriteria: string[];
   context: TaskContext;
   tags?: string[];
+  archived?: boolean;
   status: TaskStatus;
   baselineUrlOverride?: string;
   createdAt: string;

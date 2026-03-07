@@ -1,6 +1,7 @@
 import type { AgentRun, Repo, RunCommand, RunEvent, RunLogEntry, TaskDetail, TerminalBootstrap } from '../domain/types';
 import { getBaselineUrl } from '../domain/selectors';
 import { useState } from 'react';
+import { getReviewSignal, getRunSignal, toneClass } from '../domain/dashboard';
 
 function formatTimestamp(value?: string) {
   if (!value) {
@@ -128,7 +129,9 @@ export function DetailPanel({
   onRetryEvidence,
   onCancelRun,
   onOpenTerminal,
-  onTakeOverRun
+  onTakeOverRun,
+  onArchiveTask,
+  onRestoreTask
 }: {
   detail?: TaskDetail;
   logs: RunLogEntry[];
@@ -144,6 +147,8 @@ export function DetailPanel({
   onCancelRun: (runId: string) => void;
   onOpenTerminal: (runId: string) => void;
   onTakeOverRun: (runId: string) => void;
+  onArchiveTask?: (taskId: string) => void;
+  onRestoreTask?: (taskId: string) => void;
 }) {
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle');
 
@@ -176,6 +181,8 @@ export function DetailPanel({
       return right.checkpointId.localeCompare(left.checkpointId);
     });
   const latestTaskCheckpoint = taskCheckpoints[0];
+  const runSignal = getRunSignal(latestRun);
+  const reviewSignal = getReviewSignal(latestRun);
 
   async function copyLogs() {
     if (!canCopyLogs) {
@@ -201,18 +208,21 @@ export function DetailPanel({
   return (
     <aside className="min-w-0 space-y-4 rounded-2xl border border-slate-800/80 bg-slate-950/70 p-4 shadow-[0_16px_44px_rgba(2,6,23,0.38)] xl:sticky xl:top-4 xl:max-h-[calc(100vh-2rem)] xl:overflow-auto">
       <div className="min-w-0 rounded-2xl border border-slate-800 bg-slate-950/80 p-4">
-        <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0 space-y-2">
+        <div className="flex flex-col gap-3">
+          <div className="min-w-0 space-y-2">
             <div className="flex flex-wrap items-center gap-2">
               <span className="rounded-full border border-slate-700 bg-slate-800 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-300">
                 {repo.slug}
               </span>
-              <span className={`rounded-full border px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] ${statusTone(task.status)}`}>
-                {task.status}
+              <span className={`rounded-full border px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] ${toneClass(runSignal.tone)}`}>
+                {runSignal.label}
               </span>
-              {latestRun ? (
-                <span className={`rounded-full border px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] ${statusTone(latestRun.status)}`}>
-                  {latestRun.status}
+              <span className={`rounded-full border px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] ${toneClass(reviewSignal.tone)}`}>
+                {reviewSignal.label}
+              </span>
+              {task.archived ? (
+                <span className="rounded-full border border-slate-600 bg-slate-800/90 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-200">
+                  Archived
                 </span>
               ) : null}
             </div>
@@ -221,15 +231,59 @@ export function DetailPanel({
               {task.description ? <p className="mt-2 text-sm leading-6 text-slate-400 break-words [overflow-wrap:anywhere]">{task.description}</p> : null}
             </div>
           </div>
-          <button
-            type="button"
-            onClick={() => onEditTask(task.taskId)}
-            className="inline-flex h-9 shrink-0 items-center rounded-lg border border-slate-700 bg-slate-900 px-3 text-sm font-medium text-slate-200 transition hover:border-slate-500"
-          >
-            Edit task
-          </button>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => onEditTask(task.taskId)}
+              className="inline-flex h-9 items-center rounded-lg border border-slate-700 bg-slate-900 px-3 text-sm font-medium text-slate-200 transition hover:border-slate-500"
+            >
+              Edit task
+            </button>
+            <button
+              type="button"
+              onClick={() => (task.archived ? onRestoreTask?.(task.taskId) : onArchiveTask?.(task.taskId))}
+              className="inline-flex h-9 items-center rounded-lg border border-slate-700 bg-slate-900 px-3 text-sm font-medium text-slate-200 transition hover:border-slate-500"
+            >
+              {task.archived ? 'Restore task' : 'Archive task'}
+            </button>
+          </div>
         </div>
+        {task.archived ? (
+          <div className="mt-4 rounded-xl border border-slate-700 bg-slate-900/80 px-3 py-3 text-sm text-slate-300">
+            This task is archived. It stays available in the archive shelf and detail panel, but it is hidden from the main board.
+          </div>
+        ) : null}
       </div>
+
+      <PanelSection title="Current state">
+        <div className="grid gap-2 sm:grid-cols-2">
+          <div className="rounded-lg border border-slate-800 bg-slate-900/70 px-3 py-2">
+            <div className="text-[11px] uppercase tracking-[0.16em] text-slate-500">Board lane</div>
+            <div className={`mt-1 inline-flex rounded-full border px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] ${statusTone(task.status)}`}>
+              {task.status}
+            </div>
+          </div>
+          <div className="rounded-lg border border-slate-800 bg-slate-900/70 px-3 py-2">
+            <div className="text-[11px] uppercase tracking-[0.16em] text-slate-500">Run state</div>
+            <div className={`mt-1 inline-flex rounded-full border px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] ${toneClass(runSignal.tone)}`}>
+              {runSignal.label}
+            </div>
+            <div className="mt-2 text-xs text-slate-500">{runSignal.detail}</div>
+          </div>
+          <div className="rounded-lg border border-slate-800 bg-slate-900/70 px-3 py-2">
+            <div className="text-[11px] uppercase tracking-[0.16em] text-slate-500">Review state</div>
+            <div className={`mt-1 inline-flex rounded-full border px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] ${toneClass(reviewSignal.tone)}`}>
+              {reviewSignal.label}
+            </div>
+            <div className="mt-2 text-xs text-slate-500">{reviewSignal.detail}</div>
+          </div>
+          <div className="rounded-lg border border-slate-800 bg-slate-900/70 px-3 py-2">
+            <div className="text-[11px] uppercase tracking-[0.16em] text-slate-500">Last updated</div>
+            <div className="mt-1 text-sm font-medium text-slate-100">{formatTimestamp(task.updatedAt)}</div>
+            <div className="mt-2 text-xs text-slate-500">{formatRelativeTime(task.updatedAt)}</div>
+          </div>
+        </div>
+      </PanelSection>
 
       <PanelSection
         title="Latest run"
@@ -289,6 +343,14 @@ export function DetailPanel({
       >
         {latestRun ? (
           <div className="space-y-3">
+            <div className={`rounded-lg border px-3 py-3 ${toneClass(reviewSignal.tone)}`}>
+              <div className="text-[11px] font-semibold uppercase tracking-[0.16em] opacity-80">Review summary</div>
+              <div className="mt-1 text-sm font-semibold">{reviewSignal.label}</div>
+              <div className="mt-2 text-sm opacity-90">{reviewSignal.detail}</div>
+              {latestRun.reviewExecution?.endedAt ? (
+                <div className="mt-2 text-xs opacity-75">Completed {formatTimestamp(latestRun.reviewExecution.endedAt)}</div>
+              ) : null}
+            </div>
             <div className="min-w-0 grid gap-2 sm:grid-cols-2">
               <div className="rounded-lg border border-slate-800 bg-slate-900/70 px-3 py-2">
                 <div className="text-[11px] uppercase tracking-[0.16em] text-slate-500">Branch</div>
@@ -349,6 +411,14 @@ export function DetailPanel({
               <div className="rounded-lg border border-slate-800 bg-slate-900/70 px-3 py-2">
                 <div className="text-[11px] uppercase tracking-[0.16em] text-slate-500">Reasoning</div>
                 <code className="mt-1 block break-all text-xs text-slate-200">{latestRun.llmReasoningEffort ?? taskLlmReasoningEffort}</code>
+              </div>
+              <div className="rounded-lg border border-slate-800 bg-slate-900/70 px-3 py-2">
+                <div className="text-[11px] uppercase tracking-[0.16em] text-slate-500">Findings</div>
+                <div className="mt-1 text-xs text-slate-200">
+                  {reviewSignal.findingsCount
+                    ? `${reviewSignal.findingsCount} review ${reviewSignal.findingsCount === 1 ? 'finding' : 'findings'}`
+                    : 'No open findings'}
+                </div>
               </div>
               {latestRun.resumedFromCheckpointId || latestRun.resumedFromCommitSha ? (
                 <div className="rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-3 py-2 sm:col-span-2">

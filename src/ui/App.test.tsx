@@ -70,7 +70,7 @@ describe('App', () => {
     await waitFor(() => {
       expect(repoFilter).toHaveValue('repo_website');
     });
-    await user.click(screen.getByRole('button', { name: 'Edit repo' }));
+    await user.click(screen.getByRole('button', { name: 'Repo settings' }));
 
     const baselineUrlInput = screen.getByLabelText(/baseline url/i);
     await user.clear(baselineUrlInput);
@@ -94,7 +94,7 @@ describe('App', () => {
     await waitFor(() => {
       expect(repoFilter).toHaveValue('repo_website');
     });
-    await user.click(screen.getByRole('button', { name: 'Edit repo' }));
+    await user.click(screen.getByRole('button', { name: 'Repo settings' }));
 
     await user.selectOptions(getSelectField('Preview adapter')! as unknown as Element, 'prompt_recipe');
     await user.type(getTextareaField('Prompt recipe')!, 'Inspect CI output and return one preview URL.');
@@ -128,7 +128,7 @@ describe('App', () => {
     await waitFor(() => {
       expect(repoFilter).toHaveValue(gitlabRepo.repoId);
     });
-    await user.click(screen.getByRole('button', { name: 'Edit repo' }));
+    await user.click(screen.getByRole('button', { name: 'Repo settings' }));
 
     expect(screen.getByText('GitLab base URL')).toBeInTheDocument();
     const projectPathInput = screen.getByPlaceholderText('group/subgroup/repo');
@@ -168,7 +168,7 @@ describe('App', () => {
     await waitFor(() => {
       expect(repoFilter).toHaveValue(configuredRepo.repoId);
     });
-    await user.click(screen.getByRole('button', { name: 'Edit repo' }));
+    await user.click(screen.getByRole('button', { name: 'Repo settings' }));
     await user.click(screen.getByRole('button', { name: 'Save repo' }));
 
     await waitFor(() => {

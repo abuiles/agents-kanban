@@ -275,6 +275,9 @@ function createHarness(task: Task, repo: Repo) {
     async getRepo() {
       return repo;
     },
+    async listReviewPlaybooks() {
+      return [];
+    },
     async getScmCredentialSecret() {
       return undefined;
     }

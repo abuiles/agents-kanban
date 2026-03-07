@@ -153,6 +153,7 @@ export type CreateTaskInput = {
 
 export type UpdateTaskInput = Partial<Omit<CreateTaskInput, 'repoId'>> & {
   repoId?: string;
+  archived?: boolean;
   status?: TaskStatus;
   runId?: string | undefined;
 };

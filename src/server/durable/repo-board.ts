@@ -137,6 +137,7 @@ export class RepoBoardDO extends DurableObject<Env> {
       acceptanceCriteria: input.acceptanceCriteria,
       context: input.context,
       tags: normalizeTaskTags(input.tags),
+      archived: false,
       baselineUrlOverride: input.baselineUrlOverride,
       status: input.status ?? 'INBOX',
       createdAt: now,
@@ -202,6 +203,7 @@ export class RepoBoardDO extends DurableObject<Env> {
       sourceRef: patch.sourceRef ?? existing.sourceRef,
       context: patch.context ?? existing.context,
       tags: hasPatchField('tags') ? normalizeTaskTags(patch.tags) : normalizeTaskTags(existing.tags),
+      archived: hasPatchField('archived') ? patch.archived ?? false : existing.archived ?? false,
       acceptanceCriteria: patch.acceptanceCriteria ?? existing.acceptanceCriteria,
       uiMeta: normalizeTaskUiMeta({
         simulationProfile: patch.simulationProfile ?? existing.uiMeta?.simulationProfile ?? 'happy_path',
@@ -1385,6 +1387,7 @@ function cloneRepoBoardState(state: RepoBoardState): RepoBoardState {
   return {
     tasks: state.tasks.map((task) => ({
       ...task,
+      archived: task.archived ?? false,
       dependencies: cloneTaskDependencies(task.dependencies),
       dependencyState: cloneTaskDependencyState(task.dependencyState),
       automationState: cloneTaskAutomationState(task.automationState),
@@ -1458,6 +1461,7 @@ function normalizeRepoBoardState(state?: Partial<RepoBoardState> | null): RepoBo
     tenantId: normalizeTenantId(task.tenantId),
     branchSource: cloneTaskBranchSource(task.branchSource),
     tags: normalizeTaskTags(task.tags),
+    archived: task.archived ?? false,
     uiMeta: normalizeTaskUiMeta(task.uiMeta)
   }));
   const taskTenantIds = new Map(normalizedTasks.map((task) => [task.taskId, task.tenantId]));
