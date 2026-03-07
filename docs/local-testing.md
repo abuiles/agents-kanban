@@ -63,7 +63,7 @@ npx wrangler kv key put --binding SECRETS_KV github/webhook-secret "<shared-webh
 
 These are mandatory for non-mocked runs:
 
-- R2 bucket: `RUN_ARTIFACTS` (artifacts + optional Codex auth bundle)
+- R2 bucket: `RUN_ARTIFACTS` (artifacts + optional auth/home bundles)
 - D1: `TENANT_DB` (tenant/auth/admin persistence)
 - Workflow: `RUN_WORKFLOW`
 - Durable Objects: `BOARD_INDEX`, `REPO_BOARD`, `Sandbox`
@@ -138,7 +138,34 @@ auth/codex-auth.tgz
 npx wrangler secret put CODEX_AUTH_BUNDLE_R2_KEY
 ```
 
-## 4.1) Claude Code auth (API token)
+## 4.1) `.agents` home bundle (optional team context)
+
+If you want runs to include `$HOME/.agents`, package and upload a `.agents` directory bundle.
+
+```bash
+tmp_dir="$(mktemp -d)"
+mkdir -p "$tmp_dir/.agents"
+cp -R "$HOME/.agents/." "$tmp_dir/.agents/"
+tar -czf agents-home.tgz -C "$tmp_dir" .agents
+npx wrangler r2 object put my-sandbox-run-artifacts/auth/agents-home.tgz --file ./agents-home.tgz --remote
+rm -rf "$tmp_dir"
+```
+
+Set optional global default:
+
+```bash
+npx wrangler secret put AGENTS_BUNDLE_R2_KEY
+```
+
+Use this value:
+
+```text
+auth/agents-home.tgz
+```
+
+You can also set per-repo `agentsBundleR2Key` in repo create/update payloads.
+
+## 4.2) Claude Code auth (API token)
 
 Claude Code runs use `ANTHROPIC_API_KEY` and do not require an auth bundle.
 
@@ -353,6 +380,9 @@ Ingress/idempotency checks to verify in local logs:
   - Ensure Worker secret `CODEX_AUTH_BUNDLE_R2_KEY` points to that object key
 - Missing auth for Claude Code
   - Ensure Worker secret `ANTHROPIC_API_KEY` is set
+- Missing `.agents` home injection
+  - Ensure R2 contains the configured `.agents` object key
+  - Ensure either repo `agentsBundleR2Key` or Worker secret `AGENTS_BUNDLE_R2_KEY` is set
 - Claude model errors
   - Ensure task/repo `llmModel` is valid for Claude Code, or set `CLAUDE_CODE_DEFAULT_MODEL`
 - No preview URL

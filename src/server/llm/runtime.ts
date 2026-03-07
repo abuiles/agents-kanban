@@ -1,5 +1,6 @@
 import type { LlmAdapter, LlmPromptExecutionRequest, LlmPromptExecutionResult, LlmRuntimeContext, SleepFn } from './adapter';
 import { buildRunLog } from '../shared/real-run';
+import { restoreAgentsHomeBundle } from './home-bundle';
 
 const LLM_RESPONSE_LOG_CHUNK_SIZE = 900;
 
@@ -22,6 +23,7 @@ export async function executePromptWithLlmAdapter(
   sleepFn: SleepFn
 ): Promise<LlmPromptExecutionResult> {
   await adapter.ensureInstalled(context);
+  await restoreAgentsHomeBundle(context, request.repo, request.phase ?? 'codex');
   const authMode = request.repo.llmAuthMode === 'api' ? 'api' : 'bundle';
   await context.repoBoard.appendRunLogs(context.runId, [
     buildRunLog(context.runId, `LLM auth mode: ${authMode}.`, request.phase ?? 'codex')

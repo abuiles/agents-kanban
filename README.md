@@ -407,6 +407,47 @@ Notes:
 - Keep `auth.json` private; never commit or share it.
 - If auth fails, check `docs/local-testing.md` troubleshooting for Codex bundle diagnostics.
 
+## `.agents` Home Bundle Injection
+
+If you want sandbox runs to include a team-managed `$HOME/.agents` directory, upload a `.agents` bundle to R2.
+
+1. Build a `.agents` bundle from your local machine:
+
+```bash
+tmp_dir="$(mktemp -d)"
+mkdir -p "$tmp_dir/.agents"
+cp -R "$HOME/.agents/." "$tmp_dir/.agents/"
+tar -czf agents-home.tgz -C "$tmp_dir" .agents
+rm -rf "$tmp_dir"
+```
+
+2. Upload it to the run artifacts bucket:
+
+```bash
+npx wrangler r2 object put my-sandbox-run-artifacts/auth/agents-home.tgz --file ./agents-home.tgz --remote
+```
+
+3. Configure one of:
+
+- Global default key:
+
+```bash
+npx wrangler secret put AGENTS_BUNDLE_R2_KEY
+```
+
+Use value:
+
+```text
+auth/agents-home.tgz
+```
+
+- Repo-level override:
+  - Set `agentsBundleR2Key` in repo configuration payloads/UI.
+
+Notes:
+- Restore is best-effort; runs continue if `.agents` restore fails.
+- Extraction overlays onto `$HOME` and expects `.agents` as bundle root.
+
 ## Claude Code Auth (API Token)
 
 Claude Code execution uses runtime secret injection and does not require an auth bundle.
@@ -437,6 +478,7 @@ Opus is also supported via the same `llmModel` field, for example `claude-opus-4
 - [docs/plans/current/p1-single-tenant-foundation.md](docs/plans/current/p1-single-tenant-foundation.md)
 - [docs/plans/current/p2-control-and-explainability.md](docs/plans/current/p2-control-and-explainability.md)
 - [docs/plans/current/p3-scale-and-scheduling.md](docs/plans/current/p3-scale-and-scheduling.md)
+- [docs/plans/current/p12-agents-home-bundle-injection.md](docs/plans/current/p12-agents-home-bundle-injection.md)
 - [docs/features-and-api.md](docs/features-and-api.md)
 - [docs/tenant-auth-api.md](docs/tenant-auth-api.md)
 - [docs/api_prompt.md](docs/api_prompt.md)
