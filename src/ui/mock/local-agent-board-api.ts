@@ -5,6 +5,7 @@ import type {
   AuthSession,
   CreateInviteInput,
   CreateInviteResult,
+  CreateReviewPlaybookInput,
   CreateRepoInput,
   RepoSentinelActionResult,
   RepoSentinelConfigInput,
@@ -19,11 +20,12 @@ import type {
   TakeOverRunInput,
   RetryRunInput,
   UpdateRepoInput,
+  UpdateReviewPlaybookInput,
   UpdateTaskInput,
   UserApiTokenRecord,
   UpsertScmCredentialInput
 } from '../domain/api';
-import type { AgentRun, Repo, RunCheckpoint, RunCommand, RunEvent, RunLogEntry, SandboxRole, ScmCredential, Task, TaskDetail, TenantMember, TerminalBootstrap, User } from '../domain/types';
+import type { AgentRun, Repo, ReviewPlaybook, RunCheckpoint, RunCommand, RunEvent, RunLogEntry, SandboxRole, ScmCredential, Task, TaskDetail, TenantMember, TerminalBootstrap, User } from '../domain/types';
 import { getTaskDetail, getTasksForRepo } from '../domain/selectors';
 import { LocalBoardStore } from '../store/local-board-store';
 import { parseImportedBoard } from '../store/import-export';
@@ -48,6 +50,7 @@ export class LocalAgentBoardApi implements AgentBoardApi {
   private readonly userApiTokens = new Map<string, UserApiTokenRecord & { token: string }>();
   private readonly repoSentinelRuns = new Map<string, NonNullable<RepoSentinelStatus['run']>>();
   private readonly repoSentinelEvents = new Map<string, RepoSentinelStatus['events']>();
+  private readonly reviewPlaybooks = new Map<string, ReviewPlaybook>();
   private authSession?: AuthSession;
 
   private createLocalAuthSession(userOverride?: Partial<User> & Pick<User, 'id' | 'email'>, role: TenantMember['role'] = 'owner'): AuthSession {
@@ -213,6 +216,50 @@ export class LocalAgentBoardApi implements AgentBoardApi {
     this.userApiTokens.set(tokenId, { ...token, revokedAt: nowIso(), updatedAt: nowIso() });
   }
 
+  async listReviewPlaybooks(): Promise<ReviewPlaybook[]> {
+    return [...this.reviewPlaybooks.values()]
+      .sort((left, right) => left.name.localeCompare(right.name));
+  }
+
+  async createReviewPlaybook(input: CreateReviewPlaybookInput): Promise<ReviewPlaybook> {
+    const now = nowIso();
+    const playbook: ReviewPlaybook = {
+      playbookId: randomId('playbook'),
+      tenantId: this.authSession?.memberships[0]?.tenantId ?? 'tenant_local',
+      name: input.name.trim(),
+      prompt: input.prompt.trim(),
+      enabled: input.enabled ?? true,
+      createdAt: now,
+      updatedAt: now
+    };
+    this.reviewPlaybooks.set(playbook.playbookId, playbook);
+    return playbook;
+  }
+
+  async updateReviewPlaybook(playbookId: string, patch: UpdateReviewPlaybookInput): Promise<ReviewPlaybook> {
+    const existing = this.reviewPlaybooks.get(playbookId);
+    if (!existing) {
+      throw new Error(`Review playbook ${playbookId} not found.`);
+    }
+    const updated: ReviewPlaybook = {
+      ...existing,
+      name: patch.name?.trim() ?? existing.name,
+      prompt: patch.prompt?.trim() ?? existing.prompt,
+      enabled: typeof patch.enabled === 'boolean' ? patch.enabled : existing.enabled,
+      updatedAt: nowIso()
+    };
+    this.reviewPlaybooks.set(playbookId, updated);
+    return updated;
+  }
+
+  async deleteReviewPlaybook(playbookId: string): Promise<{ playbookId: string; deleted: true }> {
+    if (!this.reviewPlaybooks.has(playbookId)) {
+      throw new Error(`Review playbook ${playbookId} not found.`);
+    }
+    this.reviewPlaybooks.delete(playbookId);
+    return { playbookId, deleted: true };
+  }
+
   async createRepo(input: CreateRepoInput): Promise<Repo> {
     const timestamp = nowIso();
     const autoReviewEnabled = input.autoReview?.enabled ?? false;
@@ -220,6 +267,7 @@ export class LocalAgentBoardApi implements AgentBoardApi {
       enabled: autoReviewEnabled,
       provider: input.autoReview?.provider ?? (autoReviewEnabled ? getAutoReviewProviderDefaultForScm(input.scmProvider) : 'gitlab'),
       postInline: input.autoReview?.postInline ?? false,
+      ...(input.autoReview?.playbookId ? { playbookId: input.autoReview.playbookId.trim() } : {}),
       ...(input.autoReview?.prompt ? { prompt: input.autoReview.prompt.trim() } : {})
     };
     const normalizedSentinelConfig = normalizeRepoSentinelConfig({
@@ -570,6 +618,7 @@ export class LocalAgentBoardApi implements AgentBoardApi {
         simulationProfile: input.simulationProfile ?? 'happy_path',
         autoReviewMode: input.autoReviewMode,
         autoReviewPrompt: input.autoReviewPrompt,
+        autoReviewPlaybookId: input.autoReviewPlaybookId,
         llmAdapter: effectiveAdapter,
         llmModel: input.llmModel ?? input.codexModel ?? repoLlmDefaults.llmModel,
         llmReasoningEffort: input.llmReasoningEffort ?? input.codexReasoningEffort ?? repoLlmDefaults.llmReasoningEffort,
@@ -643,6 +692,7 @@ export class LocalAgentBoardApi implements AgentBoardApi {
             simulationProfile: patch.simulationProfile ?? task.uiMeta?.simulationProfile ?? 'happy_path',
             autoReviewMode: patch.autoReviewMode ?? task.uiMeta?.autoReviewMode ?? 'inherit',
             autoReviewPrompt: patch.autoReviewPrompt ?? task.uiMeta?.autoReviewPrompt,
+            autoReviewPlaybookId: patch.autoReviewPlaybookId ?? task.uiMeta?.autoReviewPlaybookId,
             llmAdapter: patch.llmAdapter ?? task.uiMeta?.llmAdapter,
             llmModel: patch.llmModel ?? task.uiMeta?.llmModel,
             llmReasoningEffort: patch.llmReasoningEffort ?? task.uiMeta?.llmReasoningEffort,

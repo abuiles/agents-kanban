@@ -16,6 +16,7 @@ This folder is the source of truth for active planning and execution.
 - [P10: Slack Free-Text Intent Intake + Model-Selectable Parser (One-Shot, S10 in progress)](./p10-slack-intent-intake-one-shot.md)
 - [P11: Review Sandbox Operator Control and Attachability](./p11-review-sandbox-operator-control.md)
 - [P12: `.agents` Home Bundle Injection](./p12-agents-home-bundle-injection.md)
+- [P13: Review Playbook Selection (API-managed)](./p13-review-playbook-selection.md)
 - [Migration Status](./migration-status.md)
 
 ## How to use

@@ -8,6 +8,7 @@ import type {
   LlmAdapter,
   LlmReasoningEffort,
   Repo,
+  ReviewPlaybook,
   ReviewFinding,
   ReviewPromptSource,
   RunReviewArtifacts,
@@ -129,7 +130,11 @@ export type AutoReviewResolution = {
   codexReasoningEffort?: CodexReasoningEffort;
 };
 
-export function resolveAutoReviewConfig(repo: Pick<Repo, 'autoReview' | 'scmProvider'> | undefined, task: Pick<Task, 'uiMeta'> | undefined): AutoReviewResolution {
+export function resolveAutoReviewConfig(
+  repo: Pick<Repo, 'autoReview' | 'scmProvider'> | undefined,
+  task: Pick<Task, 'uiMeta'> | undefined,
+  playbooks: ReviewPlaybook[] = []
+): AutoReviewResolution {
   const repoAutoReview = repo?.autoReview ?? {
     enabled: false,
     provider: getAutoReviewProviderDefaultForScm(repo?.scmProvider),
@@ -137,8 +142,32 @@ export function resolveAutoReviewConfig(repo: Pick<Repo, 'autoReview' | 'scmProv
   };
   const taskMode = task?.uiMeta?.autoReviewMode ?? DEFAULT_AUTO_REVIEW_MODE;
   const taskPrompt = trimText(task?.uiMeta?.autoReviewPrompt);
+  const taskPlaybookId = trimText(task?.uiMeta?.autoReviewPlaybookId);
+  const repoPlaybookId = trimText(repoAutoReview.playbookId);
+  const effectivePlaybookId = taskPlaybookId || repoPlaybookId;
+  const playbook = effectivePlaybookId
+    ? playbooks.find((candidate) => candidate.playbookId === effectivePlaybookId && candidate.enabled)
+    : undefined;
   const repoPrompt = trimText(repoAutoReview.prompt);
   const enabled = taskMode === 'on' ? true : taskMode === 'off' ? false : repoAutoReview.enabled;
+  const playbookPrompt = trimText(playbook?.prompt);
+
+  if (enabled && effectivePlaybookId && playbookPrompt) {
+    return {
+      enabled,
+      taskMode,
+      promptSource: 'playbook',
+      prompt: playbookPrompt,
+      provider: repoAutoReview.provider,
+      postInline: repoAutoReview.postInline,
+      postingMode: repoAutoReview.postingMode ?? 'platform',
+      llmAdapter: repoAutoReview.llmAdapter,
+      llmModel: repoAutoReview.llmModel ?? repoAutoReview.codexModel,
+      llmReasoningEffort: repoAutoReview.llmReasoningEffort ?? repoAutoReview.codexReasoningEffort,
+      codexModel: repoAutoReview.codexModel,
+      codexReasoningEffort: repoAutoReview.codexReasoningEffort
+    };
+  }
 
   if (enabled && taskPrompt) {
     return {

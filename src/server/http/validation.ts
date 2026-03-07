@@ -1,10 +1,12 @@
 import type {
+  CreateReviewPlaybookInput,
   CreateRepoInput,
   CreateTaskInput,
   RepoSentinelConfigInput,
   RequestRunChangesInput,
   RetryRunInput,
   TakeOverRunInput,
+  UpdateReviewPlaybookInput,
   UpdateRepoInput,
   UpdateTaskInput,
   UpsertScmCredentialInput
@@ -400,6 +402,8 @@ function readAutoReviewConfig(value: unknown, field: string, required = true): N
 
   const enabled = readBoolean(value.enabled, `${field}.enabled`, false);
   const prompt = readTrimmedString(value.prompt, `${field}.prompt`, false);
+  const explicitPlaybookClear = hasOwn(value, 'playbookId') && value.playbookId === '';
+  const playbookId = readTrimmedString(value.playbookId, `${field}.playbookId`, false);
   const provider = readEnumValue(value.provider, `${field}.provider`, AUTO_REVIEW_PROVIDERS, false);
   const postInline = readBoolean(value.postInline, `${field}.postInline`, false);
   const postingMode = readEnumValue(value.postingMode, `${field}.postingMode`, AUTO_REVIEW_POSTING_MODES, false);
@@ -444,6 +448,8 @@ function readAutoReviewConfig(value: unknown, field: string, required = true): N
     ...(typeof postInline === 'boolean' ? { postInline } : {}),
     ...(postingMode ? { postingMode } : {}),
     ...(prompt ? { prompt } : {}),
+    ...(explicitPlaybookClear ? { playbookId: '' } : {}),
+    ...(playbookId ? { playbookId } : {}),
     ...(effectiveAdapter ? { llmAdapter: effectiveAdapter } : {}),
     ...(effectiveModel ? { llmModel: effectiveModel } : {}),
     ...(normalizedLlmReasoningEffort ? { llmReasoningEffort: normalizedLlmReasoningEffort } : {}),
@@ -843,6 +849,7 @@ export function parseCreateTaskInput(body: unknown): CreateTaskInput {
     status: readString(body.status, 'status', false) as CreateTaskInput['status'],
     autoReviewMode: readEnumValue(body.autoReviewMode, 'autoReviewMode', AUTO_REVIEW_MODES, false) ?? 'inherit',
     autoReviewPrompt: readTrimmedString(body.autoReviewPrompt, 'autoReviewPrompt', false),
+    autoReviewPlaybookId: readTrimmedString(body.autoReviewPlaybookId, 'autoReviewPlaybookId', false),
     simulationProfile: readString(body.simulationProfile, 'simulationProfile', false) as CreateTaskInput['simulationProfile'],
     ...llmFields
   };
@@ -871,6 +878,11 @@ export function parseUpdateTaskInput(body: unknown): UpdateTaskInput {
   if (hasOwn(body, 'status')) patch.status = readString(body.status, 'status', false) as UpdateTaskInput['status'];
   if (hasOwn(body, 'autoReviewMode')) patch.autoReviewMode = readEnumValue(body.autoReviewMode, 'autoReviewMode', AUTO_REVIEW_MODES, false);
   if (hasOwn(body, 'autoReviewPrompt')) patch.autoReviewPrompt = readTrimmedString(body.autoReviewPrompt, 'autoReviewPrompt', false);
+  if (hasOwn(body, 'autoReviewPlaybookId')) {
+    patch.autoReviewPlaybookId = body.autoReviewPlaybookId === ''
+      ? ''
+      : readTrimmedString(body.autoReviewPlaybookId, 'autoReviewPlaybookId', false);
+  }
   if (hasOwn(body, 'simulationProfile')) patch.simulationProfile = readString(body.simulationProfile, 'simulationProfile', false) as UpdateTaskInput['simulationProfile'];
   if (hasOwn(body, 'llmAdapter') || hasOwn(body, 'codexModel') || hasOwn(body, 'codexReasoningEffort')) patch.llmAdapter = llmFields.llmAdapter;
   if (hasOwn(body, 'llmModel') || hasOwn(body, 'codexModel')) {
@@ -899,6 +911,33 @@ export function parseRequestRunChangesInput(body: unknown): RequestRunChangesInp
     prompt,
     reviewSelection: readRequestRunChangesSelection(body.reviewSelection, 'reviewSelection')
   };
+}
+
+export function parseCreateReviewPlaybookInput(body: unknown): CreateReviewPlaybookInput {
+  if (!isRecord(body)) {
+    throw badRequest('Invalid review playbook payload.');
+  }
+  const name = readTrimmedString(body.name, 'name');
+  const prompt = readTrimmedString(body.prompt, 'prompt');
+  if (!name || !prompt) {
+    throw badRequest('Invalid review playbook payload.');
+  }
+  return {
+    name,
+    prompt,
+    enabled: readBoolean(body.enabled, 'enabled', false)
+  };
+}
+
+export function parseUpdateReviewPlaybookInput(body: unknown): UpdateReviewPlaybookInput {
+  if (!isRecord(body)) {
+    throw badRequest('Invalid review playbook patch payload.');
+  }
+  const patch: UpdateReviewPlaybookInput = {};
+  if (hasOwn(body, 'name')) patch.name = readTrimmedString(body.name, 'name', false);
+  if (hasOwn(body, 'prompt')) patch.prompt = readTrimmedString(body.prompt, 'prompt', false);
+  if (hasOwn(body, 'enabled')) patch.enabled = readBoolean(body.enabled, 'enabled', false);
+  return patch;
 }
 
 export function parseRetryRunInput(body: unknown): RetryRunInput {

@@ -653,7 +653,9 @@ async function executeRunReview(
     return;
   }
 
-  const autoReview = resolveAutoReviewConfig(repo, task);
+  const board = env.BOARD_INDEX.getByName('agentboard') as DurableObjectStub<BoardIndexDO>;
+  const reviewPlaybooks = await board.listReviewPlaybooks(normalizeTenantId(baseRun.tenantId ?? repo.tenantId));
+  const autoReview = resolveAutoReviewConfig(repo, task, reviewPlaybooks);
   const previousRound = baseRun.reviewExecution?.round ?? 0;
   if (!autoReview.enabled) {
     await repoBoard.transitionRun(runId, {

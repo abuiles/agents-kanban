@@ -130,6 +130,7 @@ export type RepoCommitConfig = {
 export type RepoAutoReview = {
   enabled: boolean;
   prompt?: string;
+  playbookId?: string;
   provider: AutoReviewProvider;
   postInline: boolean;
   postingMode?: AutoReviewPostingMode;
@@ -138,6 +139,15 @@ export type RepoAutoReview = {
   llmReasoningEffort?: LlmReasoningEffort;
   codexModel?: CodexModel;
   codexReasoningEffort?: CodexReasoningEffort;
+};
+export type ReviewPlaybook = {
+  playbookId: string;
+  tenantId: string;
+  name: string;
+  prompt: string;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
 };
 export type RepoSentinelConfig = {
   enabled: boolean;
@@ -214,7 +224,7 @@ export type SentinelEvent = {
 };
 export type ReviewFindingSeverity = 'critical' | 'high' | 'medium' | 'low' | 'info';
 export type ReviewFindingStatus = 'open' | 'addressed' | 'ignored';
-export type ReviewPromptSource = 'task' | 'repo' | 'native';
+export type ReviewPromptSource = 'task' | 'repo' | 'native' | 'playbook';
 export type SandboxRole = 'main' | 'review';
 export type ReviewExecutionTrigger = 'auto_on_review' | 'manual_rerun';
 export type ReviewExecutionStatus = 'not_started' | 'running' | 'completed' | 'failed';
@@ -456,6 +466,7 @@ export type TaskUiMeta = {
   codexReasoningEffort?: CodexReasoningEffort;
   autoReviewMode?: AutoReviewMode;
   autoReviewPrompt?: string;
+  autoReviewPlaybookId?: string;
 };
 
 export type Task = {

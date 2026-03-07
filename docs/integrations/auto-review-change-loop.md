@@ -16,30 +16,39 @@ This guide captures the end-to-end flow for Stage 6 hardening and operation hand
    - `repo.autoReview.enabled = true`
    - `repo.autoReview.provider = 'github' | 'gitlab' | 'jira'`
    - `repo.autoReview.postInline = true` for GitLab inline notes
+   - optional repo-level playbook: `repo.autoReview.playbookId = "<playbookId>"`
+   - optional task-level override: `task.uiMeta.autoReviewPlaybookId = "<playbookId>" | "" | inherit`
    - for GitHub repos, provider defaults to `github` when omitted and `autoReview.enabled=true`
 
-2. Trigger a normal run:
+2. (Optional) manage playbooks through API:
+
+   - `GET /api/review-playbooks`
+   - `POST /api/review-playbooks`
+   - `PATCH /api/review-playbooks/:playbookId`
+   - `DELETE /api/review-playbooks/:playbookId`
+
+3. Trigger a normal run:
 
    - `POST /api/tasks/:taskId/run`
 
-3. Verify review phase is reached:
+4. Verify review phase is reached:
 
    - `GET /api/runs/:runId`
    - confirm status moves to `PR_OPEN`
    - confirm timeline contains `Auto review started (round 1).`
 
-4. Confirm findings posting and state:
+5. Confirm findings posting and state:
 
    - `GET /api/runs/:runId`
    - confirm `reviewExecution` completed and `reviewFindingsSummary` present
    - confirm `reviewPostState.status === 'completed'` and no posting errors
 
-5. Inspect review artifacts:
+6. Inspect review artifacts:
 
    - `GET /api/runs/:runId/artifacts`
    - verify review JSON/markdown pointers exist
 
-6. Perform focused request-changes:
+7. Perform focused request-changes:
 
    - `POST /api/runs/:runId/request-changes`
    - payload examples:
@@ -49,7 +58,7 @@ This guide captures the end-to-end flow for Stage 6 hardening and operation hand
    - exclude subset: `{ "prompt": "...", "reviewSelection": { "mode": "exclude", "findingIds": ["<id>"] } }`
    - freeform intent: `{ "prompt": "...", "reviewSelection": { "mode": "freeform", "instruction": "Focus on security findings first." } }`
 
-7. Optional: rerun review manually after follow-up:
+8. Optional: rerun review manually after follow-up:
 
    - `POST /api/runs/:runId/review`
    - confirm timeline contains `Manual review started (round N).`
@@ -93,6 +102,9 @@ This guide captures the end-to-end flow for Stage 6 hardening and operation hand
 
 - `reviewExecution.trigger` remains `auto_on_review` but `round` is still `0`
   - check repo auto-review setting and task override mode resolution
+- playbook appears selected but prompt source is still `native`/`repo`/`task`
+  - verify playbook exists and `enabled=true`
+  - verify selected playbook belongs to the active tenant
 - postings never happen
   - confirm provider credential secret exists (`GITHUB_TOKEN`, `GITLAB_TOKEN`, or `JIRA_TOKEN`)
 - duplicate findings comments appearing

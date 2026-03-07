@@ -14,6 +14,7 @@ import {
   parseCreateUserApiTokenInput,
   parseAuthSignupInput,
   parseCreateRepoInput,
+  parseCreateReviewPlaybookInput,
   parseCreateTaskInput,
   parseCreateTenantInput,
   parseCreateTenantMemberInput,
@@ -25,6 +26,7 @@ import {
   parseRequestRunChangesInput,
   parseUpdateRepoSentinelConfigInput,
   parseUpdateRepoInput,
+  parseUpdateReviewPlaybookInput,
   parseUpdateTaskInput,
   parseUpdateTenantMemberInput,
   parseUpsertScmCredentialInput,
@@ -65,6 +67,7 @@ type RouteParams = {
   credentialId?: string;
   taskId?: string;
   runId?: string;
+  playbookId?: string;
 };
 
 function withApiError(task: () => Promise<Response>): Promise<Response> {
@@ -504,6 +507,46 @@ export async function handleListRepos(request: Request, env: Env): Promise<Respo
   });
 }
 
+export async function handleListReviewPlaybooks(request: Request, env: Env): Promise<Response> {
+  return withApiError(async () => {
+    const board = getBoard(env);
+    const requestContext = await resolveRequestTenantContext(env, board, request, { requireSession: true });
+    await requireActiveTenantAccess(env, board, requestContext);
+    return json(await board.listReviewPlaybooks(requestContext.activeTenantId));
+  });
+}
+
+export async function handleCreateReviewPlaybook(request: Request, env: Env): Promise<Response> {
+  return withApiError(async () => {
+    const board = getBoard(env);
+    const requestContext = await resolveRequestTenantContext(env, board, request, { requireSession: true });
+    await requireActiveTenantAccess(env, board, requestContext);
+    const input = parseCreateReviewPlaybookInput(await readJson(request));
+    return json(await board.createReviewPlaybook({ tenantId: requestContext.activeTenantId, ...input }), { status: 201 });
+  });
+}
+
+export async function handleUpdateReviewPlaybook(request: Request, env: Env, params: RouteParams): Promise<Response> {
+  return withApiError(async () => {
+    const board = getBoard(env);
+    const requestContext = await resolveRequestTenantContext(env, board, request, { requireSession: true });
+    await requireActiveTenantAccess(env, board, requestContext);
+    const playbookId = parsePathParam(params.playbookId);
+    const patch = parseUpdateReviewPlaybookInput(await readJson(request));
+    return json(await board.updateReviewPlaybook(playbookId, patch, requestContext.activeTenantId));
+  });
+}
+
+export async function handleDeleteReviewPlaybook(request: Request, env: Env, params: RouteParams): Promise<Response> {
+  return withApiError(async () => {
+    const board = getBoard(env);
+    const requestContext = await resolveRequestTenantContext(env, board, request, { requireSession: true });
+    await requireActiveTenantAccess(env, board, requestContext);
+    const playbookId = parsePathParam(params.playbookId);
+    return json(await board.deleteReviewPlaybook(playbookId, requestContext.activeTenantId));
+  });
+}
+
 export async function handleCreateRepo(request: Request, env: Env): Promise<Response> {
   return withApiError(async () => {
     const board = getBoard(env);
@@ -511,6 +554,9 @@ export async function handleCreateRepo(request: Request, env: Env): Promise<Resp
     const input = parseCreateRepoInput(await readJson(request));
     const tenantId = normalizeTenantId(input.tenantId ?? requestContext.activeTenantId);
     await requireActiveTenantAccess(env, board, requestContext, tenantId);
+    if (input.autoReview?.playbookId) {
+      await assertReviewPlaybookAccess(board, tenantId, input.autoReview.playbookId);
+    }
     return json(await board.createRepo({ ...input, tenantId }), { status: 201 });
   });
 }
@@ -524,6 +570,9 @@ export async function handleUpdateRepo(request: Request, env: Env, params: Route
     const patch = parseUpdateRepoInput(await readJson(request));
     if (patch.tenantId && normalizeTenantId(patch.tenantId) !== repo.tenantId) {
       throw forbidden('Repo tenantId cannot be changed.');
+    }
+    if (patch.autoReview?.playbookId) {
+      await assertReviewPlaybookAccess(board, repo.tenantId ?? requestContext.activeTenantId, patch.autoReview.playbookId);
     }
     return json(await board.updateRepo(repoId, patch));
   });
@@ -931,7 +980,10 @@ export async function handleCreateTask(request: Request, env: Env): Promise<Resp
     const board = getBoard(env);
     const requestContext = await resolveRequestTenantContext(env, board, request, { requireSession: true });
     const input = parseCreateTaskInput(await readJson(request));
-    await assertRepoAccess(env, board, requestContext, input.repoId);
+    const repo = await assertRepoAccess(env, board, requestContext, input.repoId);
+    if (input.autoReviewPlaybookId) {
+      await assertReviewPlaybookAccess(board, repo.tenantId ?? requestContext.activeTenantId, input.autoReviewPlaybookId);
+    }
     return json(await env.REPO_BOARD.getByName(input.repoId).createTask(input), { status: 201 });
   });
 }
@@ -988,8 +1040,12 @@ export async function handleUpdateTask(request: Request, env: Env, params: Route
     const requestContext = await resolveRequestTenantContext(env, board, request, { requireSession: true });
     const taskId = parsePathParam(params.taskId);
     const repoId = await resolveRepoIdForTask(board, taskId);
-    await assertRepoAccess(env, board, requestContext, repoId);
-    return json(await env.REPO_BOARD.getByName(repoId).updateTask(taskId, parseUpdateTaskInput(await readJson(request)), requestContext.activeTenantId));
+    const repo = await assertRepoAccess(env, board, requestContext, repoId);
+    const patch = parseUpdateTaskInput(await readJson(request));
+    if (patch.autoReviewPlaybookId) {
+      await assertReviewPlaybookAccess(board, repo.tenantId ?? requestContext.activeTenantId, patch.autoReviewPlaybookId);
+    }
+    return json(await env.REPO_BOARD.getByName(repoId).updateTask(taskId, patch, requestContext.activeTenantId));
   });
 }
 
@@ -1691,6 +1747,21 @@ async function assertRepoAccess(
     throw forbidden(`Cross-tenant access denied: repo ${repoId} belongs to tenant ${repo.tenantId}, active tenant is ${context.activeTenantId}.`);
   }
   return repo;
+}
+
+async function assertReviewPlaybookAccess(
+  board: DurableObjectStub<import('./durable/board-index').BoardIndexDO>,
+  tenantId: string,
+  playbookId: string
+) {
+  const playbook = await board.getReviewPlaybook(playbookId);
+  if (!playbook || normalizeTenantId(playbook.tenantId) !== normalizeTenantId(tenantId)) {
+    throw notFound(`Review playbook ${playbookId} not found.`);
+  }
+  if (!playbook.enabled) {
+    throw forbidden(`Review playbook ${playbookId} is disabled.`);
+  }
+  return playbook;
 }
 
 function readSessionToken(request: Request): string | undefined {

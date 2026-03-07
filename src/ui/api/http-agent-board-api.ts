@@ -5,6 +5,7 @@ import type {
   AuthSession,
   CreateInviteInput,
   CreateInviteResult,
+  CreateReviewPlaybookInput,
   CreateRepoInput,
   RepoSentinelActionResult,
   RepoSentinelConfigInput,
@@ -19,11 +20,12 @@ import type {
   TakeOverRunInput,
   RetryRunInput,
   UpdateRepoInput,
+  UpdateReviewPlaybookInput,
   UpdateTaskInput,
   UserApiTokenRecord,
   UpsertScmCredentialInput
 } from '../domain/api';
-import type { AgentRun, BoardSnapshotV1, OperatorSession, Repo, RunCheckpoint, RunCommand, RunEvent, RunLogEntry, SandboxRole, ScmCredential, Task, TaskDetail, TerminalBootstrap } from '../domain/types';
+import type { AgentRun, BoardSnapshotV1, OperatorSession, Repo, ReviewPlaybook, RunCheckpoint, RunCommand, RunEvent, RunLogEntry, SandboxRole, ScmCredential, Task, TaskDetail, TerminalBootstrap } from '../domain/types';
 import { getTaskDetail } from '../domain/selectors';
 import { parseBoardSnapshot } from '../store/board-snapshot';
 import { UiPreferencesStore } from '../store/ui-preferences-store';
@@ -141,6 +143,22 @@ export class HttpAgentBoardApi implements AgentBoardApi {
 
   async revokeApiToken(tokenId: string): Promise<void> {
     await this.request(`/api/me/api-tokens/${encodeURIComponent(tokenId)}`, { method: 'DELETE' });
+  }
+
+  async listReviewPlaybooks() {
+    return this.request<ReviewPlaybook[]>('/api/review-playbooks');
+  }
+
+  async createReviewPlaybook(input: CreateReviewPlaybookInput) {
+    return this.request<ReviewPlaybook>('/api/review-playbooks', { method: 'POST', body: JSON.stringify(input) });
+  }
+
+  async updateReviewPlaybook(playbookId: string, patch: UpdateReviewPlaybookInput) {
+    return this.request<ReviewPlaybook>(`/api/review-playbooks/${encodeURIComponent(playbookId)}`, { method: 'PATCH', body: JSON.stringify(patch) });
+  }
+
+  async deleteReviewPlaybook(playbookId: string) {
+    return this.request<{ playbookId: string; deleted: true }>(`/api/review-playbooks/${encodeURIComponent(playbookId)}`, { method: 'DELETE' });
   }
 
   subscribe(listener: () => void) {

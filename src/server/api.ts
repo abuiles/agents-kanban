@@ -10,6 +10,7 @@ import {
   handleCreateApiToken,
   handleCreateInvite,
   handleCreateRepo,
+  handleCreateReviewPlaybook,
   handleCreateTask,
   handleDebugExport,
   handleDebugImport,
@@ -33,6 +34,7 @@ import {
   handleListApiTokens,
   handleListInvites,
   handleListRepos,
+  handleListReviewPlaybooks,
   handleListScmCredentials,
   handleListTasks,
   handleMe,
@@ -52,7 +54,9 @@ import {
   handleTenantRunUsage,
   handleTenantUsageSummary,
   handleUpdateRepo,
+  handleUpdateReviewPlaybook,
   handleUpdateTask,
+  handleDeleteReviewPlaybook,
   handleUpsertScmCredential,
   handleSlackCommands,
   handleSlackEvents,
@@ -100,6 +104,14 @@ apiRouter.get('/api/repos', (c: Context) => handleListRepos(c.req.raw, c.env as 
 apiRouter.post('/api/repos', (c: Context) => handleCreateRepo(c.req.raw, c.env as Env));
 apiRouter.patch('/api/repos/:repoId', (c: Context) =>
   handleUpdateRepo(c.req.raw, c.env as Env, { repoId: c.req.param('repoId') })
+);
+apiRouter.get('/api/review-playbooks', (c: Context) => handleListReviewPlaybooks(c.req.raw, c.env as Env));
+apiRouter.post('/api/review-playbooks', (c: Context) => handleCreateReviewPlaybook(c.req.raw, c.env as Env));
+apiRouter.patch('/api/review-playbooks/:playbookId', (c: Context) =>
+  handleUpdateReviewPlaybook(c.req.raw, c.env as Env, { playbookId: c.req.param('playbookId') })
+);
+apiRouter.delete('/api/review-playbooks/:playbookId', (c: Context) =>
+  handleDeleteReviewPlaybook(c.req.raw, c.env as Env, { playbookId: c.req.param('playbookId') })
 );
 apiRouter.get('/api/repos/:repoId/sentinel', (c: Context) =>
   handleGetRepoSentinel(c.req.raw, c.env as Env, { repoId: c.req.param('repoId') })

@@ -40,6 +40,7 @@ AgentsKanban helps you run AI-assisted software work the same way you already ma
 ### Auto Review and Selective Change Loop
 
 - Runs can auto-trigger review when `autoReview` is enabled and the run reaches review state.
+- Review playbooks are API-managed and optional; repos/tasks can select one or run with no playbook.
 - Review findings are posted to GitHub, GitLab, or Jira with marker-based idempotency.
 - Operators can request changes against all findings or a selected subset (`all`, `include`, `exclude`, `freeform`).
 - Replies from providers can be included in follow-up prompts when `reviewSelection.includeReplies = true`.

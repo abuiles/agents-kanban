@@ -8,6 +8,7 @@
 | --- | --- | --- | --- | --- | --- |
 | Board and live state | 2, 4 | ✅ Implemented | `GET /api/board?repoId=all|<repoId>`; `GET /api/board/ws` | _none_ | Core board snapshot and websocket state stream are live. |
 | Repositories | 2 | ✅ Implemented | `GET /api/repos`; `POST /api/repos`; `PATCH /api/repos/:repoId` | _none_ | Repo edit and listing are in place. |
+| Review playbooks | P13 | ✅ Implemented | `GET /api/review-playbooks`; `POST /api/review-playbooks`; `PATCH /api/review-playbooks/:playbookId`; `DELETE /api/review-playbooks/:playbookId` | _none_ | API-managed playbook catalog; repo/task selection remains optional and falls back to native prompt logic when unset or missing. |
 | Native sentinel orchestration | P7/S2-S6 | ✅ Implemented | `GET /api/repos/:repoId/sentinel`; `PATCH /api/repos/:repoId/sentinel/config`; `POST /api/repos/:repoId/sentinel/start`; `POST /api/repos/:repoId/sentinel/pause`; `POST /api/repos/:repoId/sentinel/resume`; `POST /api/repos/:repoId/sentinel/stop`; `GET /api/repos/:repoId/sentinel/events` | `POST /api/repos/:repoId/sentinel/retry-merge` *(optional follow-up)* | Event timeline + diagnostics are available from status/events responses; progression is lease/idempotency hardened to avoid duplicate processing. |
 | SCM credentials | 2, 3.5 | ✅ Implemented | `GET /api/scm/credentials`; `POST /api/scm/credentials`; `GET /api/scm/credentials/:provider/:providerRepoName` | _none_ | Provider credential registry exists, including get/list/upsert. Supports GitHub and GitLab SCM providers. |
 | Tasks | 2, 3 | ✅ Implemented | `GET /api/tasks?repoId=all|<repoId>`; `POST /api/tasks`; `GET /api/tasks/:taskId`; `PATCH /api/tasks/:taskId`; `DELETE /api/tasks/:taskId` | _none_ | Full task lifecycle and mutation APIs are in place. |
@@ -45,6 +46,7 @@
 - Active plans index: `docs/plans/current/README.md`
 - Historical Stage 4.6 doc: `docs/plans/archive/stage_4_6.md`
 - Auto-review + selective change-loop runbook: `docs/integrations/auto-review-change-loop.md`
+- Review playbook selection plan: `docs/plans/current/p13-review-playbook-selection.md`
 - Native sentinel orchestration runbook: `docs/integrations/sentinel-orchestration.md`
 - Checkpoint recovery runbook: `docs/integrations/checkpoint-recovery.md`
 
