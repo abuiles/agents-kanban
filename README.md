@@ -494,16 +494,3 @@ Opus is also supported via the same `llmModel` field, for example `claude-opus-4
 ## License
 
 This project is licensed under the MIT License. See [LICENSE](LICENSE).
-
-## Managed Option
-
-If you want a managed option, we can set up and operate AgentsKanban for you.
-
-Commercial terms:
-- No markup on tokens.
-- You own the OpenAI account/instance and the Cloudflare account.
-- We charge a fixed fee based on the number of people using it.
-
-We also offer a one-time setup engagement for a fixed fee.
-
-For details, reach out at: builes.adolfo@gmail.com

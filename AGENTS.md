@@ -1,34 +1,79 @@
-# Cloudflare Workers
+# AGENTS.md
 
-STOP. Your knowledge of Cloudflare Workers APIs and limits may be outdated. Always retrieve current documentation before any Workers, KV, R2, D1, Durable Objects, Queues, Vectorize, AI, or Agents SDK task.
+## Scope
 
-## Docs
+This repo runs on Cloudflare Workers.
 
-- https://developers.cloudflare.com/workers/
-- MCP: `https://docs.mcp.cloudflare.com/mcp`
+Do not rely on memory for Cloudflare APIs, limits, bindings, or product behavior. Check current docs first.
 
-For all limits and quotas, retrieve from the product's `/platform/limits/` page. eg. `/workers/platform/limits`
+## Cloudflare docs
+
+Use the official docs for any Workers-related work:
+
+- `https://developers.cloudflare.com/workers/`
+- `https://docs.mcp.cloudflare.com/mcp`
+
+For limits and quotas, use the product-specific `platform/limits` page.
+
+Examples:
+
+- `https://developers.cloudflare.com/workers/platform/limits/`
+- `https://developers.cloudflare.com/d1/platform/limits/`
+
+## Products covered by this rule
+
+Always refresh docs before changing code that touches:
+
+- Workers
+- Durable Objects
+- KV
+- R2
+- D1
+- Queues
+- Vectorize
+- Workers AI
+- Agents SDK
+- AI Gateway
 
 ## Commands
 
-| Command | Purpose |
-|---------|---------|
-| `npx wrangler dev` | Local development |
-| `npx wrangler deploy` | Deploy to Cloudflare |
-| `npx wrangler types` | Generate TypeScript types |
+Common commands in this repo:
 
-Run `wrangler types` after changing bindings in wrangler.jsonc.
+- `yarn test`
+- `yarn typecheck`
+- `npx wrangler dev`
+- `npx wrangler deploy`
+- `npx wrangler types`
 
-## Node.js Compatibility
+If bindings change in `wrangler.jsonc`, run:
 
-https://developers.cloudflare.com/workers/runtime-apis/nodejs/
+- `npx wrangler types`
 
-## Errors
+## Validation before commit or push
 
-- **Error 1102** (CPU/Memory exceeded): Retrieve limits from `/workers/platform/limits/`
-- **All errors**: https://developers.cloudflare.com/workers/observability/errors/
+Before committing or pushing code changes:
 
-## Product Docs
+1. Run `yarn typecheck`
+2. Run `yarn test`
 
-Retrieve API references and limits from:
-`/kv/` · `/r2/` · `/d1/` · `/durable-objects/` · `/queues/` · `/vectorize/` · `/workers-ai/` · `/agents/`
+If either fails, do not commit or push until the failure is fixed or clearly explained.
+
+## Runtime references
+
+Useful references:
+
+- Node compatibility: `https://developers.cloudflare.com/workers/runtime-apis/nodejs/`
+- Workers errors: `https://developers.cloudflare.com/workers/observability/errors/`
+
+# SECURITY
+
+- **NEVER commit** API keys.
+- **NEVER commit** `.dev.vars`.
+- `wrangler.jsonc` contains Cloudflare account IDs (not secret but don't expose). If an ID gets added then interpolate it like this:
+```
+{
+	"binding": "TENANT_DB",
+	"database_name": "my-sandbox-tenant-db",
+	"database_id": "${TENANT_DB_ID}"
+}
+```
