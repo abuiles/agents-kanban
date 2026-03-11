@@ -269,6 +269,7 @@ export interface AgentBoardApi {
   createRepo(input: CreateRepoInput): Promise<Repo>;
   listRepos(): Promise<Repo[]>;
   updateRepo(repoId: string, patch: UpdateRepoInput): Promise<Repo>;
+  deleteRepo(repoId: string): Promise<{ repoId: string; deleted: true }>;
   getRepoSentinel(repoId: string): Promise<RepoSentinelStatus>;
   updateRepoSentinelConfig(repoId: string, patch: RepoSentinelConfigInput): Promise<RepoSentinelStatus>;
   startRepoSentinel(repoId: string, input?: RepoSentinelStartInput): Promise<RepoSentinelActionResult>;

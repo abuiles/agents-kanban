@@ -17,6 +17,7 @@ import {
   handleDebugSandboxFile,
   handleDebugSandboxRun,
   handleDeleteApiToken,
+  handleDeleteRepo,
   handleDeleteTask,
   handleGetRepoSentinel,
   handleGetRun,
@@ -104,6 +105,9 @@ apiRouter.get('/api/repos', (c: Context) => handleListRepos(c.req.raw, c.env as 
 apiRouter.post('/api/repos', (c: Context) => handleCreateRepo(c.req.raw, c.env as Env));
 apiRouter.patch('/api/repos/:repoId', (c: Context) =>
   handleUpdateRepo(c.req.raw, c.env as Env, { repoId: c.req.param('repoId') })
+);
+apiRouter.delete('/api/repos/:repoId', (c: Context) =>
+  handleDeleteRepo(c.req.raw, c.env as Env, { repoId: c.req.param('repoId') })
 );
 apiRouter.get('/api/review-playbooks', (c: Context) => handleListReviewPlaybooks(c.req.raw, c.env as Env));
 apiRouter.post('/api/review-playbooks', (c: Context) => handleCreateReviewPlaybook(c.req.raw, c.env as Env));

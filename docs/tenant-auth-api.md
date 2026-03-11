@@ -98,6 +98,7 @@ These endpoints require active-tenant authorization and enforce tenant scoping:
 - `GET /api/repos`
 - `POST /api/repos`
 - `PATCH /api/repos/:repoId`
+- `DELETE /api/repos/:repoId`
 - `GET /api/tasks`
 - `POST /api/tasks`
 - `GET /api/tasks/:taskId`

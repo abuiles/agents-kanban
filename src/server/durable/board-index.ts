@@ -5,7 +5,7 @@ import { badRequest, conflict, forbidden, notFound, unauthorized } from '../http
 import { createRepoId } from '../shared/ids';
 import type { BoardEvent } from '../shared/events';
 import { stringifyBoardEvent } from '../shared/events';
-import { buildBoardSnapshot, type BoardSyncResponse } from '../shared/state';
+import { EMPTY_REPO_BOARD_STATE, TERMINAL_RUN_STATUSES, buildBoardSnapshot, type BoardSyncResponse } from '../shared/state';
 import { buildRepoScmKey, getAutoReviewProviderDefaultForScm, getRepoHost, getRepoProjectPath, normalizeCredentialHost, normalizeRepo } from '../../shared/scm';
 import { DEFAULT_REPO_CHECKPOINT_CONFIG, normalizeRepoCheckpointConfig } from '../../shared/checkpoint';
 import { DEFAULT_REPO_SENTINEL_CONFIG, normalizeRepoSentinelConfig } from '../../shared/sentinel';
@@ -907,6 +907,33 @@ export class BoardIndexDO extends DurableObject<Env> {
     const finalRepo = this.repos.find((repo) => repo.repoId === repoId) ?? existing;
     await this.broadcast({ type: 'repo.updated', payload: { repo: finalRepo } }, repoId);
     return finalRepo;
+  }
+
+  async deleteRepo(repoId: string, tenantId?: string): Promise<{ repoId: string; deleted: true }> {
+    await this.ready;
+    const existing = await this.getRepo(repoId);
+    if (tenantId && normalizeTenantId(existing.tenantId) !== normalizeTenantId(tenantId)) {
+      throw forbidden(`Repo ${repoId} is not accessible in this tenant context.`);
+    }
+
+    const repoBoard = this.env.REPO_BOARD.getByName(repoId);
+    const slice = await repoBoard.getBoardSlice();
+    const hasActiveRuns = slice.runs.some((run) =>
+      normalizeTenantId(run.tenantId) === normalizeTenantId(existing.tenantId) && !TERMINAL_RUN_STATUSES.has(run.status)
+    );
+    if (hasActiveRuns) {
+      throw conflict(`Cannot delete repo ${repoId} while it has active runs.`);
+    }
+
+    this.repos = this.repos.filter((repo) => repo.repoId !== repoId);
+    await repoBoard.replaceState(EMPTY_REPO_BOARD_STATE);
+    await this.persist();
+    await this.broadcast(
+      { type: 'board.snapshot', payload: await this.getBoardSync('all', existing.tenantId) },
+      undefined,
+      existing.tenantId
+    );
+    return { repoId, deleted: true };
   }
 
   async listScmCredentials(): Promise<ScmCredential[]> {

@@ -17,6 +17,8 @@ export type BoardSyncResponse = {
   commands: RunCommand[];
 };
 
+export const TERMINAL_RUN_STATUSES = new Set<AgentRun['status']>(['DONE', 'FAILED']);
+
 export const EMPTY_REPO_BOARD_STATE: RepoBoardState = {
   tasks: [],
   runs: [],

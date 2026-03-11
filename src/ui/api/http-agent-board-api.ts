@@ -186,6 +186,12 @@ export class HttpAgentBoardApi implements AgentBoardApi {
     return repo;
   }
 
+  async deleteRepo(repoId: string) {
+    const result = await this.request<{ repoId: string; deleted: true }>(`/api/repos/${encodeURIComponent(repoId)}`, { method: 'DELETE' });
+    await this.refresh();
+    return result;
+  }
+
   async getRepoSentinel(repoId: string) {
     return this.request<RepoSentinelStatus>(`/api/repos/${encodeURIComponent(repoId)}/sentinel`);
   }

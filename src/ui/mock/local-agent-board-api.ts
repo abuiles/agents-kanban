@@ -422,6 +422,32 @@ export class LocalAgentBoardApi implements AgentBoardApi {
     return updatedRepo;
   }
 
+  async deleteRepo(repoId: string): Promise<{ repoId: string; deleted: true }> {
+    const existing = this.store.getSnapshot().repos.find((candidate) => candidate.repoId === repoId);
+    if (!existing) {
+      throw new Error(`Repo ${repoId} not found.`);
+    }
+
+    this.store.update((snapshot) => ({
+      ...snapshot,
+      repos: snapshot.repos.filter((repo) => repo.repoId !== repoId),
+      tasks: snapshot.tasks.filter((task) => task.repoId !== repoId),
+      runs: snapshot.runs.filter((run) => run.repoId !== repoId),
+      logs: snapshot.logs.filter((log) => snapshot.runs.some((run) => run.runId === log.runId && run.repoId !== repoId)),
+      events: snapshot.events.filter((event) => event.repoId !== repoId),
+      commands: snapshot.commands.filter((command) => snapshot.runs.some((run) => run.runId === command.runId && run.repoId !== repoId)),
+      ui: {
+        ...snapshot.ui,
+        selectedRepoId: snapshot.ui.selectedRepoId === repoId ? 'all' : snapshot.ui.selectedRepoId,
+        selectedTaskId: snapshot.tasks.some((task) => task.taskId === snapshot.ui.selectedTaskId && task.repoId === repoId)
+          ? undefined
+          : snapshot.ui.selectedTaskId
+      }
+    }));
+
+    return { repoId, deleted: true };
+  }
+
   async getRepoSentinel(repoId: string): Promise<RepoSentinelStatus> {
     const repo = this.store.getSnapshot().repos.find((candidate) => candidate.repoId === repoId);
     if (!repo) {

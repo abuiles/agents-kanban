@@ -578,6 +578,16 @@ export async function handleUpdateRepo(request: Request, env: Env, params: Route
   });
 }
 
+export async function handleDeleteRepo(request: Request, env: Env, params: RouteParams): Promise<Response> {
+  return withApiError(async () => {
+    const board = getBoard(env);
+    const requestContext = await resolveRequestTenantContext(env, board, request, { requireSession: true });
+    const repoId = parsePathParam(params.repoId);
+    const repo = await assertRepoAccess(env, board, requestContext, repoId);
+    return json(await board.deleteRepo(repoId, repo.tenantId));
+  });
+}
+
 function mergeRepoSentinelConfig(
   base: typeof DEFAULT_REPO_SENTINEL_CONFIG,
   patch: {
