@@ -57,6 +57,7 @@ type PushRemediationResult = {
 };
 
 type RepoLlmAuthMode = 'bundle' | 'api';
+const REVIEW_PROMPT_TIMEOUT_MS = 600_000;
 
 function resolveRepoLlmAuthMode(repo: Repo): RepoLlmAuthMode {
   return repo.llmAuthMode === 'api' ? 'api' : 'bundle';
@@ -1169,7 +1170,7 @@ async function runStructuredReview({
       prompt: buildReviewPrompt(task, repo, run, autoReview, reviewContextComments, previousFindings),
       model,
       reasoningEffort,
-      timeoutMs: 180_000,
+      timeoutMs: REVIEW_PROMPT_TIMEOUT_MS,
       outputSchema: REVIEW_FINDINGS_OUTPUT_SCHEMA,
       phase: 'pr'
     },
@@ -1222,7 +1223,7 @@ async function runNativeReviewAndNormalize({
       prompt: buildNativeReviewPrompt(task, repo, run, reviewContextComments, previousFindings),
       model,
       reasoningEffort,
-      timeoutMs: 180_000,
+      timeoutMs: REVIEW_PROMPT_TIMEOUT_MS,
       phase: 'pr'
     },
     sleepFn
